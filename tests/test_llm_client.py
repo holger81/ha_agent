@@ -2,10 +2,56 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import importlib.util
+import json
+import sys
+import types
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
-from ha_agent.config import LlmBackend
-from ha_agent.llm_client import LlmClient
+import pytest
+
+COMPONENT = (
+    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
+)
+
+
+def _load_module(name: str):
+    module_name = f"ha_agent.{name}"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    if "ha_agent" not in sys.modules:
+        package = types.ModuleType("ha_agent")
+        package.__path__ = [str(COMPONENT)]  # type: ignore[attr-defined]
+        sys.modules["ha_agent"] = package
+
+    if "homeassistant.exceptions" not in sys.modules:
+        ha_pkg = types.ModuleType("homeassistant")
+        ha_exc = types.ModuleType("homeassistant.exceptions")
+
+        class HomeAssistantError(Exception):
+            pass
+
+        ha_exc.HomeAssistantError = HomeAssistantError
+        sys.modules["homeassistant"] = ha_pkg
+        sys.modules["homeassistant.exceptions"] = ha_exc
+
+    for dep in ("const", "config_helpers"):
+        if dep != name and f"ha_agent.{dep}" not in sys.modules:
+            _load_module(dep)
+
+    path = COMPONENT / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+llm_client = _load_module("llm_client")
+config_helpers = _load_module("config_helpers")
 
 
 def test_parse_completion_with_tool_calls() -> None:
@@ -28,35 +74,42 @@ def test_parse_completion_with_tool_calls() -> None:
             }
         ]
     }
-    client = LlmClient(MagicMock())
+    client = llm_client.LlmClient(MagicMock())
     result = client._parse_completion(data)
 
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "mcp_call_tool"
-    assert result.tool_calls[0].id == "call_1"
+    assert "news_curate" in result.tool_calls[0].arguments
 
 
-def test_parse_completion_text_only() -> None:
-    """Plain text responses are parsed."""
-    data = {
-        "choices": [
-            {
-                "message": {
-                    "content": "Hello there.",
-                    "tool_calls": [],
-                }
-            }
-        ]
+@pytest.mark.asyncio
+async def test_chat_parses_response() -> None:
+    """chat() returns parsed assistant content."""
+    payload = {
+        "choices": [{"message": {"content": "Hello there", "tool_calls": []}}]
     }
-    client = LlmClient(MagicMock())
-    result = client._parse_completion(data)
+    response = AsyncMock()
+    response.status = 200
+    response.text = AsyncMock(return_value=json.dumps(payload))
 
-    assert result.content == "Hello there."
-    assert result.tool_calls == []
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=response)
+    context.__aexit__ = AsyncMock(return_value=None)
 
+    session = MagicMock()
+    session.post = MagicMock(return_value=context)
 
-def test_llm_backend_defaults() -> None:
-    """LlmBackend exposes sensible defaults."""
-    backend = LlmBackend(base_url="http://localhost/v1", model="test")
-    assert backend.max_tokens == 4096
-    assert backend.temperature == 0.3
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test-model",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        enable_thinking=False,
+    )
+    client = llm_client.LlmClient(session)
+    result = await client.chat([{"role": "user", "content": "Hi"}], backend)
+
+    assert result.content == "Hello there"
+    assert not result.tool_calls

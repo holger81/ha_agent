@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Agent prompts",
+        "description": "Configure the conversation agent system prompt and MCP tool instructions.",
+        "data": {
+          "agent_system_prompt": "Agent system prompt",
+          "tool_instructions": "Tool instructions"
+        }
+      },
+      "llm": {
+        "title": "LLM backend",
+        "description": "Configure the OpenAI-compatible chat model (e.g. llama.cpp).",
+        "data": {
+          "llm_base_url": "LLM base URL",
+          "llm_model": "Model name",
+          "llm_api_key": "API key (optional)",
+          "llm_max_tokens": "Max tokens",
+          "llm_temperature": "Temperature",
+          "llm_timeout": "Timeout (seconds)",
+          "llm_enable_thinking": "Enable thinking mode"
+        }
+      },
+      "mcp": {
+        "title": "MCP Proxy",
+        "description": "Configure MCP Proxy for tools (Home Assistant, news, mail).",
+        "data": {
+          "mcp_url": "MCP URL",
+          "mcp_bearer_token": "Bearer token (optional)",
+          "mcp_timeout": "Timeout (seconds)",
+          "mcp_health_url": "Health check URL"
+        }
+      },
+      "agent_settings": {
+        "title": "Agent settings",
+        "description": "Configure agent loop behaviour and streaming.",
+        "data": {
+          "max_agent_iterations": "Max tool iterations",
+          "conversation_history_turns": "History turns",
+          "conversation_enable_streaming": "Enable streaming responses"
+        }
+      }
+    },
+    "error": {
+      "llm_connect_failed": "Cannot connect to the LLM server.",
+      "mcp_connect_failed": "Cannot connect to the MCP Proxy."
+    },
+    "abort": {
+      "reconfigure_successful": "Configuration updated successfully."
+    }
+  }
+}

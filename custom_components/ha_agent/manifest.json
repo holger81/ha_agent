@@ -1,0 +1,13 @@
+{
+  "domain": "ha_agent",
+  "name": "HA Agent",
+  "codeowners": ["@holger81"],
+  "config_flow": true,
+  "dependencies": ["conversation"],
+  "documentation": "https://github.com/holger81/ha_agent",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/holger81/ha_agent/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

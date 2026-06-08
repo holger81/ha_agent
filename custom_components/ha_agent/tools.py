@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from .exceptions import HaAgentError
+from homeassistant.exceptions import HomeAssistantError
+
 from .llm_client import ToolCall
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ async def execute_tool(
 
     try:
         result = await mcp_client.call_tool(str(tool_name), tool_args)
-    except HaAgentError as err:
+    except HomeAssistantError as err:
         return f"Tool error: {err}"
     except Exception as err:
         return f"Tool error: {err}"

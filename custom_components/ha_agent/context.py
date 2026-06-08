@@ -1,10 +1,12 @@
-"""Build LLM context for Home Assistant-style conversations."""
+"""Build LLM context from Home Assistant conversation input."""
 
 from __future__ import annotations
 
 import json
 import re
 from typing import Any
+
+from homeassistant.components import conversation
 
 _AFFIRMATIVE = re.compile(
     r"^(yes|yeah|yep|sure|please|ok|okay|go ahead|do it|try that)\.?$",
@@ -81,7 +83,9 @@ def entity_matches_query(entity: dict[str, Any], query: str) -> bool:
         parts.extend(str(alias).lower() for alias in aliases)
 
     tokens = [token for token in query.lower().split() if len(token) > 2]
-    return any(token in part for token in tokens for part in parts if part)
+    return any(
+        token in part for token in tokens for part in parts if part
+    )
 
 
 def build_tool_context(query: str, exposed: list[dict[str, Any]]) -> str:
@@ -142,3 +146,10 @@ def build_messages(
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
     return messages
+
+
+def user_text_from_input(user_input: conversation.ConversationInput) -> str:
+    """Extract user text from conversation input."""
+    if user_input.text:
+        return user_input.text.strip()
+    return ""

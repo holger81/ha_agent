@@ -1,53 +1,83 @@
-"""Unit tests for context builder."""
+"""Unit tests for agent context building."""
 
 from __future__ import annotations
 
-from ha_agent.context import (
-    build_tool_context,
-    entity_matches_query,
-    format_exposed_entities,
-    is_device_action_query,
-    is_news_query,
-    parse_exposed_entities,
+import importlib.util
+import sys
+import types
+from pathlib import Path
+
+COMPONENT = (
+    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 )
 
 
-def test_parse_exposed_entities_from_json_string() -> None:
-    """JSON string payloads are parsed into entity dicts."""
-    raw = '[{"entity_id":"light.kitchen","name":"Kitchen"}]'
-    entities = parse_exposed_entities(raw)
-    assert len(entities) == 1
-    assert entities[0]["entity_id"] == "light.kitchen"
+def _load_module(name: str):
+    module_name = f"ha_agent.{name}"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    if "ha_agent" not in sys.modules:
+        package = types.ModuleType("ha_agent")
+        package.__path__ = [str(COMPONENT)]  # type: ignore[attr-defined]
+        sys.modules["ha_agent"] = package
+
+    if name == "context":
+        conv = types.ModuleType("homeassistant.components.conversation")
+        sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
+        sys.modules["homeassistant.components"] = types.ModuleType(
+            "homeassistant.components"
+        )
+        sys.modules["homeassistant.components.conversation"] = conv
+
+    path = COMPONENT / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+context = _load_module("context")
 
 
 def test_format_exposed_entities() -> None:
-    """Entities are formatted for the system prompt."""
-    text = format_exposed_entities(
-        [{"entity_id": "light.dining", "name": "Dining", "state": "on"}]
+    """Exposed entities are formatted for the system prompt."""
+    text = context.format_exposed_entities(
+        [
+            {
+                "entity_id": "light.dining",
+                "name": "Dining",
+                "state": "on",
+                "area_name": "Dining room",
+            }
+        ]
     )
     assert "light.dining" in text
-    assert "Dining" in text
+    assert "Dining room" in text
+
+
+def test_build_tool_context_adds_news_hint() -> None:
+    """News queries receive MCP news hint."""
+    tool_context = context.build_tool_context("What's the news?", [])
+    assert "news_curate" in tool_context
+
+
+def test_build_tool_context_adds_device_search_hint() -> None:
+    """Device actions without exposed match get search hint."""
+    tool_context = context.build_tool_context(
+        "open the patio door",
+        [{"entity_id": "light.kitchen", "name": "Kitchen"}],
+    )
+    assert "ha_search_entities" in tool_context
 
 
 def test_entity_matches_query() -> None:
-    """Entity matching uses entity_id and name tokens."""
-    entity = {"entity_id": "cover.patio", "name": "Patio Door"}
-    assert entity_matches_query(entity, "open the patio door")
-
-
-def test_build_tool_context_includes_news_hint() -> None:
-    """News queries include MCP news tool guidance."""
-    context = build_tool_context("what is the news?", [])
-    assert "mcp_news__news_curate" in context
-
-
-def test_is_news_query() -> None:
-    """News intent detection works."""
-    assert is_news_query("Give me the headlines")
-    assert not is_news_query("turn off the lights")
-
-
-def test_is_device_action_query() -> None:
-    """Device action intent detection works."""
-    assert is_device_action_query("turn off the kitchen light")
-    assert not is_device_action_query("what time is it")
+    """Entity matching uses names and aliases."""
+    entity = {
+        "entity_id": "cover.patio",
+        "name": "Patio door",
+        "aliases": ["Jonathan patio"],
+    }
+    assert context.entity_matches_query(entity, "open Jonathan patio door")

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
+from homeassistant.exceptions import HomeAssistantError
 
-from .config import McpConfig
-from .exceptions import HaAgentError
+from .config_helpers import McpConfig
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
@@ -20,15 +21,10 @@ class McpProxyClient:
         self,
         session: aiohttp.ClientSession,
         config: McpConfig,
-        *,
-        client_name: str = "ha_agent",
-        client_version: str = "0.1.0",
     ) -> None:
         """Initialize the client."""
         self._session = session
         self._config = config
-        self._client_name = client_name
-        self._client_version = client_version
         self._session_id: str | None = None
         self._request_id = 0
         self._initialized = False
@@ -58,18 +54,18 @@ class McpProxyClient:
         timeout = aiohttp.ClientTimeout(total=15)
         try:
             async with self._session.get(
-                self._config.resolved_health_url(),
+                self._config.health_url,
                 headers=self._headers(),
                 timeout=timeout,
             ) as response:
                 if response.status >= 500:
-                    raise HaAgentError(
+                    raise HomeAssistantError(
                         f"MCP health check failed (HTTP {response.status})"
                     )
         except TimeoutError as err:
-            raise HaAgentError("MCP health check timed out") from err
+            raise HomeAssistantError("MCP health check timed out") from err
         except aiohttp.ClientError as err:
-            raise HaAgentError(f"Cannot reach MCP Proxy: {err}") from err
+            raise HomeAssistantError(f"Cannot reach MCP Proxy: {err}") from err
 
     async def initialize(self) -> None:
         """Initialize MCP session."""
@@ -81,14 +77,11 @@ class McpProxyClient:
             {
                 "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {
-                    "name": self._client_name,
-                    "version": self._client_version,
-                },
+                "clientInfo": {"name": "ha_agent", "version": "0.1.0"},
             },
         )
         if not result:
-            raise HaAgentError("MCP initialize returned empty result")
+            raise HomeAssistantError("MCP initialize returned empty result")
 
         await self._rpc("notifications/initialized", None, notification=True)
         self._initialized = True
@@ -144,7 +137,7 @@ class McpProxyClient:
                 content_type = response.headers.get("Content-Type", "")
                 raw = await response.text()
                 if response.status >= 400:
-                    raise HaAgentError(
+                    raise HomeAssistantError(
                         f"MCP {method} failed (HTTP {response.status}): {raw[:300]}"
                     )
 
@@ -156,15 +149,15 @@ class McpProxyClient:
 
                 data = json.loads(raw)
         except TimeoutError as err:
-            raise HaAgentError(f"MCP {method} timed out") from err
+            raise HomeAssistantError(f"MCP {method} timed out") from err
         except aiohttp.ClientError as err:
-            raise HaAgentError(f"MCP {method} request failed: {err}") from err
+            raise HomeAssistantError(f"MCP {method} request failed: {err}") from err
         except json.JSONDecodeError as err:
-            raise HaAgentError(f"MCP {method} returned invalid JSON") from err
+            raise HomeAssistantError(f"MCP {method} returned invalid JSON") from err
 
         if error := data.get("error"):
             message = error.get("message") or str(error)
-            raise HaAgentError(f"MCP error: {message}")
+            raise HomeAssistantError(f"MCP error: {message}")
 
         return data.get("result")
 
@@ -186,7 +179,7 @@ class McpProxyClient:
                 last_result = data["result"]
             elif "error" in data:
                 message = data["error"].get("message") or str(data["error"])
-                raise HaAgentError(f"MCP error: {message}")
+                raise HomeAssistantError(f"MCP error: {message}")
         return last_result
 
     def _extract_tool_result(self, result: Any) -> str:
@@ -227,3 +220,9 @@ class McpProxyClient:
                 elif data := block.get("data"):
                     parts.append(str(data))
         return "\n".join(parts)
+
+
+def derive_health_url_from_mcp(mcp_url: str) -> str:
+    """Return default health URL for an MCP endpoint."""
+    parsed = urlparse(mcp_url.rstrip("/"))
+    return f"{parsed.scheme}://{parsed.netloc}/api/health"
