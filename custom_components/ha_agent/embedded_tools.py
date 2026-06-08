@@ -43,11 +43,20 @@ def _parse_js_like_object(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _wrap_direct_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> ParsedToolCall:
-    """Convert a direct MCP tool invocation into mcp_call_tool arguments."""
+def _direct_mcp_tool_call(tool_name: str, arguments: dict[str, Any]) -> ParsedToolCall:
+    """Build a direct MCP session tool call."""
     return ParsedToolCall(
         id="call_embedded",
-        name="mcp_call_tool",
+        name=tool_name,
+        arguments=json.dumps(arguments, ensure_ascii=False),
+    )
+
+
+def _legacy_call_tool(tool_name: str, arguments: dict[str, Any]) -> ParsedToolCall:
+    """Map a legacy upstream tool invocation to MCP callTool."""
+    return ParsedToolCall(
+        id="call_embedded",
+        name="callTool",
         arguments=json.dumps(
             {"toolName": tool_name, "arguments": arguments},
             ensure_ascii=False,
@@ -64,7 +73,12 @@ def _parse_tool_call_block(block: str, *, call_id: str) -> ParsedToolCall | None
     if direct := _DIRECT_CALL.match(text):
         tool_name = direct.group("name")
         args = _parse_js_like_object(direct.group("args"))
-        call = _wrap_direct_mcp_tool(tool_name, args)
+        if tool_name in {"callTool", "searchTool", "searchToolsForDomain"}:
+            call = _direct_mcp_tool_call(tool_name, args)
+        elif "__" in tool_name:
+            call = _legacy_call_tool(tool_name, args)
+        else:
+            call = _direct_mcp_tool_call(tool_name, args)
         return ParsedToolCall(id=call_id, name=call.name, arguments=call.arguments)
 
     if text.startswith("{"):
@@ -74,12 +88,12 @@ def _parse_tool_call_block(block: str, *, call_id: str) -> ParsedToolCall | None
         name = payload.get("name") or payload.get("toolName")
         if not name:
             return None
-        if name == "mcp_call_tool":
+        if name in {"mcp_call_tool", "callTool"}:
             arguments = payload.get("arguments") or payload
-            if isinstance(arguments, dict) and "toolName" in arguments:
+            if isinstance(arguments, dict):
                 return ParsedToolCall(
                     id=call_id,
-                    name="mcp_call_tool",
+                    name="callTool",
                     arguments=json.dumps(arguments, ensure_ascii=False),
                 )
         if isinstance(name, str) and "__" in name:
@@ -90,7 +104,7 @@ def _parse_tool_call_block(block: str, *, call_id: str) -> ParsedToolCall | None
                     for key, value in payload.items()
                     if key not in {"name", "toolName", "arguments"}
                 }
-            call = _wrap_direct_mcp_tool(name, args if isinstance(args, dict) else {})
+            call = _legacy_call_tool(name, args if isinstance(args, dict) else {})
             return ParsedToolCall(id=call_id, name=call.name, arguments=call.arguments)
         return ParsedToolCall(
             id=call_id,

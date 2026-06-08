@@ -24,27 +24,38 @@ def parse_tool_arguments(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _normalize_tool_call(call: ToolCall) -> tuple[str, dict[str, Any]]:
+    """Map LLM tool calls to MCP tools/call name and arguments."""
+    args = parse_tool_arguments(call.arguments)
+    tool_name = call.name
+
+    if tool_name == "mcp_call_tool":
+        tool_name = "callTool"
+
+    if not isinstance(args, dict):
+        raise ValueError("Tool arguments must be a flat object")
+
+    if tool_name == "callTool" and "toolName" in args and "arguments" not in args:
+        return tool_name, {
+            "toolName": args["toolName"],
+            "arguments": {},
+        }
+
+    return tool_name, args
+
+
 async def execute_tool(
     mcp_client: McpProxyClient,
     call: ToolCall,
 ) -> str:
-    """Execute a single LLM tool call."""
-    if call.name != "mcp_call_tool":
-        return f"Unsupported tool: {call.name}"
-
-    args = parse_tool_arguments(call.arguments)
-    tool_name = args.get("toolName")
-    if not tool_name:
-        return "Missing toolName in mcp_call_tool arguments"
-
-    tool_args = args.get("arguments")
-    if tool_args is None:
-        tool_args = {}
-    if not isinstance(tool_args, dict):
-        return "arguments must be a flat object"
+    """Execute a single LLM tool call via MCP tools/call."""
+    try:
+        tool_name, tool_args = _normalize_tool_call(call)
+    except ValueError as err:
+        return str(err)
 
     try:
-        result = await mcp_client.call_tool(str(tool_name), tool_args)
+        result = await mcp_client.call_tool(tool_name, tool_args)
     except HomeAssistantError as err:
         return f"Tool error: {err}"
     except Exception as err:

@@ -97,7 +97,7 @@ async def test_run_agent_executes_tool_then_replies() -> None:
     """Agent loop executes MCP tool before final answer."""
     tool_call = llm_client.ToolCall(
         id="call_1",
-        name="mcp_call_tool",
+        name="callTool",
         arguments=json.dumps(
             {
                 "toolName": "home_assistant__ha_call_service",
@@ -125,6 +125,21 @@ async def test_run_agent_executes_tool_then_replies() -> None:
 
     mock_mcp = MagicMock()
     mock_mcp.call_tool = AsyncMock(return_value='{"success": true}')
+    mock_mcp.get_session_prompt = AsyncMock(
+        return_value="MCP SERVER INSTRUCTIONS:\nUse searchToolsForDomain."
+    )
+    mock_mcp.get_llm_tools = AsyncMock(
+        return_value=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "callTool",
+                    "description": "Execute upstream tools",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    )
 
     backend = config_helpers.LlmBackend(
         base_url="http://example/v1",

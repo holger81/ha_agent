@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -10,6 +11,12 @@ import aiohttp
 from homeassistant.exceptions import HomeAssistantError
 
 from .config_helpers import McpConfig
+from .const import LOGGER, MCP_SESSION_TOOLS_TTL_SECONDS
+from .mcp_session import (
+    FALLBACK_MCP_TOOLS,
+    format_mcp_session_prompt,
+    mcp_tools_to_openai_schemas,
+)
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
@@ -28,6 +35,10 @@ class McpProxyClient:
         self._session_id: str | None = None
         self._request_id = 0
         self._initialized = False
+        self._init_result: dict[str, Any] = {}
+        self._instructions = ""
+        self._session_tools: list[dict[str, Any]] = []
+        self._session_tools_cached_at = 0.0
 
     @property
     def url(self) -> str:
@@ -67,10 +78,10 @@ class McpProxyClient:
         except aiohttp.ClientError as err:
             raise HomeAssistantError(f"Cannot reach MCP Proxy: {err}") from err
 
-    async def initialize(self) -> None:
-        """Initialize MCP session."""
+    async def initialize(self) -> dict[str, Any]:
+        """Initialize the MCP session and load protocol instructions."""
         if self._initialized:
-            return
+            return self._init_result
 
         result = await self._rpc(
             "initialize",
@@ -80,27 +91,89 @@ class McpProxyClient:
                 "clientInfo": {"name": "ha_agent", "version": "0.1.0"},
             },
         )
-        if not result:
+        if not isinstance(result, dict):
             raise HomeAssistantError("MCP initialize returned empty result")
+
+        self._init_result = result
+        self._instructions = str(result.get("instructions") or "").strip()
 
         await self._rpc("notifications/initialized", None, notification=True)
         self._initialized = True
+        await self._load_session_tools(force_refresh=True)
+        return self._init_result
+
+    async def ensure_session(self) -> None:
+        """Ensure MCP initialize and tools/list have completed."""
+        await self.initialize()
+        await self._load_session_tools()
+
+    async def get_session_prompt(self) -> str:
+        """Return MCP initialize instructions and session tool summary."""
+        await self.ensure_session()
+        return format_mcp_session_prompt(
+            instructions=self._instructions,
+            init_result=self._init_result,
+            session_tools=self._session_tools,
+        )
+
+    async def get_llm_tools(self) -> list[dict[str, Any]]:
+        """Return OpenAI-compatible schemas from MCP tools/list."""
+        await self.ensure_session()
+        tools = self._session_tools or FALLBACK_MCP_TOOLS
+        return mcp_tools_to_openai_schemas(tools)
+
+    async def _load_session_tools(self, *, force_refresh: bool = False) -> None:
+        """Fetch session-level tools via MCP tools/list."""
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._session_tools
+            and now - self._session_tools_cached_at < MCP_SESSION_TOOLS_TTL_SECONDS
+        ):
+            return
+
+        tools: list[dict[str, Any]] = []
+        cursor: str | None = None
+
+        while True:
+            params: dict[str, Any] = {}
+            if cursor:
+                params["cursor"] = cursor
+
+            result = await self._rpc("tools/list", params or None)
+            if not isinstance(result, dict):
+                break
+
+            page = result.get("tools") or []
+            if isinstance(page, list):
+                tools.extend(entry for entry in page if isinstance(entry, dict))
+
+            cursor = result.get("nextCursor")
+            if not cursor:
+                break
+
+        if tools:
+            self._session_tools = tools
+        elif not self._session_tools:
+            LOGGER.warning(
+                "MCP tools/list returned no tools; using discovery fallback set"
+            )
+            self._session_tools = list(FALLBACK_MCP_TOOLS)
+
+        self._session_tools_cached_at = now
 
     async def call_tool(
         self,
         tool_name: str,
         arguments: dict[str, Any] | None = None,
     ) -> Any:
-        """Call an upstream MCP tool via the proxy callTool wrapper."""
-        await self.initialize()
+        """Call an MCP tool via tools/call using the protocol tool name."""
+        await self.ensure_session()
         result = await self._rpc(
             "tools/call",
             {
-                "name": "callTool",
-                "arguments": {
-                    "toolName": tool_name,
-                    "arguments": arguments or {},
-                },
+                "name": tool_name,
+                "arguments": arguments or {},
             },
         )
         return self._extract_tool_result(result)

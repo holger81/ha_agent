@@ -35,6 +35,8 @@ DEFAULT_MCP_TIMEOUT = 120
 DEFAULT_MAX_AGENT_ITERATIONS = 8
 DEFAULT_CONVERSATION_HISTORY_TURNS = 10
 
+MCP_SESSION_TOOLS_TTL_SECONDS = 3600
+
 DEFAULT_AGENT_SYSTEM_PROMPT = (
     "You are a voice assistant for Home Assistant.\n"
     "Answer questions truthfully in plain text. Keep replies concise for speech.\n"
@@ -43,15 +45,9 @@ DEFAULT_AGENT_SYSTEM_PROMPT = (
 )
 
 DEFAULT_TOOL_INSTRUCTIONS = (
-    "MCP tools via mcp_call_tool only. Fields: toolName and arguments (flat). "
-    'Never add "value" or nest toolName inside arguments. '
-    'Light: {"toolName":"home_assistant__ha_call_service","arguments":{'
-    '"domain":"light","service":"turn_off","entity_id":"light.example"}}. '
-    'Cover: use open_cover/close_cover. '
-    'Search if needed: {"toolName":"home_assistant__ha_search_entities",'
-    '"arguments":{"query":"patio door","domain_filter":"cover"}}. '
-    'News: {"toolName":"mcp_news__news_curate","arguments":{}} once. '
-    "Never use searxng or generic web search for news."
+    "Follow MCP SERVER INSTRUCTIONS below. Use MCP session tools directly. "
+    "Discover upstream tools with searchToolsForDomain or searchTool, then "
+    "execute them with callTool using the exact toolName from discovery."
 )
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]

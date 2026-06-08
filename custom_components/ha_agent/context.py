@@ -24,6 +24,10 @@ _EMAIL_QUERY = re.compile(
     r"\b(emails?|e-mail|mail|inbox|unread)\b",
     re.IGNORECASE,
 )
+_CAPABILITY_QUERY = re.compile(
+    r"\b(what tools?|which tools?|what can you|what do you have access|capabilities)\b",
+    re.IGNORECASE,
+)
 
 
 def parse_exposed_entities(raw: Any) -> list[dict[str, Any]]:
@@ -110,27 +114,28 @@ def build_tool_context(query: str, exposed: list[dict[str, Any]]) -> str:
 
     if is_affirmative(query) or is_news_query(query):
         context_parts.append(
-            "NEWS: call mcp_news__news_curate with {} via mcp_call_tool once "
-            "(no searchToolsForDomain, no searxng), then summarize headlines."
+            "NEWS: follow MCP SERVER INSTRUCTIONS. Discover in domain news, "
+            "then callTool with the returned toolName."
         )
 
     if is_email_query(query):
         context_parts.append(
-            "EMAIL: use MCP mail tools via mcp_call_tool. Unread count: "
-            '{"toolName":"imap_mailbox_status","arguments":{"mailbox":"INBOX"}}. '
-            "Search messages: imap_search_messages with flat fields and required "
-            'mailbox. Do not search HA entities for email.'
+            "EMAIL: follow MCP SERVER INSTRUCTIONS. Discover in domain email "
+            "with searchToolsForDomain, then callTool. Do not search HA entities."
+        )
+
+    if _CAPABILITY_QUERY.search(query):
+        context_parts.append(
+            "CAPABILITIES: explain using MCP SERVER INSTRUCTIONS and MCP SESSION "
+            "TOOLS. Mention discovery domains such as email, news, and smart-home."
         )
 
     if is_device_action_query(query) and not any(
         entity_matches_query(entity, query) for entity in exposed
     ):
         context_parts.append(
-            "DEVICE ACTION: no exposed entity clearly matches. Search once with "
-            '{"toolName":"home_assistant__ha_search_entities","arguments":'
-            '{"query":"<keywords from user>","domain_filter":"cover"}} for '
-            "doors/covers, then ha_call_service. mcp_call_tool: top-level toolName "
-            "+ flat arguments only — never \"value\", never nested toolName."
+            "DEVICE ACTION: no exposed entity clearly matches. Discover in domain "
+            "smart-home with searchToolsForDomain, then callTool."
         )
 
     return "\n\n".join(context_parts)
@@ -140,11 +145,14 @@ def build_system_message(
     agent_system_prompt: str,
     tool_instructions: str,
     *,
+    mcp_session_prompt: str = "",
     tool_context: str = "",
     extra_system_prompt: str | None = None,
 ) -> str:
     """Assemble the system message for the LLM."""
     parts = [agent_system_prompt.strip(), tool_instructions.strip()]
+    if mcp_session_prompt.strip():
+        parts.append(mcp_session_prompt.strip())
     if tool_context.strip():
         parts.append(tool_context.strip())
     if extra_system_prompt and extra_system_prompt.strip():

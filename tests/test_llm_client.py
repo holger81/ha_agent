@@ -73,7 +73,7 @@ def test_parse_completion_with_embedded_tool_call() -> None:
     result = client._parse_completion(data)
 
     assert len(result.tool_calls) == 1
-    assert result.tool_calls[0].name == "mcp_call_tool"
+    assert result.tool_calls[0].name == "callTool"
     assert result.content is None
 
 
@@ -88,8 +88,10 @@ def test_parse_completion_with_tool_calls() -> None:
                         {
                             "id": "call_1",
                             "function": {
-                                "name": "mcp_call_tool",
-                                "arguments": '{"toolName":"mcp_news__news_curate"}',
+                                "name": "callTool",
+                                "arguments": (
+                                    '{"toolName":"mcp_news__news_curate","arguments":{}}'
+                                ),
                             },
                         }
                     ],
@@ -101,7 +103,7 @@ def test_parse_completion_with_tool_calls() -> None:
     result = client._parse_completion(data)
 
     assert len(result.tool_calls) == 1
-    assert result.tool_calls[0].name == "mcp_call_tool"
+    assert result.tool_calls[0].name == "callTool"
     assert "news_curate" in result.tool_calls[0].arguments
 
 

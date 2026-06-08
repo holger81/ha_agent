@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.core import HomeAssistant
 
 from .config_helpers import AgentConfig, LlmBackend
+from .const import LOGGER
 from .context import build_messages, build_system_message, build_tool_context
 from .embedded_tools import is_tool_call_only_text, strip_embedded_tool_markup
-from .llm_client import MCP_CALL_TOOL_SCHEMA, LlmClient
+from .llm_client import LlmClient
+from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
 from .tools import execute_tool, tool_result_message
 
@@ -33,10 +35,19 @@ async def run_agent(
     extra_system_prompt: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run the tool loop and yield assistant text deltas."""
+    mcp_session_prompt = ""
+    llm_tools = mcp_tools_to_openai_schemas(FALLBACK_MCP_TOOLS)
+    try:
+        mcp_session_prompt = await mcp_client.get_session_prompt()
+        llm_tools = await mcp_client.get_llm_tools()
+    except Exception as err:
+        LOGGER.warning("Failed to load MCP session: %s", err)
+
     tool_context = build_tool_context(user_text, exposed_entities)
     system_message = build_system_message(
         agent_config.system_prompt,
         agent_config.tool_instructions,
+        mcp_session_prompt=mcp_session_prompt,
         tool_context=tool_context,
         extra_system_prompt=extra_system_prompt,
     )
@@ -50,7 +61,7 @@ async def run_agent(
         history=history,
         user_text=user_text,
     )
-    tools = [MCP_CALL_TOOL_SCHEMA]
+    tools = llm_tools
     collected: list[str] = []
 
     for _ in range(agent_config.max_iterations):

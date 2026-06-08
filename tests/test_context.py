@@ -59,9 +59,10 @@ def test_format_exposed_entities() -> None:
 
 
 def test_build_tool_context_adds_news_hint() -> None:
-    """News queries receive MCP news hint."""
+    """News queries reference MCP discovery workflow."""
     tool_context = context.build_tool_context("What's the news?", [])
-    assert "news_curate" in tool_context
+    assert "domain news" in tool_context
+    assert "callTool" in tool_context
 
 
 def test_build_tool_context_adds_device_search_hint() -> None:
@@ -70,7 +71,8 @@ def test_build_tool_context_adds_device_search_hint() -> None:
         "open the patio door",
         [{"entity_id": "light.kitchen", "name": "Kitchen"}],
     )
-    assert "ha_search_entities" in tool_context
+    assert "smart-home" in tool_context
+    assert "searchToolsForDomain" in tool_context
 
 
 def test_entity_matches_query() -> None:
@@ -84,9 +86,29 @@ def test_entity_matches_query() -> None:
 
 
 def test_build_tool_context_adds_email_hint() -> None:
-    """Email queries receive MCP mail tool hint."""
+    """Email queries reference MCP discovery workflow."""
     tool_context = context.build_tool_context("do I have new emails", [])
-    assert "imap_mailbox_status" in tool_context
+    assert "domain email" in tool_context
+    assert "searchToolsForDomain" in tool_context
+
+
+def test_build_tool_context_adds_capability_hint() -> None:
+    """Capability questions reference MCP session context."""
+    tool_context = context.build_tool_context("what tools do you have access to?", [])
+    assert "MCP SERVER INSTRUCTIONS" in tool_context
+
+
+def test_build_system_message_includes_mcp_session_prompt() -> None:
+    """System message includes MCP initialize instructions."""
+    system_message = context.build_system_message(
+        "You are helpful.",
+        "Follow MCP instructions.",
+        mcp_session_prompt=(
+            "MCP SERVER INSTRUCTIONS:\nDiscover tools with searchToolsForDomain."
+        ),
+    )
+    assert "MCP SERVER INSTRUCTIONS" in system_message
+    assert "searchToolsForDomain" in system_message
 
 
 def test_is_email_query() -> None:

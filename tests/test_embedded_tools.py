@@ -44,7 +44,7 @@ def test_parse_direct_mcp_tool_call_from_screenshot() -> None:
     calls = embedded_tools.parse_embedded_tool_calls(content)
 
     assert len(calls) == 1
-    assert calls[0].name == "mcp_call_tool"
+    assert calls[0].name == "callTool"
     args = json.loads(calls[0].arguments)
     assert args["toolName"] == "home_assistant__ha_search_entities"
     assert args["arguments"]["query"] == "email"
