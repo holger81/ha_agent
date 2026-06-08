@@ -57,6 +57,9 @@ DEFAULT_TOOL_INSTRUCTIONS = (
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"
 
+# Assist entity exposure uses the global "conversation" assistant key, not DOMAIN.
+ASSIST_EXPOSE_ASSISTANT = "conversation"
+
 DATA_KEY = DOMAIN
 
 LOGGER: Logger = getLogger(__package__)

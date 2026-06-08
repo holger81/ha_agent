@@ -15,6 +15,7 @@ def _memory_store(hass: HomeAssistant) -> dict[str, list[dict[str, str]]]:
     return domain_data.setdefault(MEMORY_KEY, {})
 
 
+@callback
 def get_history(
     hass: HomeAssistant,
     conversation_id: str | None,
@@ -32,6 +33,7 @@ def get_history(
     return list(history)
 
 
+@callback
 def append_turn(
     hass: HomeAssistant,
     conversation_id: str | None,
@@ -58,6 +60,7 @@ def append_turn(
         store[conversation_id] = history[-max_messages:]
 
 
+@callback
 def clear_conversation(hass: HomeAssistant, conversation_id: str | None) -> None:
     """Clear stored history for a conversation."""
     if not conversation_id:

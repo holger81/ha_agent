@@ -17,7 +17,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .agent import run_agent
 from .config_helpers import get_agent_config, get_llm_backend, get_mcp_config
-from .const import DOMAIN, LOGGER, SUPPORTED_LANGUAGES
+from .const import ASSIST_EXPOSE_ASSISTANT, DOMAIN, LOGGER, SUPPORTED_LANGUAGES
 from .context import user_text_from_input
 from .llm_client import LlmClient
 from .mcp_client import McpProxyClient
@@ -32,16 +32,16 @@ async def async_setup_entry(
     async_add_entities([HaAgentConversationEntity(hass, config_entry)])
 
 
-def collect_exposed_entities(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def collect_exposed_entities(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Collect entities exposed to Assist for tool hints."""
     area_registry = ar.async_get(hass)
     entity_registry = er.async_get(hass)
     exposed: list[dict[str, Any]] = []
 
     for entry in entity_registry.entities.values():
-        if not async_should_expose(hass, conversation.DOMAIN, entry.entity_id):
+        if not async_should_expose(hass, ASSIST_EXPOSE_ASSISTANT, entry.entity_id):
             continue
-        state = hass.states.get(entry.entity_id)
+        state = hass.states.async_get(entry.entity_id)
         area_name = None
         if entry.area_id and (area := area_registry.async_get_area(entry.area_id)):
             area_name = area.name
@@ -120,7 +120,7 @@ class HaAgentConversationEntity(
 
         backend = get_llm_backend(self._entry)
         agent_config = get_agent_config(self._entry)
-        exposed = collect_exposed_entities(self.hass)
+        exposed = await collect_exposed_entities(self.hass)
 
         async def delta_stream() -> AsyncGenerator[dict[str, Any], None]:
             yield {"role": "assistant"}
@@ -153,13 +153,4 @@ class HaAgentConversationEntity(
                 conversation_id=chat_log.conversation_id,
             )
 
-        speech = ""
-        if chat_log.content:
-            speech = chat_log.content[-1].content or ""
-
-        intent_response.async_set_speech(speech or "Done.")
-        return conversation.ConversationResult(
-            response=intent_response,
-            conversation_id=chat_log.conversation_id,
-            continue_conversation=chat_log.continue_conversation,
-        )
+        return conversation.async_get_result_from_chat_log(user_input, chat_log)
