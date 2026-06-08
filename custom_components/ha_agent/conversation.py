@@ -68,6 +68,7 @@ class HaAgentConversationEntity(
 
     _attr_has_entity_name = True
     _attr_name = "HA Agent"
+    _attr_supported_features = conversation.ConversationEntityFeature.CONTROL
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the conversation entity."""

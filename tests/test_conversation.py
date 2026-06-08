@@ -79,6 +79,10 @@ def _load_conversation_module():
     class ConversationResult:
         pass
 
+    class ConversationEntityFeature:
+        CONTROL = 1
+
+    ha_conversation.ConversationEntityFeature = ConversationEntityFeature
     ha_conversation.ConversationEntity = ConversationEntity
     ha_conversation.AbstractConversationAgent = AbstractConversationAgent
     ha_conversation.ConversationInput = ConversationInput
