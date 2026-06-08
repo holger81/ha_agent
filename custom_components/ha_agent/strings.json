@@ -3,10 +3,10 @@
     "step": {
       "user": {
         "title": "Agent prompts",
-        "description": "Configure the conversation agent system prompt and MCP tool instructions.",
+        "description": "Configure voice/style prompts. Tool behavior comes from MCP SERVER INSTRUCTIONS at runtime; keep tool instructions as a short reminder only.",
         "data": {
           "agent_system_prompt": "Agent system prompt",
-          "tool_instructions": "Tool instructions"
+          "tool_instructions": "Tool instructions (short MCP reminder)"
         }
       },
       "llm": {

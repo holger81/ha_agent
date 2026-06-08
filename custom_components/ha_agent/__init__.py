@@ -6,7 +6,47 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
+from .const import (
+    CONF_AGENT_SYSTEM_PROMPT,
+    CONF_TOOL_INSTRUCTIONS,
+    CONFIG_ENTRY_VERSION,
+    DEFAULT_AGENT_SYSTEM_PROMPT,
+    DEFAULT_TOOL_INSTRUCTIONS,
+    LEGACY_TOOL_INSTRUCTION_MARKERS,
+)
+
 PLATFORMS: list[Platform] = [Platform.CONVERSATION]
+
+_LEGACY_AGENT_SYSTEM_PROMPT = (
+    "You are a voice assistant for Home Assistant.\n"
+    "Answer questions truthfully in plain text. Keep replies concise for speech.\n"
+    "When the user asks you to perform an action, ALWAYS use a tool.\n"
+    "When asked for news, use the MCP news tool — never invent headlines."
+)
+
+
+def _is_legacy_tool_instructions(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in LEGACY_TOOL_INSTRUCTION_MARKERS)
+
+
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Migrate config entries to current prompt defaults."""
+    version = config_entry.version
+    data = dict(config_entry.data)
+
+    if version == 1:
+        if _is_legacy_tool_instructions(data.get(CONF_TOOL_INSTRUCTIONS, "")):
+            data[CONF_TOOL_INSTRUCTIONS] = DEFAULT_TOOL_INSTRUCTIONS
+        if data.get(CONF_AGENT_SYSTEM_PROMPT) == _LEGACY_AGENT_SYSTEM_PROMPT:
+            data[CONF_AGENT_SYSTEM_PROMPT] = DEFAULT_AGENT_SYSTEM_PROMPT
+        hass.config_entries.async_update_entry(
+            config_entry,
+            data=data,
+            version=CONFIG_ENTRY_VERSION,
+        )
+
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

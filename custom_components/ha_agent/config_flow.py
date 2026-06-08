@@ -27,6 +27,7 @@ from .const import (
     CONF_MCP_TIMEOUT,
     CONF_MCP_URL,
     CONF_TOOL_INSTRUCTIONS,
+    CONFIG_ENTRY_VERSION,
     DEFAULT_AGENT_SYSTEM_PROMPT,
     DEFAULT_CONVERSATION_HISTORY_TURNS,
     DEFAULT_LLM_BASE_URL,
@@ -349,6 +350,7 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_create_entry(
                 title="HA Agent",
                 data=self._data,
+                version=CONFIG_ENTRY_VERSION,
             )
 
         return self.async_show_form(

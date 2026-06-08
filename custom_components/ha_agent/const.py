@@ -41,14 +41,17 @@ DEFAULT_AGENT_SYSTEM_PROMPT = (
     "You are a voice assistant for Home Assistant.\n"
     "Answer questions truthfully in plain text. Keep replies concise for speech.\n"
     "When the user asks you to perform an action, ALWAYS use a tool.\n"
-    "When asked for news, use the MCP news tool — never invent headlines."
+    "Never invent facts; use tools to fetch real data."
 )
 
 DEFAULT_TOOL_INSTRUCTIONS = (
-    "Follow MCP SERVER INSTRUCTIONS below. Use MCP session tools directly. "
-    "Discover upstream tools with searchToolsForDomain or searchTool, then "
-    "execute them with callTool using the exact toolName from discovery."
+    "Follow MCP SERVER INSTRUCTIONS and use the provided session tools."
 )
+
+# Saved during setup before MCP-compliant defaults; reset on upgrade.
+LEGACY_TOOL_INSTRUCTION_MARKERS = ("mcp_call_tool",)
+
+CONFIG_ENTRY_VERSION = 2
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"
