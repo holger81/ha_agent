@@ -62,7 +62,6 @@ async def run_agent(
         user_text=user_text,
     )
     tools = llm_tools
-    collected: list[str] = []
 
     for _ in range(agent_config.max_iterations):
         result = await llm.chat(messages, backend, tools=tools)
@@ -74,11 +73,17 @@ async def run_agent(
             continue
 
         if agent_config.enable_streaming:
+            streamed: list[str] = []
             async for delta in llm.chat_stream(messages, backend):
-                collected.append(delta)
-            assistant_text = strip_embedded_tool_markup("".join(collected))
-            if assistant_text:
-                yield assistant_text
+                streamed.append(delta)
+                yield delta
+            assistant_text = strip_embedded_tool_markup("".join(streamed))
+            if not assistant_text:
+                assistant_text = strip_embedded_tool_markup(
+                    (result.content or "").strip()
+                )
+                if assistant_text:
+                    yield assistant_text
         else:
             assistant_text = (result.content or "").strip()
             if assistant_text and not is_tool_call_only_text(assistant_text):

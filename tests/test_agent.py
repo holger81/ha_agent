@@ -184,3 +184,62 @@ async def test_run_agent_executes_tool_then_replies() -> None:
     assert chunks == ["Done."]
     assert mock_llm.chat.await_count == 2
     mock_mcp.call_tool.assert_awaited_once()
+
+
+def _make_stream(text: str):
+    async def _stream(_messages, _backend):
+        for char in text:
+            yield char
+
+    return _stream
+
+
+@pytest.mark.asyncio
+async def test_run_agent_yields_stream_deltas_to_assist() -> None:
+    """Streaming mode forwards LLM deltas instead of one buffered reply."""
+    result = llm_client.ChatResult(content="Hello there.", tool_calls=[])
+
+    mock_llm = MagicMock()
+    mock_llm.chat = AsyncMock(return_value=result)
+    mock_llm.chat_stream = _make_stream("Hello there.")
+
+    mock_mcp = MagicMock()
+    mock_mcp.get_session_prompt = AsyncMock(return_value="")
+    mock_mcp.get_llm_tools = AsyncMock(return_value=[])
+
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        enable_thinking=False,
+    )
+    agent_config = config_helpers.AgentConfig(
+        system_prompt="Test agent",
+        tool_instructions="Use tools",
+        max_iterations=4,
+        history_turns=2,
+        enable_streaming=True,
+    )
+
+    hass = MagicMock()
+    hass.data = {}
+
+    chunks = [
+        chunk
+        async for chunk in agent_mod.run_agent(
+            hass,
+            llm=mock_llm,
+            mcp_client=mock_mcp,
+            backend=backend,
+            agent_config=agent_config,
+            conversation_id="test-conv",
+            user_text="hi",
+            exposed_entities=[],
+        )
+    ]
+
+    assert chunks == list("Hello there.")
+    assert mock_llm.chat.await_count == 1
