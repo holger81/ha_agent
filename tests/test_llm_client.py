@@ -54,6 +54,29 @@ llm_client = _load_module("llm_client")
 config_helpers = _load_module("config_helpers")
 
 
+def test_parse_completion_with_embedded_tool_call() -> None:
+    """Embedded Gemma-style tool calls in content are parsed."""
+    data = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '<|tool_call|>call:home_assistant__ha_search_entities'
+                        '{arguments: {query:"email"}}<tool_call|>'
+                    ),
+                    "tool_calls": [],
+                }
+            }
+        ]
+    }
+    client = llm_client.LlmClient(MagicMock())
+    result = client._parse_completion(data)
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "mcp_call_tool"
+    assert result.content is None
+
+
 def test_parse_completion_with_tool_calls() -> None:
     """Tool calls are parsed from chat completion JSON."""
     data = {

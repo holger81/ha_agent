@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 
 from .config_helpers import AgentConfig, LlmBackend
 from .context import build_messages, build_system_message, build_tool_context
+from .embedded_tools import is_tool_call_only_text, strip_embedded_tool_markup
 from .llm_client import MCP_CALL_TOOL_SCHEMA, LlmClient
 from .memory import append_turn, get_history
 from .tools import execute_tool, tool_result_message
@@ -64,12 +65,15 @@ async def run_agent(
         if agent_config.enable_streaming:
             async for delta in llm.chat_stream(messages, backend):
                 collected.append(delta)
-                yield delta
-            assistant_text = "".join(collected)
-        else:
-            assistant_text = (result.content or "").strip()
+            assistant_text = strip_embedded_tool_markup("".join(collected))
             if assistant_text:
                 yield assistant_text
+        else:
+            assistant_text = (result.content or "").strip()
+            if assistant_text and not is_tool_call_only_text(assistant_text):
+                yield assistant_text
+            elif assistant_text:
+                assistant_text = ""
 
         append_turn(
             hass,

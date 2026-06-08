@@ -20,6 +20,10 @@ _DEVICE_ACTION = re.compile(
     r"\b(open|close|turn on|turn off|toggle|lock|unlock)\b",
     re.IGNORECASE,
 )
+_EMAIL_QUERY = re.compile(
+    r"\b(emails?|e-mail|mail|inbox|unread)\b",
+    re.IGNORECASE,
+)
 
 
 def parse_exposed_entities(raw: Any) -> list[dict[str, Any]]:
@@ -72,6 +76,11 @@ def is_device_action_query(query: str) -> bool:
     return bool(_DEVICE_ACTION.search(query))
 
 
+def is_email_query(query: str) -> bool:
+    """Return True when the user asks about email."""
+    return bool(_EMAIL_QUERY.search(query))
+
+
 def entity_matches_query(entity: dict[str, Any], query: str) -> bool:
     """Return True when an exposed entity matches query tokens."""
     parts: list[str] = []
@@ -103,6 +112,14 @@ def build_tool_context(query: str, exposed: list[dict[str, Any]]) -> str:
         context_parts.append(
             "NEWS: call mcp_news__news_curate with {} via mcp_call_tool once "
             "(no searchToolsForDomain, no searxng), then summarize headlines."
+        )
+
+    if is_email_query(query):
+        context_parts.append(
+            "EMAIL: use MCP mail tools via mcp_call_tool. Unread count: "
+            '{"toolName":"imap_mailbox_status","arguments":{"mailbox":"INBOX"}}. '
+            "Search messages: imap_search_messages with flat fields and required "
+            'mailbox. Do not search HA entities for email.'
         )
 
     if is_device_action_query(query) and not any(

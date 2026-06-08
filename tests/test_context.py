@@ -81,3 +81,15 @@ def test_entity_matches_query() -> None:
         "aliases": ["Jonathan patio"],
     }
     assert context.entity_matches_query(entity, "open Jonathan patio door")
+
+
+def test_build_tool_context_adds_email_hint() -> None:
+    """Email queries receive MCP mail tool hint."""
+    tool_context = context.build_tool_context("do I have new emails", [])
+    assert "imap_mailbox_status" in tool_context
+
+
+def test_is_email_query() -> None:
+    """Email intent detection works."""
+    assert context.is_email_query("do I have new emails")
+    assert not context.is_email_query("turn off the lights")

@@ -12,6 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .config_helpers import LlmBackend
 from .const import LOGGER
+from .embedded_tools import parse_embedded_tool_calls, strip_embedded_tool_markup
 
 MCP_CALL_TOOL_SCHEMA: dict[str, Any] = {
     "type": "function",
@@ -224,12 +225,31 @@ class LlmClient:
                 )
             )
 
+        if not tool_calls and content:
+            for index, embedded in enumerate(parse_embedded_tool_calls(content)):
+                tool_calls.append(
+                    ToolCall(
+                        id=embedded.id or f"call_embedded_{index}",
+                        name=embedded.name,
+                        arguments=embedded.arguments,
+                    )
+                )
+            if tool_calls:
+                content = strip_embedded_tool_markup(content) or None
+
         assistant_message = {
             "role": "assistant",
             "content": content,
         }
         if tool_calls:
-            assistant_message["tool_calls"] = raw_tool_calls
+            assistant_message["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in tool_calls
+            ]
 
         return ChatResult(
             content=content,
