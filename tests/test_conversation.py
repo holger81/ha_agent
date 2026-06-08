@@ -155,7 +155,7 @@ async def test_collect_exposed_entities_uses_entity_registry_get() -> None:
     state.state = "on"
 
     hass = MagicMock()
-    hass.states.async_get.return_value = state
+    hass.states.get.return_value = state
 
     import homeassistant.helpers.entity_registry as er
 

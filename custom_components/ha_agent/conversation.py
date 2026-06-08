@@ -41,7 +41,7 @@ async def collect_exposed_entities(hass: HomeAssistant) -> list[dict[str, Any]]:
     for entry in entity_registry.entities.values():
         if not async_should_expose(hass, ASSIST_EXPOSE_ASSISTANT, entry.entity_id):
             continue
-        state = hass.states.async_get(entry.entity_id)
+        state = hass.states.get(entry.entity_id)
         area_name = None
         if entry.area_id and (area := area_registry.async_get_area(entry.area_id)):
             area_name = area.name
