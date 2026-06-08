@@ -22,6 +22,8 @@ from .context import user_text_from_input
 from .llm_client import LlmClient
 from .mcp_client import McpProxyClient
 
+EMPTY_RESPONSE_MESSAGE = "Sorry, I didn't get a response."
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -122,7 +124,10 @@ class HaAgentConversationEntity(
         agent_config = get_agent_config(self._entry)
         exposed = await collect_exposed_entities(self.hass)
 
+        produced_content = False
+
         async def delta_stream() -> AsyncGenerator[dict[str, Any], None]:
+            nonlocal produced_content
             yield {"role": "assistant"}
             async for chunk in run_agent(
                 self.hass,
@@ -135,7 +140,12 @@ class HaAgentConversationEntity(
                 exposed_entities=exposed,
                 extra_system_prompt=user_input.extra_system_prompt,
             ):
+                if not chunk:
+                    continue
+                produced_content = True
                 yield {"content": chunk}
+            if not produced_content:
+                yield {"content": EMPTY_RESPONSE_MESSAGE}
 
         try:
             async for _content in chat_log.async_add_delta_content_stream(
