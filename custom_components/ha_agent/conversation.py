@@ -35,9 +35,10 @@ async def async_setup_entry(
 def collect_exposed_entities(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Collect entities exposed to Assist for tool hints."""
     area_registry = ar.async_get(hass)
+    entity_registry = er.async_get(hass)
     exposed: list[dict[str, Any]] = []
 
-    for entry in er.async_entries(hass):
+    for entry in entity_registry.entities.values():
         if not async_should_expose(hass, conversation.DOMAIN, entry.entity_id):
             continue
         state = hass.states.get(entry.entity_id)
