@@ -35,6 +35,21 @@ def _load_module(name: str):
 embedded_tools = _load_module("embedded_tools")
 
 
+def test_parse_compact_gemma_tool_call_from_screenshot() -> None:
+    """Gemma compact call:TOOL{query:<|"|>...} blocks are parsed."""
+    content = (
+        '<|tool_call|>call:home_assistant__ha_search_entities'
+        '{query:<|"|>camera snapshot<|"|>}<tool_call|>'
+    )
+    calls = embedded_tools.parse_embedded_tool_calls(content)
+
+    assert len(calls) == 1
+    assert calls[0].name == "callTool"
+    args = json.loads(calls[0].arguments)
+    assert args["toolName"] == "home_assistant__ha_search_entities"
+    assert args["arguments"]["query"] == "camera snapshot"
+
+
 def test_parse_direct_mcp_tool_call_from_screenshot() -> None:
     """Gemma-style call:TOOL{arguments:{...}} blocks are parsed."""
     content = (

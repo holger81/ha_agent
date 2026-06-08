@@ -15,6 +15,11 @@ _DIRECT_CALL = re.compile(
     r"^call:(?P<name>[a-zA-Z0-9_]+)\s*\{\s*arguments:\s*(?P<args>\{.*\})\s*\}\s*$",
     re.DOTALL | re.IGNORECASE,
 )
+_COMPACT_CALL = re.compile(
+    r"^call:(?P<name>[a-zA-Z0-9_]+)\{(?P<body>.*)\}\s*$",
+    re.DOTALL | re.IGNORECASE,
+)
+_GEMMA_STRING_QUOTE = re.compile(r'<\|"\|>')
 
 
 @dataclass(slots=True)
@@ -24,6 +29,11 @@ class ParsedToolCall:
     id: str
     name: str
     arguments: str
+
+
+def _normalize_gemma_tokens(text: str) -> str:
+    """Normalize Gemma-specific string tokens in tool-call text."""
+    return _GEMMA_STRING_QUOTE.sub('"', text)
 
 
 def _parse_js_like_object(raw: str) -> dict[str, Any]:
@@ -41,6 +51,32 @@ def _parse_js_like_object(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _parse_compact_call_body(body: str) -> dict[str, Any]:
+    """Parse call:tool{field:value,...} bodies from Gemma templates."""
+    normalized = _normalize_gemma_tokens(body.strip())
+    if normalized.startswith("arguments:"):
+        return _parse_js_like_object(normalized[len("arguments:") :].strip())
+    if not normalized.startswith("{"):
+        normalized = f"{{{normalized}}}"
+    return _parse_js_like_object(normalized)
+
+
+def _tool_call_from_name_and_args(
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    call_id: str,
+) -> ParsedToolCall:
+    """Build a parsed tool call for session or upstream MCP tools."""
+    if tool_name in {"callTool", "searchTool", "searchToolsForDomain"}:
+        call = _direct_mcp_tool_call(tool_name, args)
+    elif "__" in tool_name:
+        call = _legacy_call_tool(tool_name, args)
+    else:
+        call = _direct_mcp_tool_call(tool_name, args)
+    return ParsedToolCall(id=call_id, name=call.name, arguments=call.arguments)
 
 
 def _direct_mcp_tool_call(tool_name: str, arguments: dict[str, Any]) -> ParsedToolCall:
@@ -73,13 +109,13 @@ def _parse_tool_call_block(block: str, *, call_id: str) -> ParsedToolCall | None
     if direct := _DIRECT_CALL.match(text):
         tool_name = direct.group("name")
         args = _parse_js_like_object(direct.group("args"))
-        if tool_name in {"callTool", "searchTool", "searchToolsForDomain"}:
-            call = _direct_mcp_tool_call(tool_name, args)
-        elif "__" in tool_name:
-            call = _legacy_call_tool(tool_name, args)
-        else:
-            call = _direct_mcp_tool_call(tool_name, args)
-        return ParsedToolCall(id=call_id, name=call.name, arguments=call.arguments)
+        return _tool_call_from_name_and_args(tool_name, args, call_id=call_id)
+
+    if compact := _COMPACT_CALL.match(text):
+        tool_name = compact.group("name")
+        args = _parse_compact_call_body(compact.group("body"))
+        if args:
+            return _tool_call_from_name_and_args(tool_name, args, call_id=call_id)
 
     if text.startswith("{"):
         payload = _parse_js_like_object(text)

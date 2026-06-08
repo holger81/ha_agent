@@ -10,8 +10,12 @@ from homeassistant.core import HomeAssistant
 from .config_helpers import AgentConfig, LlmBackend
 from .const import LOGGER
 from .context import build_messages, build_system_message, build_tool_context
-from .embedded_tools import is_tool_call_only_text, strip_embedded_tool_markup
-from .llm_client import LlmClient
+from .embedded_tools import (
+    is_tool_call_only_text,
+    parse_embedded_tool_calls,
+    strip_embedded_tool_markup,
+)
+from .llm_client import LlmClient, ToolCall
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
 from .tools import execute_tool, tool_result_message
@@ -20,6 +24,28 @@ if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
 
 FALLBACK_MESSAGE = "Sorry, I couldn't complete that request."
+
+
+async def _execute_embedded_tool_calls(
+    mcp_client: McpProxyClient,
+    content: str,
+    messages: list[dict[str, Any]],
+) -> bool:
+    """Parse and run embedded tool calls from model text. Return True if any ran."""
+    embedded = parse_embedded_tool_calls(content)
+    if not embedded:
+        return False
+
+    messages.append({"role": "assistant", "content": content})
+    for index, call in enumerate(embedded):
+        tool_call = ToolCall(
+            id=call.id or f"call_embedded_{index}",
+            name=call.name,
+            arguments=call.arguments,
+        )
+        output = await execute_tool(mcp_client, tool_call)
+        messages.append(tool_result_message(tool_call, output))
+    return True
 
 
 async def run_agent(
@@ -72,13 +98,30 @@ async def run_agent(
                 messages.append(tool_result_message(call, output))
             continue
 
+        if await _execute_embedded_tool_calls(
+            mcp_client,
+            (result.content or "").strip(),
+            messages,
+        ):
+            continue
+
         if agent_config.enable_streaming:
             streamed: list[str] = []
             async for delta in llm.chat_stream(messages, backend):
                 streamed.append(delta)
-                yield delta
-            assistant_text = strip_embedded_tool_markup("".join(streamed))
-            if not assistant_text:
+            streamed_text = "".join(streamed)
+            if await _execute_embedded_tool_calls(
+                mcp_client,
+                streamed_text,
+                messages,
+            ):
+                continue
+
+            assistant_text = strip_embedded_tool_markup(streamed_text)
+            if assistant_text:
+                for delta in streamed:
+                    yield delta
+            elif (result.content or "").strip():
                 assistant_text = strip_embedded_tool_markup(
                     (result.content or "").strip()
                 )

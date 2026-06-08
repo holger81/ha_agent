@@ -243,3 +243,67 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
 
     assert chunks == list("Hello there.")
     assert mock_llm.chat.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_executes_embedded_stream_tool_call() -> None:
+    """Embedded tool markup in a stream is executed, not shown to the user."""
+    tool_markup = (
+        '<|tool_call|>call:home_assistant__ha_search_entities'
+        '{query:<|"|>camera snapshot<|"|>}<tool_call|>'
+    )
+    result = llm_client.ChatResult(content=None, tool_calls=[])
+    final = llm_client.ChatResult(content="Found the camera.", tool_calls=[])
+    stream_texts = iter([tool_markup, "Found the camera."])
+
+    mock_llm = MagicMock()
+    mock_llm.chat = AsyncMock(side_effect=[result, final])
+    mock_llm.chat_stream = MagicMock(
+        side_effect=lambda _messages, _backend: _make_stream(next(stream_texts))(
+            _messages,
+            _backend,
+        )
+    )
+
+    mock_mcp = MagicMock()
+    mock_mcp.call_tool = AsyncMock(return_value='{"entities": []}')
+    mock_mcp.get_session_prompt = AsyncMock(return_value="")
+    mock_mcp.get_llm_tools = AsyncMock(return_value=[])
+
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        enable_thinking=False,
+    )
+    agent_config = config_helpers.AgentConfig(
+        system_prompt="Test agent",
+        tool_instructions="Use tools",
+        max_iterations=4,
+        history_turns=2,
+        enable_streaming=True,
+    )
+
+    hass = MagicMock()
+    hass.data = {}
+
+    chunks = [
+        chunk
+        async for chunk in agent_mod.run_agent(
+            hass,
+            llm=mock_llm,
+            mcp_client=mock_mcp,
+            backend=backend,
+            agent_config=agent_config,
+            conversation_id="test-conv",
+            user_text="snapshot the front door",
+            exposed_entities=[],
+        )
+    ]
+
+    assert tool_markup not in "".join(chunks)
+    assert chunks == list("Found the camera.")
+    mock_mcp.call_tool.assert_awaited_once()
