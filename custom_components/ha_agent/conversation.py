@@ -17,7 +17,12 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .agent import run_agent
-from .config_helpers import get_agent_config, get_llm_backend, get_mcp_config
+from .config_helpers import (
+    get_agent_config,
+    get_llm_backend,
+    get_mcp_config,
+    get_router_config,
+)
 from .const import (
     ASSIST_EXPOSE_ASSISTANT,
     CONF_LLM_MODEL,
@@ -136,6 +141,7 @@ class HaAgentConversationEntity(
 
         backend = get_llm_backend(self._entry)
         agent_config = get_agent_config(self._entry)
+        router_config = get_router_config(self._entry)
         exposed = await collect_exposed_entities(self.hass)
 
         produced_content = False
@@ -149,6 +155,8 @@ class HaAgentConversationEntity(
                 mcp_client=self._mcp,
                 backend=backend,
                 agent_config=agent_config,
+                router_config=router_config,
+                entry_id=self._entry.entry_id,
                 conversation_id=chat_log.conversation_id,
                 user_text=user_text,
                 exposed_entities=exposed,
@@ -177,4 +185,14 @@ class HaAgentConversationEntity(
                 conversation_id=chat_log.conversation_id,
             )
 
-        return conversation.async_get_result_from_chat_log(user_input, chat_log)
+        try:
+            return conversation.async_get_result_from_chat_log(user_input, chat_log)
+        except Exception as err:
+            LOGGER.exception("HA Agent failed building chat result: %s", err)
+            intent_response.async_set_speech(
+                "Sorry, something went wrong while processing your request."
+            )
+            return conversation.ConversationResult(
+                response=intent_response,
+                conversation_id=chat_log.conversation_id,
+            )

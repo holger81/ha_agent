@@ -119,18 +119,21 @@ Phase 5 adds **router options** (still UI-only):
 
 **Scope:** Optional routing to different LLM backends for latency/reliability. **Not** topic-specific bypasses.
 
-#### Tasks
+#### Status
 
-1. **`router.py`** — optional `TaskRoute.HA_ACTION` vs `TaskRoute.CHAT` for backend selection only
-2. **Options flow** — separate action model URL/model/temperature behind toggle
-3. **MCP client hardening** — friendly error messages, smoke test script
-4. **Tests** — `test_router.py`, `test_mcp_client.py`
+- [x] `router.py` — `TaskRoute.HA_ACTION` vs `TaskRoute.CHAT`
+- [x] Action model config step + device **Configuration** selects (chat + action)
+- [x] Options flow — chat and action model dropdowns
+- [x] Diagnostic sensors (last route, MCP tools, LLM/MCP reachability)
+- [x] MCP friendly auth/timeout errors
+- [x] `scripts/smoke_test_mcp.py`
+- [x] Tests — `test_router.py`, `test_mcp_errors.py`
 
 #### Exit criteria
 
-- [ ] Optional action route uses action backend when configured (device commands only)
-- [ ] MCP bearer auth failure shows friendly error in Assist
-- [ ] `scripts/smoke_test_mcp.py` calls `news_curate` via direct MCP
+- [x] Optional action route uses action backend for device commands (unit test)
+- [x] MCP bearer auth failure shows friendly error message
+- [x] `scripts/smoke_test_mcp.py` calls MCP tools (default `news_curate`)
 
 ---
 
@@ -208,4 +211,4 @@ Phase 5 adds **router options** (still UI-only):
 
 ## Next action
 
-**Phase 4 complete.** Start **Phase 5** — optional action-model router (`router.py`), MCP error polish, and `scripts/smoke_test_mcp.py`.
+**Phase 5 complete.** Start **Phase 6** — full n8n retirement, HACS polish, and end-to-end migration docs.

@@ -8,17 +8,29 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
+    CONF_ACTION_LLM_BASE_URL,
+    CONF_ACTION_LLM_MAX_TOKENS,
+    CONF_ACTION_LLM_MODEL,
+    CONF_ACTION_LLM_TEMPERATURE,
+    CONF_ACTION_MODEL_ENABLED,
     CONF_AGENT_SYSTEM_PROMPT,
     CONF_LLM_MODEL,
     CONF_TOOL_INSTRUCTIONS,
     CONFIG_ENTRY_VERSION,
+    DEFAULT_ACTION_LLM_MAX_TOKENS,
+    DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
     DEFAULT_TOOL_INSTRUCTIONS,
     DOMAIN,
     LEGACY_TOOL_INSTRUCTION_MARKERS,
 )
 
-PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.SELECT]
+PLATFORMS: list[Platform] = [
+    Platform.CONVERSATION,
+    Platform.SELECT,
+    Platform.SWITCH,
+    Platform.SENSOR,
+]
 
 _LEGACY_AGENT_SYSTEM_PROMPT = (
     "You are a voice assistant for Home Assistant.\n"
@@ -34,7 +46,7 @@ def _is_legacy_tool_instructions(text: str) -> bool:
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    """Migrate config entries to current prompt defaults."""
+    """Migrate config entries to current schema."""
     version = config_entry.version
     data = dict(config_entry.data)
 
@@ -43,10 +55,24 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             data[CONF_TOOL_INSTRUCTIONS] = DEFAULT_TOOL_INSTRUCTIONS
         if data.get(CONF_AGENT_SYSTEM_PROMPT) == _LEGACY_AGENT_SYSTEM_PROMPT:
             data[CONF_AGENT_SYSTEM_PROMPT] = DEFAULT_AGENT_SYSTEM_PROMPT
+        version = 2
+
+    if version == 2:
+        data.setdefault(CONF_ACTION_MODEL_ENABLED, False)
+        data.setdefault(CONF_ACTION_LLM_BASE_URL, "")
+        data.setdefault(CONF_ACTION_LLM_MODEL, "")
+        data.setdefault(
+            CONF_ACTION_LLM_TEMPERATURE,
+            DEFAULT_ACTION_LLM_TEMPERATURE,
+        )
+        data.setdefault(CONF_ACTION_LLM_MAX_TOKENS, DEFAULT_ACTION_LLM_MAX_TOKENS)
+        version = CONFIG_ENTRY_VERSION
+
+    if version != config_entry.version:
         hass.config_entries.async_update_entry(
             config_entry,
             data=data,
-            version=CONFIG_ENTRY_VERSION,
+            version=version,
         )
 
     return True

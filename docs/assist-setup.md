@@ -25,13 +25,23 @@ Use **[HA Agent](https://github.com/holger81/ha_agent)** (this integration) for 
    - **MCP Proxy** — URL, bearer token, health URL
    - **Agent settings** — max iterations, history turns, streaming
 
-## Change the LLM model later
+## Change models and routing later
 
-Three ways (no full reconfigure needed):
+On the **HA Agent device** page (like Zigbee device settings):
 
-1. **Device page** — open the **HA Agent** device → **Configuration** → **LLM model** dropdown (like Zigbee device settings)
-2. **Integration options** — **Settings → Devices & services → HA Agent → Configure → Change LLM model**
-3. **Reconfigure** — full setup wizard if you also need to change LLM URL or MCP settings
+| Section | Entity | Purpose |
+|---------|--------|---------|
+| **Configuration** | Chat model | Main conversational model |
+| **Configuration** | Action model | Faster model for device commands (when routing enabled) |
+| **Configuration** | Action model routing | Toggle separate action model |
+| **Diagnostic** | Last route | `chat` or `action` for the last Assist turn |
+| **Diagnostic** | MCP tools | Number of session tools loaded |
+| **Diagnostic** | LLM server / MCP Proxy | `online` / `offline` health |
+
+Other ways to change models:
+
+1. **Integration options** — **Settings → Devices & services → HA Agent → Configure → Models and routing**
+2. **Reconfigure** — full setup wizard (LLM URL, MCP, action model step)
 
 ## Configure the Assist pipeline
 

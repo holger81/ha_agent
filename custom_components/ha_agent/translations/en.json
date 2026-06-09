@@ -32,6 +32,17 @@
           "mcp_health_url": "Health check URL"
         }
       },
+      "action_model": {
+        "title": "Action model (optional)",
+        "description": "Use a smaller/faster model for device commands. The chat model still answers after tools run.",
+        "data": {
+          "action_model_enabled": "Enable action model routing",
+          "action_llm_base_url": "Action LLM base URL (optional)",
+          "action_llm_model": "Action model",
+          "action_llm_temperature": "Action temperature",
+          "action_llm_max_tokens": "Action max tokens"
+        }
+      },
       "agent_settings": {
         "title": "Agent settings",
         "description": "Configure agent loop behaviour and streaming.",
@@ -53,18 +64,48 @@
   "options": {
     "step": {
       "init": {
-        "title": "Change LLM model",
-        "description": "Pick a model from your LLM server without re-running the full setup.",
+        "title": "Models and routing",
+        "description": "Pick chat and action models from your LLM server without re-running the full setup.",
         "data": {
-          "llm_model": "Model"
+          "llm_model": "Chat model",
+          "action_model_enabled": "Enable action model routing",
+          "action_llm_model": "Action model"
         }
       }
     }
   },
   "entity": {
     "select": {
-      "llm_model": {
-        "name": "LLM model"
+      "chat_model": {
+        "name": "Chat model"
+      },
+      "action_model": {
+        "name": "Action model"
+      }
+    },
+    "switch": {
+      "action_model_routing": {
+        "name": "Action model routing"
+      }
+    },
+    "sensor": {
+      "last_route": {
+        "name": "Last route"
+      },
+      "mcp_tool_count": {
+        "name": "MCP tools"
+      },
+      "chat_model_status": {
+        "name": "Chat model"
+      },
+      "action_model_status": {
+        "name": "Action model"
+      },
+      "llm_reachable": {
+        "name": "LLM server"
+      },
+      "mcp_reachable": {
+        "name": "MCP Proxy"
       }
     }
   }

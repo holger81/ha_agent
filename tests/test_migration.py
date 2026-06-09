@@ -39,6 +39,8 @@ def _ensure_ha_stubs() -> None:
         ha_const.Platform = types.SimpleNamespace(
             CONVERSATION="conversation",
             SELECT="select",
+            SWITCH="switch",
+            SENSOR="sensor",
         )
         sys.modules["homeassistant.const"] = ha_const
 
@@ -114,4 +116,27 @@ async def test_migrate_entry_resets_legacy_tool_instructions() -> None:
     data = kwargs["data"]
     assert data[const.CONF_TOOL_INSTRUCTIONS] == const.DEFAULT_TOOL_INSTRUCTIONS
     assert data[const.CONF_AGENT_SYSTEM_PROMPT] == const.DEFAULT_AGENT_SYSTEM_PROMPT
+    assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
+
+
+@pytest.mark.asyncio
+async def test_migrate_entry_adds_action_model_defaults() -> None:
+    """Version 2 entries gain action-model routing defaults."""
+    ha_agent = _load_init_module()
+    const = sys.modules["ha_agent.const"]
+
+    entry = MagicMock()
+    entry.version = 2
+    entry.data = {
+        const.CONF_LLM_MODEL: "test-model",
+    }
+
+    hass = MagicMock()
+    await ha_agent.async_migrate_entry(hass, entry)
+
+    hass.config_entries.async_update_entry.assert_called_once()
+    _args, kwargs = hass.config_entries.async_update_entry.call_args
+    data = kwargs["data"]
+    assert data[const.CONF_ACTION_MODEL_ENABLED] is False
+    assert data[const.CONF_ACTION_LLM_MODEL] == ""
     assert kwargs["version"] == const.CONFIG_ENTRY_VERSION

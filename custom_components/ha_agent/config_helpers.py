@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from .const import (
+    CONF_ACTION_LLM_BASE_URL,
+    CONF_ACTION_LLM_MAX_TOKENS,
+    CONF_ACTION_LLM_MODEL,
+    CONF_ACTION_LLM_TEMPERATURE,
+    CONF_ACTION_MODEL_ENABLED,
     CONF_AGENT_SYSTEM_PROMPT,
     CONF_CONVERSATION_ENABLE_STREAMING,
     CONF_CONVERSATION_HISTORY_TURNS,
@@ -23,6 +28,8 @@ from .const import (
     CONF_MCP_TIMEOUT,
     CONF_MCP_URL,
     CONF_TOOL_INSTRUCTIONS,
+    DEFAULT_ACTION_LLM_MAX_TOKENS,
+    DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
     DEFAULT_CONVERSATION_HISTORY_TURNS,
     DEFAULT_LLM_BASE_URL,
@@ -74,6 +81,14 @@ class AgentConfig:
     enable_streaming: bool
 
 
+@dataclass(frozen=True, slots=True)
+class RouterConfig:
+    """Optional action-model routing settings."""
+
+    action_enabled: bool
+    action_backend: LlmBackend | None
+
+
 def default_mcp_health_url(mcp_url: str) -> str:
     """Derive MCP health URL from the MCP endpoint."""
     parsed = urlparse(mcp_url.rstrip("/"))
@@ -103,6 +118,41 @@ def get_mcp_config(entry: ConfigEntry) -> McpConfig:
         bearer_token=data.get(CONF_MCP_BEARER_TOKEN) or None,
         timeout=int(data.get(CONF_MCP_TIMEOUT, DEFAULT_MCP_TIMEOUT)),
         health_url=data.get(CONF_MCP_HEALTH_URL) or default_mcp_health_url(mcp_url),
+    )
+
+
+def get_action_backend(entry: ConfigEntry) -> LlmBackend | None:
+    """Return action LLM settings when action routing is enabled."""
+    data = entry.data
+    if not data.get(CONF_ACTION_MODEL_ENABLED):
+        return None
+
+    action_model = data.get(CONF_ACTION_LLM_MODEL)
+    if not action_model:
+        return None
+
+    chat = get_llm_backend(entry)
+    action_url = (data.get(CONF_ACTION_LLM_BASE_URL) or chat.base_url).rstrip("/")
+    return LlmBackend(
+        base_url=action_url,
+        model=action_model,
+        api_key=chat.api_key,
+        max_tokens=int(
+            data.get(CONF_ACTION_LLM_MAX_TOKENS, DEFAULT_ACTION_LLM_MAX_TOKENS)
+        ),
+        temperature=float(
+            data.get(CONF_ACTION_LLM_TEMPERATURE, DEFAULT_ACTION_LLM_TEMPERATURE)
+        ),
+        timeout=chat.timeout,
+        enable_thinking=False,
+    )
+
+
+def get_router_config(entry: ConfigEntry) -> RouterConfig:
+    """Return router settings for the config entry."""
+    return RouterConfig(
+        action_enabled=bool(entry.data.get(CONF_ACTION_MODEL_ENABLED)),
+        action_backend=get_action_backend(entry),
     )
 
 

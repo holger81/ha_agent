@@ -30,7 +30,11 @@ MODULE_DEPS: dict[str, list[str]] = {
         "context",
         "tools",
         "memory",
+        "router",
+        "status",
     ],
+    "router": ["config_helpers", "context"],
+    "status": ["const"],
 }
 
 
@@ -104,6 +108,10 @@ def _agent_config(*, streaming: bool = False) -> config_helpers.AgentConfig:
         history_turns=4,
         enable_streaming=streaming,
     )
+
+
+def _router_config() -> config_helpers.RouterConfig:
+    return config_helpers.RouterConfig(action_enabled=False, action_backend=None)
 
 
 def _hass() -> MagicMock:
@@ -182,6 +190,8 @@ async def test_phase4_light_off_with_exposed_entity() -> None:
             mcp_client=mock_mcp,
             backend=_backend(),
             agent_config=_agent_config(),
+            router_config=_router_config(),
+            entry_id="phase4-entry",
             conversation_id="phase4-light",
             user_text="turn off the dining room lights",
             exposed_entities=[
@@ -248,6 +258,8 @@ async def test_phase4_cover_open_without_exposed_entity() -> None:
             mcp_client=mock_mcp,
             backend=_backend(),
             agent_config=_agent_config(),
+            router_config=_router_config(),
+            entry_id="phase4-entry",
             conversation_id="phase4-cover",
             user_text="open the patio cover",
             exposed_entities=[],
@@ -287,6 +299,8 @@ async def test_phase4_news_query_uses_mcp_tool() -> None:
             mcp_client=mock_mcp,
             backend=_backend(),
             agent_config=_agent_config(),
+            router_config=_router_config(),
+            entry_id="phase4-entry",
             conversation_id="phase4-news",
             user_text="What's the news?",
             exposed_entities=[],
@@ -328,6 +342,8 @@ async def test_phase4_email_unread_count_uses_mcp_tool() -> None:
             mcp_client=mock_mcp,
             backend=_backend(),
             agent_config=_agent_config(),
+            router_config=_router_config(),
+            entry_id="phase4-entry",
             conversation_id="phase4-email",
             user_text="how many unread emails do I have",
             exposed_entities=[],
@@ -362,6 +378,8 @@ async def test_phase4_conversation_memory_across_turns() -> None:
             mcp_client=mock_mcp,
             backend=backend,
             agent_config=agent_config,
+            router_config=_router_config(),
+            entry_id="phase4-entry",
             conversation_id="phase4-memory",
             user_text=user_text,
             exposed_entities=[],

@@ -11,6 +11,11 @@ from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .config_helpers import LlmBackend, McpConfig, default_mcp_health_url
 from .const import (
+    CONF_ACTION_LLM_BASE_URL,
+    CONF_ACTION_LLM_MAX_TOKENS,
+    CONF_ACTION_LLM_MODEL,
+    CONF_ACTION_LLM_TEMPERATURE,
+    CONF_ACTION_MODEL_ENABLED,
     CONF_AGENT_SYSTEM_PROMPT,
     CONF_CONVERSATION_ENABLE_STREAMING,
     CONF_CONVERSATION_HISTORY_TURNS,
@@ -28,6 +33,8 @@ from .const import (
     CONF_MCP_URL,
     CONF_TOOL_INSTRUCTIONS,
     CONFIG_ENTRY_VERSION,
+    DEFAULT_ACTION_LLM_MAX_TOKENS,
+    DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
     DEFAULT_CONVERSATION_HISTORY_TURNS,
     DEFAULT_LLM_BASE_URL,
@@ -207,6 +214,66 @@ def _mcp_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     )
 
 
+def _action_model_schema(
+    defaults: dict[str, Any] | None = None,
+    *,
+    model_options: list[str] | None = None,
+) -> vol.Schema:
+    """Schema for optional action-model routing."""
+    defaults = defaults or {}
+    action_model_field: selector.SelectSelector | type[str] = (
+        _model_selector(defaults, model_options or [])
+        if model_options is not None
+        else str
+    )
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_ACTION_MODEL_ENABLED,
+                default=defaults.get(CONF_ACTION_MODEL_ENABLED, False),
+            ): bool,
+            vol.Optional(
+                CONF_ACTION_LLM_BASE_URL,
+                default=defaults.get(CONF_ACTION_LLM_BASE_URL, ""),
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.URL),
+            ),
+            vol.Optional(
+                CONF_ACTION_LLM_MODEL,
+                default=defaults.get(CONF_ACTION_LLM_MODEL, ""),
+            ): action_model_field,
+            vol.Optional(
+                CONF_ACTION_LLM_TEMPERATURE,
+                default=defaults.get(
+                    CONF_ACTION_LLM_TEMPERATURE,
+                    DEFAULT_ACTION_LLM_TEMPERATURE,
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0.0,
+                    max=2.0,
+                    step=0.1,
+                    mode=selector.NumberSelectorMode.BOX,
+                ),
+            ),
+            vol.Optional(
+                CONF_ACTION_LLM_MAX_TOKENS,
+                default=defaults.get(
+                    CONF_ACTION_LLM_MAX_TOKENS,
+                    DEFAULT_ACTION_LLM_MAX_TOKENS,
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=64,
+                    max=4096,
+                    step=64,
+                    mode=selector.NumberSelectorMode.BOX,
+                ),
+            ),
+        }
+    )
+
+
 def _agent_settings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     defaults = defaults or {}
     return vol.Schema(
@@ -354,12 +421,43 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not self._reconfigure_entry:
                     await self.async_set_unique_id(f"{llm_url}|{mcp_url}")
                     self._abort_if_unique_id_configured()
-                return await self.async_step_agent_settings()
+                return await self.async_step_action_model()
 
         return self.async_show_form(
             step_id="mcp",
             data_schema=_mcp_schema(self._data),
             errors=errors,
+        )
+
+    async def async_step_action_model(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.FlowResult:
+        """Configure optional action-model routing."""
+        if user_input is not None:
+            self._data.update(user_input)
+            action_url = (user_input.get(CONF_ACTION_LLM_BASE_URL) or "").strip()
+            if action_url:
+                self._data[CONF_ACTION_LLM_BASE_URL] = action_url.rstrip("/")
+            else:
+                self._data.pop(CONF_ACTION_LLM_BASE_URL, None)
+            if not user_input.get(CONF_ACTION_LLM_MODEL):
+                self._data.pop(CONF_ACTION_LLM_MODEL, None)
+            return await self.async_step_agent_settings()
+
+        client = LlmClient(async_create_clientsession(self.hass))
+        model_options = await async_fetch_model_options(
+            client,
+            self._data,
+            target="action",
+            current_model=self._data.get(CONF_ACTION_LLM_MODEL),
+        )
+        return self.async_show_form(
+            step_id="action_model",
+            data_schema=_action_model_schema(
+                self._data,
+                model_options=model_options,
+            ),
         )
 
     async def async_step_agent_settings(
@@ -392,36 +490,55 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class HaAgentOptionsFlowHandler(config_entries.OptionsFlow):
-    """Quick model change from the integration or device page."""
+    """Quick model and routing changes from the integration page."""
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.FlowResult:
-        """Change the active LLM model without full reconfigure."""
+        """Change chat/action models without full reconfigure."""
         if user_input is not None:
             data = dict(self.config_entry.data)
             data[CONF_LLM_MODEL] = user_input[CONF_LLM_MODEL]
+            data[CONF_ACTION_MODEL_ENABLED] = user_input[CONF_ACTION_MODEL_ENABLED]
+            action_model = user_input.get(CONF_ACTION_LLM_MODEL)
+            if action_model:
+                data[CONF_ACTION_LLM_MODEL] = action_model
+            else:
+                data.pop(CONF_ACTION_LLM_MODEL, None)
             self.hass.config_entries.async_update_entry(self.config_entry, data=data)
             await self.hass.config_entries.async_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data={})
 
         client = LlmClient(async_create_clientsession(self.hass))
-        model_options = await async_fetch_model_options(
+        chat_models = await async_fetch_model_options(
             client,
             self.config_entry.data,
+            target="chat",
         )
+        action_models = await async_fetch_model_options(
+            client,
+            self.config_entry.data,
+            target="action",
+            current_model=self.config_entry.data.get(CONF_ACTION_LLM_MODEL),
+        )
+        defaults = self.config_entry.data
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Required(
                         CONF_LLM_MODEL,
-                        default=self.config_entry.data.get(
-                            CONF_LLM_MODEL,
-                            DEFAULT_LLM_MODEL,
-                        ),
-                    ): _model_selector(self.config_entry.data, model_options),
+                        default=defaults.get(CONF_LLM_MODEL, DEFAULT_LLM_MODEL),
+                    ): _model_selector(defaults, chat_models),
+                    vol.Optional(
+                        CONF_ACTION_MODEL_ENABLED,
+                        default=defaults.get(CONF_ACTION_MODEL_ENABLED, False),
+                    ): bool,
+                    vol.Optional(
+                        CONF_ACTION_LLM_MODEL,
+                        default=defaults.get(CONF_ACTION_LLM_MODEL, ""),
+                    ): _model_selector(defaults, action_models),
                 }
             ),
         )

@@ -17,8 +17,8 @@ Replaces n8n Webhook Conversation from [ha_liquidai_n8n](https://github.com/holg
 | Config flow (prompts → LLM → MCP) | **Done** |
 | Phase 4 scenario tests + smoke script | **Done** |
 | Production voice validation | **Done** |
-| Multi-model router | Phase 5 (next) |
-| Full n8n migration | Phase 6 |
+| Multi-model router + diagnostic entities | **Done** |
+| Full n8n migration | Phase 6 (next) |
 
 See [PLAN.md](PLAN.md) for the roadmap (Phases 4–6).
 

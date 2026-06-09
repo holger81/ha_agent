@@ -12,6 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .config_helpers import McpConfig
 from .const import LOGGER, MCP_SESSION_TOOLS_TTL_SECONDS
+from .mcp_errors import friendly_mcp_http_error, friendly_mcp_json_error
 from .mcp_session import (
     FALLBACK_MCP_TOOLS,
     format_mcp_session_prompt,
@@ -69,12 +70,19 @@ class McpProxyClient:
                 headers=self._headers(),
                 timeout=timeout,
             ) as response:
-                if response.status >= 500:
+                if response.status >= 400:
+                    body = await response.text()
                     raise HomeAssistantError(
-                        f"MCP health check failed (HTTP {response.status})"
+                        friendly_mcp_http_error(
+                            method="health",
+                            status=response.status,
+                            body=body,
+                        )
                     )
         except TimeoutError as err:
-            raise HomeAssistantError("MCP health check timed out") from err
+            raise HomeAssistantError(
+                "MCP Proxy timed out. Try again or increase the MCP timeout."
+            ) from err
         except aiohttp.ClientError as err:
             raise HomeAssistantError(f"Cannot reach MCP Proxy: {err}") from err
 
@@ -211,7 +219,11 @@ class McpProxyClient:
                 raw = await response.text()
                 if response.status >= 400:
                     raise HomeAssistantError(
-                        f"MCP {method} failed (HTTP {response.status}): {raw[:300]}"
+                        friendly_mcp_http_error(
+                            method=method,
+                            status=response.status,
+                            body=raw,
+                        )
                     )
 
                 if "text/event-stream" in content_type:
@@ -222,7 +234,9 @@ class McpProxyClient:
 
                 data = json.loads(raw)
         except TimeoutError as err:
-            raise HomeAssistantError(f"MCP {method} timed out") from err
+            raise HomeAssistantError(
+                "MCP Proxy timed out. Try again or increase the MCP timeout."
+            ) from err
         except aiohttp.ClientError as err:
             raise HomeAssistantError(f"MCP {method} request failed: {err}") from err
         except json.JSONDecodeError as err:
@@ -230,7 +244,7 @@ class McpProxyClient:
 
         if error := data.get("error"):
             message = error.get("message") or str(error)
-            raise HomeAssistantError(f"MCP error: {message}")
+            raise HomeAssistantError(friendly_mcp_json_error(message))
 
         return data.get("result")
 
@@ -252,7 +266,7 @@ class McpProxyClient:
                 last_result = data["result"]
             elif "error" in data:
                 message = data["error"].get("message") or str(data["error"])
-                raise HomeAssistantError(f"MCP error: {message}")
+                raise HomeAssistantError(friendly_mcp_json_error(message))
         return last_result
 
     def _extract_tool_result(self, result: Any) -> str:
