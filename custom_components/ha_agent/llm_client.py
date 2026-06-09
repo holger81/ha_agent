@@ -58,6 +58,18 @@ class ChatResult:
     assistant_message: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class StreamChatSession:
+    """Mutable stream state populated while iterating chat_stream."""
+
+    content: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    _tool_call_builders: dict[int, dict[str, str]] = field(
+        default_factory=dict,
+        repr=False,
+    )
+
+
 class LlmClient:
     """Async OpenAI-compatible chat client."""
 
@@ -152,11 +164,14 @@ class LlmClient:
         self,
         messages: list[dict[str, Any]],
         backend: LlmBackend,
+        tools: list[dict[str, Any]] | None = None,
+        session: StreamChatSession | None = None,
     ) -> AsyncIterator[str]:
         """Stream assistant text deltas from a chat completion."""
         url = f"{backend.base_url}/chat/completions"
-        payload = self._payload(messages, backend, tools=None, stream=True)
+        payload = self._payload(messages, backend, tools, stream=True)
         timeout = aiohttp.ClientTimeout(total=backend.timeout)
+        stream_session = session or StreamChatSession()
 
         try:
             async with self._session.post(
@@ -170,16 +185,27 @@ class LlmClient:
                     raise HomeAssistantError(
                         f"LLM stream failed (HTTP {response.status}): {body[:300]}"
                     )
-                async for delta in self._iter_sse_deltas(response):
+                async for delta in self._iter_sse_deltas(
+                    response,
+                    stream_session,
+                ):
                     if delta:
                         yield delta
+                stream_session.tool_calls = self._finalize_stream_tool_calls(
+                    stream_session._tool_call_builders
+                )
+                if session is not None:
+                    session.content = stream_session.content
+                    session.tool_calls = stream_session.tool_calls
         except TimeoutError as err:
             raise HomeAssistantError("LLM stream timed out") from err
         except aiohttp.ClientError as err:
             raise HomeAssistantError(f"LLM stream request failed: {err}") from err
 
     async def _iter_sse_deltas(
-        self, response: aiohttp.ClientResponse
+        self,
+        response: aiohttp.ClientResponse,
+        session: StreamChatSession,
     ) -> AsyncIterator[str]:
         """Parse OpenAI-style SSE chunks."""
         buffer = ""
@@ -202,7 +228,51 @@ class LlmClient:
                     delta = choice.get("delta", {})
                     content = delta.get("content")
                     if content:
+                        session.content += content
                         yield content
+                    for tool_delta in delta.get("tool_calls") or []:
+                        self._merge_stream_tool_delta(
+                            session._tool_call_builders,
+                            tool_delta,
+                        )
+
+    def _merge_stream_tool_delta(
+        self,
+        builders: dict[int, dict[str, str]],
+        tool_delta: dict[str, Any],
+    ) -> None:
+        """Accumulate streamed tool-call fragments."""
+        index = int(tool_delta.get("index", 0))
+        entry = builders.setdefault(
+            index,
+            {"id": "", "name": "", "arguments": ""},
+        )
+        if call_id := tool_delta.get("id"):
+            entry["id"] = call_id
+        function = tool_delta.get("function") or {}
+        if name := function.get("name"):
+            entry["name"] = name
+        if arguments := function.get("arguments"):
+            entry["arguments"] += arguments
+
+    def _finalize_stream_tool_calls(
+        self,
+        builders: dict[int, dict[str, str]],
+    ) -> list[ToolCall]:
+        """Convert accumulated streamed tool-call fragments to ToolCall objects."""
+        tool_calls: list[ToolCall] = []
+        for index in sorted(builders):
+            entry = builders[index]
+            if not entry.get("name"):
+                continue
+            tool_calls.append(
+                ToolCall(
+                    id=entry.get("id") or f"call_{index}",
+                    name=entry["name"],
+                    arguments=entry.get("arguments") or "{}",
+                )
+            )
+        return tool_calls
 
     def _parse_completion(self, data: dict[str, Any]) -> ChatResult:
         """Parse a chat completion response."""

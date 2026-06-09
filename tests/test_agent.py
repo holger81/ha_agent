@@ -187,9 +187,17 @@ async def test_run_agent_executes_tool_then_replies() -> None:
 
 
 def _make_stream(text: str):
-    async def _stream(_messages, _backend):
+    async def _stream(*_args, **_kwargs):
         for char in text:
             yield char
+
+    return _stream
+
+
+def _make_incremental_stream(parts: list[str]):
+    async def _stream(*_args, **_kwargs):
+        for part in parts:
+            yield part
 
     return _stream
 
@@ -197,10 +205,8 @@ def _make_stream(text: str):
 @pytest.mark.asyncio
 async def test_run_agent_yields_stream_deltas_to_assist() -> None:
     """Streaming mode forwards LLM deltas instead of one buffered reply."""
-    result = llm_client.ChatResult(content="Hello there.", tool_calls=[])
-
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(return_value=result)
+    mock_llm.chat = AsyncMock()
     mock_llm.chat_stream = _make_stream("Hello there.")
 
     mock_mcp = MagicMock()
@@ -241,8 +247,56 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
         )
     ]
 
-    assert chunks == list("Hello there.")
-    assert mock_llm.chat.await_count == 1
+    assert "".join(chunks) == "Hello there."
+    assert len(chunks) > 1
+    mock_llm.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_streams_chunks_as_they_arrive() -> None:
+    """Assist receives partial text before the LLM stream finishes."""
+    mock_llm = MagicMock()
+    mock_llm.chat_stream = _make_incremental_stream(["Hel", "lo ", "there."])
+
+    mock_mcp = MagicMock()
+    mock_mcp.get_session_prompt = AsyncMock(return_value="")
+    mock_mcp.get_llm_tools = AsyncMock(return_value=[])
+
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        enable_thinking=False,
+    )
+    agent_config = config_helpers.AgentConfig(
+        system_prompt="Test agent",
+        tool_instructions="Use tools",
+        max_iterations=4,
+        history_turns=2,
+        enable_streaming=True,
+    )
+
+    hass = MagicMock()
+    hass.data = {}
+
+    chunks: list[str] = []
+    async for chunk in agent_mod.run_agent(
+        hass,
+        llm=mock_llm,
+        mcp_client=mock_mcp,
+        backend=backend,
+        agent_config=agent_config,
+        conversation_id="test-conv",
+        user_text="hi",
+        exposed_entities=[],
+    ):
+        chunks.append(chunk)
+
+    assert chunks == ["Hel", "lo", " there."]
+    assert "".join(chunks) == "Hello there."
 
 
 @pytest.mark.asyncio
@@ -252,17 +306,11 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
         '<|tool_call|>call:home_assistant__ha_search_entities'
         '{query:<|"|>camera snapshot<|"|>}<tool_call|>'
     )
-    result = llm_client.ChatResult(content=None, tool_calls=[])
-    final = llm_client.ChatResult(content="Found the camera.", tool_calls=[])
     stream_texts = iter([tool_markup, "Found the camera."])
 
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(side_effect=[result, final])
     mock_llm.chat_stream = MagicMock(
-        side_effect=lambda _messages, _backend: _make_stream(next(stream_texts))(
-            _messages,
-            _backend,
-        )
+        side_effect=lambda *_args, **_kwargs: _make_stream(next(stream_texts))()
     )
 
     mock_mcp = MagicMock()
@@ -305,5 +353,5 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
     ]
 
     assert tool_markup not in "".join(chunks)
-    assert chunks == list("Found the camera.")
+    assert "".join(chunks) == "Found the camera."
     mock_mcp.call_tool.assert_awaited_once()

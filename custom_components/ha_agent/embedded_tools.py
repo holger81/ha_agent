@@ -181,3 +181,27 @@ def is_tool_call_only_text(content: str | None) -> bool:
     return bool(parse_embedded_tool_calls(content)) and not strip_embedded_tool_markup(
         content
     )
+
+
+_TOOL_CALL_MARKER = "<|tool_call|>"
+
+
+def safe_stream_display_text(text: str) -> str:
+    """Return assistant text safe to show while a stream is still in progress."""
+    if not text:
+        return ""
+
+    holdback = len(text)
+    marker = _TOOL_CALL_MARKER
+    for prefix_len in range(1, len(marker)):
+        suffix = text[-prefix_len:]
+        if suffix.startswith("<") and marker.lower().startswith(suffix.lower()):
+            holdback = len(text) - prefix_len
+            break
+
+    candidate = text[:holdback]
+    tool_start = candidate.lower().find(_TOOL_CALL_MARKER.lower())
+    if tool_start != -1:
+        candidate = candidate[:tool_start]
+
+    return strip_embedded_tool_markup(candidate)

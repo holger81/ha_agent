@@ -13,9 +13,10 @@ from .context import build_messages, build_system_message, build_tool_context
 from .embedded_tools import (
     is_tool_call_only_text,
     parse_embedded_tool_calls,
+    safe_stream_display_text,
     strip_embedded_tool_markup,
 )
-from .llm_client import LlmClient, ToolCall
+from .llm_client import LlmClient, StreamChatSession, ToolCall
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
 from .tools import execute_tool, tool_result_message
@@ -24,6 +25,38 @@ if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
 
 FALLBACK_MESSAGE = "Sorry, I couldn't complete that request."
+
+
+async def _yield_streamed_assistant_text(
+    llm: LlmClient,
+    messages: list[dict[str, Any]],
+    backend: LlmBackend,
+    tools: list[dict[str, Any]],
+) -> AsyncGenerator[tuple[str, StreamChatSession], None]:
+    """Stream assistant text to Assist while accumulating the raw response."""
+    session = StreamChatSession()
+    raw_buffer = ""
+    yielded_len = 0
+
+    async for delta in llm.chat_stream(
+        messages,
+        backend,
+        tools=tools,
+        session=session,
+    ):
+        raw_buffer += delta
+        safe = safe_stream_display_text(raw_buffer)
+        if len(safe) > yielded_len:
+            chunk = safe[yielded_len:]
+            yielded_len = len(safe)
+            yield chunk, session
+
+    session.content = raw_buffer
+    assistant_text = strip_embedded_tool_markup(raw_buffer)
+    if len(assistant_text) > yielded_len:
+        yield assistant_text[yielded_len:], session
+    elif not yielded_len:
+        yield "", session
 
 
 async def _execute_embedded_tool_calls(
@@ -90,44 +123,67 @@ async def run_agent(
     tools = llm_tools
 
     for _ in range(agent_config.max_iterations):
-        result = await llm.chat(messages, backend, tools=tools)
-        if result.tool_calls:
-            messages.append(result.assistant_message)
-            for call in result.tool_calls:
-                output = await execute_tool(mcp_client, call)
-                messages.append(tool_result_message(call, output))
-            continue
-
-        if await _execute_embedded_tool_calls(
-            mcp_client,
-            (result.content or "").strip(),
-            messages,
-        ):
-            continue
-
         if agent_config.enable_streaming:
-            streamed: list[str] = []
-            async for delta in llm.chat_stream(messages, backend):
-                streamed.append(delta)
-            streamed_text = "".join(streamed)
+            session = StreamChatSession()
+            async for chunk, active_session in _yield_streamed_assistant_text(
+                llm,
+                messages,
+                backend,
+                tools,
+            ):
+                session = active_session
+                if chunk:
+                    yield chunk
+
+            raw_buffer = session.content
+            if session.tool_calls:
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments,
+                            },
+                        }
+                        for call in session.tool_calls
+                    ],
+                }
+                messages.append(assistant_message)
+                for call in session.tool_calls:
+                    output = await execute_tool(mcp_client, call)
+                    messages.append(tool_result_message(call, output))
+                continue
+
             if await _execute_embedded_tool_calls(
                 mcp_client,
-                streamed_text,
+                raw_buffer.strip(),
                 messages,
             ):
                 continue
 
-            assistant_text = strip_embedded_tool_markup(streamed_text)
-            if assistant_text:
-                for delta in streamed:
-                    yield delta
-            elif (result.content or "").strip():
-                assistant_text = strip_embedded_tool_markup(
-                    (result.content or "").strip()
-                )
-                if assistant_text:
-                    yield assistant_text
+            assistant_text = strip_embedded_tool_markup(raw_buffer)
+            if not assistant_text and is_tool_call_only_text(raw_buffer):
+                assistant_text = ""
         else:
+            result = await llm.chat(messages, backend, tools=tools)
+            if result.tool_calls:
+                messages.append(result.assistant_message)
+                for call in result.tool_calls:
+                    output = await execute_tool(mcp_client, call)
+                    messages.append(tool_result_message(call, output))
+                continue
+
+            if await _execute_embedded_tool_calls(
+                mcp_client,
+                (result.content or "").strip(),
+                messages,
+            ):
+                continue
+
             assistant_text = (result.content or "").strip()
             if assistant_text and not is_tool_call_only_text(assistant_text):
                 yield assistant_text
