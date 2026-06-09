@@ -110,6 +110,10 @@ class LlmClient:
 
     async def check_connection(self, backend: LlmBackend) -> None:
         """Verify the LLM server is reachable."""
+        await self.list_models(backend)
+
+    async def list_models(self, backend: LlmBackend) -> list[str]:
+        """Return model ids from the OpenAI-compatible /models endpoint."""
         url = f"{backend.base_url}/models"
         timeout = aiohttp.ClientTimeout(total=15)
         try:
@@ -118,14 +122,29 @@ class LlmClient:
                 headers=self._headers(backend),
                 timeout=timeout,
             ) as response:
-                if response.status >= 500:
+                body = await response.text()
+                if response.status != 200:
                     raise HomeAssistantError(
-                        f"LLM server returned HTTP {response.status}"
+                        f"LLM models failed (HTTP {response.status}): {body[:300]}"
                     )
+                data = json.loads(body)
         except TimeoutError as err:
             raise HomeAssistantError("LLM server timed out") from err
         except aiohttp.ClientError as err:
             raise HomeAssistantError(f"Cannot connect to LLM server: {err}") from err
+        except json.JSONDecodeError as err:
+            raise HomeAssistantError("LLM returned invalid models JSON") from err
+
+        models: list[str] = []
+        for item in data.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if isinstance(model_id, str) and model_id:
+                models.append(model_id)
+        if not models:
+            raise HomeAssistantError("LLM server returned no models")
+        return sorted(models)
 
     async def chat(
         self,

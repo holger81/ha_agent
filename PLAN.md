@@ -92,17 +92,24 @@ Phase 5 adds **router options** (still UI-only):
 - [x] `agent.py` — `run_agent()` while-loop with memory
 - [x] `conversation.py` — `AbstractConversationAgent`
 - [x] `config_flow.py` — prompts → LLM → MCP → agent settings
-- [x] Unit tests for agent, context, llm_client
+- [x] Unit tests for agent, context, llm_client, memory, Phase 4 scenarios
+- [x] `scripts/smoke_test_phase4.py` — LLM + MCP backend smoke test
+- [x] Live streaming to Assist (`async_add_delta_content_stream`)
 
-#### Exit criteria
+#### Exit criteria (automated)
 
-- [ ] Light on/off with exposed entity — 1 MCP or native call
-- [ ] Cover open without exposed entity — search + open_cover
-- [ ] “What's the news?” — model selects MCP news tools in agent loop
-- [ ] Email unread count via MCP mail tools
-- [ ] Streaming text in Assist debug
-- [ ] Conversation memory across turns (same `conversation_id`)
-- [ ] Deployed in HA; pipeline uses `conversation.ha_agent`
+- [x] Light on/off with exposed entity — 1 MCP or native call (`test_phase4_scenarios.py`)
+- [x] Cover open without exposed entity — search + open_cover (`test_phase4_scenarios.py`)
+- [x] “What's the news?” — model selects MCP news tools in agent loop (`test_phase4_scenarios.py`)
+- [x] Email unread count via MCP mail tools (`test_phase4_scenarios.py`)
+- [x] Conversation memory across turns (same `conversation_id`) (`test_phase4_scenarios.py`)
+- [x] Streaming deltas forwarded to Assist (`test_agent.py`)
+
+#### Exit criteria (production validation)
+
+- [x] Streaming text + TTS in Assist (voice pipeline)
+- [x] Deployed in HA; pipeline uses `conversation.ha_agent`
+- [x] `scripts/smoke_test_phase4.py` passes against your LLM + MCP hosts
 
 **Design notes:** No special news route or MCP-only bypass — the LLM decides when to call tools inside `run_agent()`.
 
@@ -178,12 +185,13 @@ Phase 5 adds **router options** (still UI-only):
 
 ### Phase 4 (Agent)
 
-- [ ] Light on/off with exposed entity
-- [ ] Cover open without exposed entity
-- [ ] “What's the news?” / follow-up — model selects MCP news tools
-- [ ] Email unread count
-- [ ] Streaming text in Assist debug
-- [ ] Conversation memory across turns
+- [x] Light on/off with exposed entity (unit test)
+- [x] Cover open without exposed entity (unit test)
+- [x] “What's the news?” / follow-up — model selects MCP news tools (unit test)
+- [x] Email unread count (unit test)
+- [x] Streaming deltas to Assist (unit test)
+- [x] Conversation memory across turns (unit test)
+- [x] Voice pipeline validation in production
 
 ### Phase 5 (Router + MCP)
 
@@ -200,4 +208,4 @@ Phase 5 adds **router options** (still UI-only):
 
 ## Next action
 
-**Phase 4 exit criteria:** Deploy to HA, wire Assist pipeline (LiquidAI STT + HA Agent + LiquidAI TTS), validate tool calls and streaming in production.
+**Phase 4 complete.** Start **Phase 5** — optional action-model router (`router.py`), MCP error polish, and `scripts/smoke_test_mcp.py`.

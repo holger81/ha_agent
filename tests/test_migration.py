@@ -36,8 +36,27 @@ def _ensure_ha_stubs() -> None:
 
     if "homeassistant.const" not in sys.modules:
         ha_const = types.ModuleType("homeassistant.const")
-        ha_const.Platform = types.SimpleNamespace(CONVERSATION="conversation")
+        ha_const.Platform = types.SimpleNamespace(
+            CONVERSATION="conversation",
+            SELECT="select",
+        )
         sys.modules["homeassistant.const"] = ha_const
+
+    if "homeassistant.helpers" not in sys.modules:
+        sys.modules["homeassistant.helpers"] = types.ModuleType("homeassistant.helpers")
+
+    if "homeassistant.helpers.device_registry" not in sys.modules:
+        ha_dr = types.ModuleType("homeassistant.helpers.device_registry")
+
+        class DeviceRegistry:
+            def async_get(self, _hass):
+                return self
+
+            def async_get_or_create(self, **_kwargs):
+                return MagicMock()
+
+        ha_dr.async_get = lambda _hass: DeviceRegistry()
+        sys.modules["homeassistant.helpers.device_registry"] = ha_dr
 
     if "homeassistant.core" not in sys.modules:
         ha_core = types.ModuleType("homeassistant.core")

@@ -138,3 +138,40 @@ async def test_chat_parses_response() -> None:
 
     assert result.content == "Hello there"
     assert not result.tool_calls
+
+
+@pytest.mark.asyncio
+async def test_list_models_returns_sorted_ids() -> None:
+    """list_models() parses OpenAI-compatible /models responses."""
+    payload = {
+        "data": [
+            {"id": "model-b"},
+            {"id": "model-a"},
+            {"id": ""},
+            {"id": "model-c"},
+        ]
+    }
+    response = AsyncMock()
+    response.status = 200
+    response.text = AsyncMock(return_value=json.dumps(payload))
+
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=response)
+    context.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.get = MagicMock(return_value=context)
+
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test-model",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        enable_thinking=False,
+    )
+    client = llm_client.LlmClient(session)
+    models = await client.list_models(backend)
+
+    assert models == ["model-a", "model-b", "model-c"]

@@ -43,6 +43,7 @@ from .const import (
     LOGGER,
 )
 from .llm_client import LlmClient
+from .llm_models import async_fetch_model_options
 from .mcp_client import McpProxyClient
 
 
@@ -74,8 +75,36 @@ def _agent_prompt_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     )
 
 
-def _llm_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+def _model_selector(
+    defaults: dict[str, Any],
+    model_options: list[str],
+) -> selector.SelectSelector | type[str]:
+    """Build a model field as dropdown or free text fallback."""
+    current = defaults.get(CONF_LLM_MODEL, DEFAULT_LLM_MODEL)
+    options = list(model_options)
+    if current and current not in options:
+        options.insert(0, current)
+    if not options:
+        options = [current] if current else [DEFAULT_LLM_MODEL]
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=options,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        ),
+    )
+
+
+def _llm_schema(
+    defaults: dict[str, Any] | None = None,
+    *,
+    model_options: list[str] | None = None,
+) -> vol.Schema:
     defaults = defaults or {}
+    model_field: selector.SelectSelector | type[str] = (
+        _model_selector(defaults, model_options)
+        if model_options is not None
+        else str
+    )
     return vol.Schema(
         {
             vol.Required(
@@ -87,7 +116,7 @@ def _llm_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Required(
                 CONF_LLM_MODEL,
                 default=defaults.get(CONF_LLM_MODEL, DEFAULT_LLM_MODEL),
-            ): str,
+            ): model_field,
             vol.Optional(
                 CONF_LLM_API_KEY,
                 default=defaults.get(CONF_LLM_API_KEY, ""),
@@ -284,9 +313,12 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._data.pop(CONF_LLM_API_KEY, None)
                 return await self.async_step_mcp()
 
+        client = LlmClient(async_create_clientsession(self.hass))
+        model_options = await async_fetch_model_options(client, self._data)
+
         return self.async_show_form(
             step_id="llm",
-            data_schema=_llm_schema(self._data),
+            data_schema=_llm_schema(self._data, model_options=model_options),
             errors=errors,
         )
 
@@ -357,3 +389,46 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="agent_settings",
             data_schema=_agent_settings_schema(self._data),
         )
+
+
+class HaAgentOptionsFlowHandler(config_entries.OptionsFlow):
+    """Quick model change from the integration or device page."""
+
+    async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.FlowResult:
+        """Change the active LLM model without full reconfigure."""
+        if user_input is not None:
+            data = dict(self.config_entry.data)
+            data[CONF_LLM_MODEL] = user_input[CONF_LLM_MODEL]
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        client = LlmClient(async_create_clientsession(self.hass))
+        model_options = await async_fetch_model_options(
+            client,
+            self.config_entry.data,
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_LLM_MODEL,
+                        default=self.config_entry.data.get(
+                            CONF_LLM_MODEL,
+                            DEFAULT_LLM_MODEL,
+                        ),
+                    ): _model_selector(self.config_entry.data, model_options),
+                }
+            ),
+        )
+
+
+def async_get_options_flow(
+    config_entry: config_entries.ConfigEntry,
+) -> HaAgentOptionsFlowHandler:
+    """Return the options flow handler."""
+    return HaAgentOptionsFlowHandler()

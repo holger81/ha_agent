@@ -35,6 +35,12 @@ def _load_conversation_module():
     ha_helpers_entity_platform = types.ModuleType(
         "homeassistant.helpers.entity_platform"
     )
+    ha_helpers_entity = types.ModuleType("homeassistant.helpers.entity")
+
+    class DeviceInfo(dict):
+        pass
+
+    ha_helpers_entity.DeviceInfo = DeviceInfo
     ha_components = types.ModuleType("homeassistant.components")
     ha_conversation = types.ModuleType("homeassistant.components.conversation")
     ha_exposed = types.ModuleType(
@@ -101,6 +107,7 @@ def _load_conversation_module():
     sys.modules["homeassistant.helpers.area_registry"] = ha_helpers_ar
     sys.modules["homeassistant.helpers.aiohttp_client"] = ha_helpers_aiohttp
     sys.modules["homeassistant.helpers.entity_platform"] = ha_helpers_entity_platform
+    sys.modules["homeassistant.helpers.entity"] = ha_helpers_entity
     sys.modules["homeassistant.components"] = ha_components
     sys.modules["homeassistant.components.conversation"] = ha_conversation
     sys.modules["homeassistant.components.homeassistant"] = types.ModuleType(

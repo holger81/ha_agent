@@ -14,7 +14,7 @@
         "description": "Configure the OpenAI-compatible chat model (e.g. llama.cpp).",
         "data": {
           "llm_base_url": "LLM base URL",
-          "llm_model": "Model name",
+          "llm_model": "Model",
           "llm_api_key": "API key (optional)",
           "llm_max_tokens": "Max tokens",
           "llm_temperature": "Temperature",
@@ -48,6 +48,24 @@
     },
     "abort": {
       "reconfigure_successful": "Configuration updated successfully."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Change LLM model",
+        "description": "Pick a model from your LLM server without re-running the full setup.",
+        "data": {
+          "llm_model": "Model"
+        }
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "llm_model": {
+        "name": "LLM model"
+      }
     }
   }
 }

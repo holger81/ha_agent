@@ -5,17 +5,20 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     CONF_AGENT_SYSTEM_PROMPT,
+    CONF_LLM_MODEL,
     CONF_TOOL_INSTRUCTIONS,
     CONFIG_ENTRY_VERSION,
     DEFAULT_AGENT_SYSTEM_PROMPT,
     DEFAULT_TOOL_INSTRUCTIONS,
+    DOMAIN,
     LEGACY_TOOL_INSTRUCTION_MARKERS,
 )
 
-PLATFORMS: list[Platform] = [Platform.CONVERSATION]
+PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.SELECT]
 
 _LEGACY_AGENT_SYSTEM_PROMPT = (
     "You are a voice assistant for Home Assistant.\n"
@@ -51,6 +54,14 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up HA Agent from the config entry."""
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        manufacturer="HA Agent",
+        name=entry.title,
+        model=entry.data.get(CONF_LLM_MODEL),
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True

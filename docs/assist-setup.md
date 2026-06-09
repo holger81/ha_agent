@@ -21,9 +21,17 @@ Use **[HA Agent](https://github.com/holger81/ha_agent)** (this integration) for 
 3. **Settings → Devices & services → Add integration → HA Agent**
 4. Complete the config flow:
    - **Agent prompts** — system prompt and MCP tool instructions
-   - **LLM backend** — base URL, model, optional API key
+   - **LLM backend** — base URL, **model dropdown** (loaded from `/v1/models`), optional API key
    - **MCP Proxy** — URL, bearer token, health URL
    - **Agent settings** — max iterations, history turns, streaming
+
+## Change the LLM model later
+
+Three ways (no full reconfigure needed):
+
+1. **Device page** — open the **HA Agent** device → **Configuration** → **LLM model** dropdown (like Zigbee device settings)
+2. **Integration options** — **Settings → Devices & services → HA Agent → Configure → Change LLM model**
+3. **Reconfigure** — full setup wizard if you also need to change LLM URL or MCP settings
 
 ## Configure the Assist pipeline
 
@@ -37,9 +45,28 @@ Remove Webhook Conversation if still wired.
 
 ## Verify the agent
 
+### Backend smoke test (from dev machine)
+
+```bash
+pip install aiohttp
+export HA_AGENT_MCP_TOKEN="your-bearer-token"   # if required
+python3 scripts/smoke_test_phase4.py
+```
+
+Checks LLM `/models`, MCP health, `initialize`, and `tools/list`.
+
+### Assist validation (Phase 4 sign-off)
+
 1. Expose entities in **Settings → Voice assistants → Expose**
-2. Ask Assist: “Turn off the dining room lights” or “What's the news?”
-3. Check HA logs for MCP tool calls and LLM responses
+2. Wire pipeline: LiquidAI STT → **HA Agent** → LiquidAI TTS
+3. Test prompts:
+   - “Turn off the dining room lights” (exposed entity)
+   - “Open the patio cover” (search + service call)
+   - “What's the news?”
+   - “How many unread emails do I have?”
+4. Ask a follow-up in the same conversation to confirm memory
+5. Confirm text appears progressively in Assist debug (streaming enabled)
+6. Check HA logs for MCP tool calls and LLM responses
 
 ## Troubleshooting
 

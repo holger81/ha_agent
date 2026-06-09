@@ -13,11 +13,18 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .agent import run_agent
 from .config_helpers import get_agent_config, get_llm_backend, get_mcp_config
-from .const import ASSIST_EXPOSE_ASSISTANT, DOMAIN, LOGGER, SUPPORTED_LANGUAGES
+from .const import (
+    ASSIST_EXPOSE_ASSISTANT,
+    CONF_LLM_MODEL,
+    DOMAIN,
+    LOGGER,
+    SUPPORTED_LANGUAGES,
+)
 from .context import user_text_from_input
 from .llm_client import LlmClient
 from .mcp_client import McpProxyClient
@@ -79,6 +86,12 @@ class HaAgentConversationEntity(
         self._attr_unique_id = f"{entry.entry_id}_conversation"
         agent_config = get_agent_config(entry)
         self._attr_supports_streaming = agent_config.enable_streaming
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="HA Agent",
+            model=entry.data.get(CONF_LLM_MODEL),
+        )
 
     @property
     def supported_languages(self) -> list[str]:

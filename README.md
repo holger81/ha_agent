@@ -13,9 +13,11 @@ Replaces n8n Webhook Conversation from [ha_liquidai_n8n](https://github.com/holg
 | LLM client (OpenAI-compatible) | **Done** |
 | MCP Proxy client | **Done** |
 | Agent tool loop + memory | **Done** |
-| Conversation platform | **Done** |
+| Conversation platform + streaming | **Done** |
 | Config flow (prompts → LLM → MCP) | **Done** |
-| Multi-model router | Phase 5 |
+| Phase 4 scenario tests + smoke script | **Done** |
+| Production voice validation | **Done** |
+| Multi-model router | Phase 5 (next) |
 | Full n8n migration | Phase 6 |
 
 See [PLAN.md](PLAN.md) for the roadmap (Phases 4–6).
