@@ -88,6 +88,16 @@ class LlmClient:
             headers["Authorization"] = f"Bearer {backend.api_key}"
         return headers
 
+    @staticmethod
+    def _stream_timeout(backend: LlmBackend) -> aiohttp.ClientTimeout:
+        """Idle timeout between stream chunks; no total cap on long replies."""
+        connect = min(30, backend.timeout)
+        return aiohttp.ClientTimeout(
+            total=None,
+            connect=connect,
+            sock_read=backend.timeout,
+        )
+
     def _payload(
         self,
         messages: list[dict[str, Any]],
@@ -189,7 +199,7 @@ class LlmClient:
         """Stream assistant text deltas from a chat completion."""
         url = f"{backend.base_url}/chat/completions"
         payload = self._payload(messages, backend, tools, stream=True)
-        timeout = aiohttp.ClientTimeout(total=backend.timeout)
+        timeout = self._stream_timeout(backend)
         stream_session = session or StreamChatSession()
 
         try:
@@ -217,7 +227,11 @@ class LlmClient:
                     session.content = stream_session.content
                     session.tool_calls = stream_session.tool_calls
         except TimeoutError as err:
-            raise HomeAssistantError("LLM stream timed out") from err
+            raise HomeAssistantError(
+                "LLM stream timed out waiting for the server. "
+                f"Increase the LLM timeout (currently {backend.timeout}s) "
+                "in HA Agent settings for large models or tool-heavy prompts."
+            ) from err
         except aiohttp.ClientError as err:
             raise HomeAssistantError(f"LLM stream request failed: {err}") from err
 

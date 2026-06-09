@@ -175,3 +175,21 @@ async def test_list_models_returns_sorted_ids() -> None:
     models = await client.list_models(backend)
 
     assert models == ["model-a", "model-b", "model-c"]
+
+
+def test_stream_timeout_uses_idle_limit_without_total_cap() -> None:
+    """Streaming should not cap total duration; only idle time between chunks."""
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test-model",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=180,
+        enable_thinking=False,
+    )
+    timeout = llm_client.LlmClient._stream_timeout(backend)
+
+    assert timeout.total is None
+    assert timeout.sock_read == 180
+    assert timeout.connect == 30
