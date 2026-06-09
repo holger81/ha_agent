@@ -54,7 +54,10 @@ DEFAULT_AGENT_SYSTEM_PROMPT = (
 )
 
 DEFAULT_TOOL_INSTRUCTIONS = (
-    "Follow MCP SERVER INSTRUCTIONS and use the provided session tools."
+    "Follow MCP SERVER INSTRUCTIONS and use the provided session tools. "
+    "For homeassistant device actions, call callTool with toolName "
+    "home_assistant__ha_call_service and arguments containing domain, service, "
+    "and entity_id."
 )
 
 # Saved during setup before MCP-compliant defaults; reset on upgrade.

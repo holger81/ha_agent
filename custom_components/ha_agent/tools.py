@@ -24,6 +24,40 @@ def parse_tool_arguments(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _domain_from_entity_id(entity_id: Any) -> str | None:
+    """Infer a Home Assistant domain from an entity id."""
+    if isinstance(entity_id, str) and "." in entity_id:
+        return entity_id.split(".", 1)[0]
+    if isinstance(entity_id, list) and entity_id:
+        first = entity_id[0]
+        if isinstance(first, str) and "." in first:
+            return first.split(".", 1)[0]
+    return None
+
+
+def _normalize_ha_call_service_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Fill missing ha_call_service fields the local LLM often omits."""
+    normalized = dict(arguments)
+    if not normalized.get("domain") and (
+        domain := _domain_from_entity_id(normalized.get("entity_id"))
+    ):
+        normalized["domain"] = domain
+    return normalized
+
+
+def _normalize_call_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize callTool payloads before sending them to MCP."""
+    upstream = payload.get("toolName")
+    arguments = payload.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    if isinstance(upstream, str) and upstream.endswith("ha_call_service"):
+        arguments = _normalize_ha_call_service_arguments(arguments)
+
+    return {"toolName": upstream, "arguments": arguments}
+
+
 def _normalize_tool_call(call: ToolCall) -> tuple[str, dict[str, Any]]:
     """Map LLM tool calls to MCP tools/call name and arguments."""
     args = parse_tool_arguments(call.arguments)
@@ -35,11 +69,19 @@ def _normalize_tool_call(call: ToolCall) -> tuple[str, dict[str, Any]]:
     if not isinstance(args, dict):
         raise ValueError("Tool arguments must be a flat object")
 
-    if tool_name == "callTool" and "toolName" in args and "arguments" not in args:
-        return tool_name, {
-            "toolName": args["toolName"],
-            "arguments": {},
-        }
+    if tool_name == "callTool" and "toolName" in args:
+        upstream = args["toolName"]
+        if isinstance(args.get("arguments"), dict):
+            nested = dict(args["arguments"])
+        else:
+            nested = {
+                key: value
+                for key, value in args.items()
+                if key != "toolName"
+            }
+        return tool_name, _normalize_call_tool_payload(
+            {"toolName": upstream, "arguments": nested}
+        )
 
     return tool_name, args
 

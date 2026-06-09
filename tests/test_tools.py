@@ -84,3 +84,47 @@ def test_normalize_session_tool_call() -> None:
 
     assert tool_name == "searchToolsForDomain"
     assert tool_args["domain"] == "email"
+
+
+def test_normalize_flat_ha_call_service_args() -> None:
+    """Flat callTool payloads keep service fields instead of dropping them."""
+    call = llm_client.ToolCall(
+        id="call_3",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "entity_id": "light.dining",
+                "service": "turn_on",
+            }
+        ),
+    )
+
+    tool_name, tool_args = tools._normalize_tool_call(call)
+
+    assert tool_name == "callTool"
+    assert tool_args["toolName"] == "home_assistant__ha_call_service"
+    assert tool_args["arguments"]["entity_id"] == "light.dining"
+    assert tool_args["arguments"]["service"] == "turn_on"
+    assert tool_args["arguments"]["domain"] == "light"
+
+
+def test_normalize_ha_call_service_infers_domain() -> None:
+    """ha_call_service calls missing domain are repaired from entity_id."""
+    call = llm_client.ToolCall(
+        id="call_4",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "entity_id": "light.dining_room_ceiling",
+                    "service": "turn_on",
+                },
+            }
+        ),
+    )
+
+    _, tool_args = tools._normalize_tool_call(call)
+
+    assert tool_args["arguments"]["domain"] == "light"

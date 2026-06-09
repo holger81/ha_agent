@@ -101,16 +101,76 @@ def entity_matches_query(entity: dict[str, Any], query: str) -> bool:
     )
 
 
+def _service_hint_for_query(query: str) -> str:
+    """Return a homeassistant service hint for common device actions."""
+    lowered = query.lower()
+    if "turn off" in lowered or "switch off" in lowered:
+        return "turn_off"
+    if "turn on" in lowered or "switch on" in lowered:
+        return "turn_on"
+    if "toggle" in lowered:
+        return "toggle"
+    if "open" in lowered:
+        return "open_cover"
+    if "close" in lowered:
+        return "close_cover"
+    if "lock" in lowered:
+        return "lock"
+    if "unlock" in lowered:
+        return "unlock"
+    return "turn_on"
+
+
+def _device_action_hint(query: str, exposed: list[dict[str, Any]]) -> str | None:
+    """Return explicit homeassistant call guidance for device actions."""
+    if not is_device_action_query(query):
+        return None
+
+    matches = [entity for entity in exposed if entity_matches_query(entity, query)]
+    service = _service_hint_for_query(query)
+    call_example = (
+        '{"toolName":"home_assistant__ha_call_service","arguments":'
+        '{"domain":"light","service":"turn_on","entity_id":"light.example"}}'
+    )
+
+    if matches:
+        lines = [
+            "DEVICE ACTION: a matching exposed entity was found. Call callTool with "
+            f"home_assistant__ha_call_service. Always include domain, service, and "
+            f"entity_id in arguments. Derive domain from the entity_id prefix "
+            f"(light.* -> light). Suggested service: {service}. "
+            f"Example: {call_example}",
+        ]
+        for entity in matches:
+            entity_id = entity.get("entity_id")
+            if not entity_id:
+                continue
+            domain = entity_id.split(".", 1)[0]
+            lines.append(
+                f"- Use entity_id {entity_id} with domain {domain} "
+                f"and service {service}"
+            )
+        return "\n".join(lines)
+
+    return (
+        "DEVICE ACTION: no exposed entity clearly matches. Discover in domain "
+        "smart-home with searchToolsForDomain, then callTool. For homeassistant "
+        "service calls always pass domain, service, and entity_id. "
+        f"Example: {call_example}"
+    )
+
+
 def build_tool_context(query: str, exposed: list[dict[str, Any]]) -> str:
     """Build optional tool hints (not route classifiers)."""
     context_parts: list[str] = []
 
     if exposed:
         context_parts.append(
-            "EXPOSED ENTITIES (use matching entity_id directly; "
-            "do not search if one clearly fits):\n"
-            + format_exposed_entities(exposed)
+            "EXPOSED ENTITIES:\n" + format_exposed_entities(exposed)
         )
+
+    if device_hint := _device_action_hint(query, exposed):
+        context_parts.append(device_hint)
 
     if is_affirmative(query) or is_news_query(query):
         context_parts.append(
@@ -128,14 +188,6 @@ def build_tool_context(query: str, exposed: list[dict[str, Any]]) -> str:
         context_parts.append(
             "CAPABILITIES: explain using MCP SERVER INSTRUCTIONS and MCP SESSION "
             "TOOLS. Mention discovery domains such as email, news, and smart-home."
-        )
-
-    if is_device_action_query(query) and not any(
-        entity_matches_query(entity, query) for entity in exposed
-    ):
-        context_parts.append(
-            "DEVICE ACTION: no exposed entity clearly matches. Discover in domain "
-            "smart-home with searchToolsForDomain, then callTool."
         )
 
     return "\n\n".join(context_parts)

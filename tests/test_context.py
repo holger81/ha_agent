@@ -73,6 +73,25 @@ def test_build_tool_context_adds_device_search_hint() -> None:
     )
     assert "smart-home" in tool_context
     assert "searchToolsForDomain" in tool_context
+    assert "ha_call_service" in tool_context
+
+
+def test_build_tool_context_adds_explicit_service_hint_for_match() -> None:
+    """Matched exposed lights get domain/service/entity_id guidance."""
+    tool_context = context.build_tool_context(
+        "turn on the dining room lights",
+        [
+            {
+                "entity_id": "light.dining_room_ceiling",
+                "name": "Dining Room Ceiling Lights",
+                "area_name": "Dining room",
+            }
+        ],
+    )
+    assert "light.dining_room_ceiling" in tool_context
+    assert "domain light" in tool_context
+    assert "service turn_on" in tool_context
+    assert "ha_call_service" in tool_context
 
 
 def test_entity_matches_query() -> None:
