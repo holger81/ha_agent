@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from homeassistant.components import conversation
+from homeassistant.components.conversation.chat_log import current_chat_log
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -89,8 +91,6 @@ class HaAgentConversationEntity(
         self._llm = LlmClient(session)
         self._mcp = McpProxyClient(session, get_mcp_config(entry))
         self._attr_unique_id = f"{entry.entry_id}_conversation"
-        agent_config = get_agent_config(entry)
-        self._attr_supports_streaming = agent_config.enable_streaming
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -102,6 +102,25 @@ class HaAgentConversationEntity(
     def supported_languages(self) -> list[str]:
         """Return supported languages."""
         return list(SUPPORTED_LANGUAGES)
+
+    @property
+    def supports_streaming(self) -> bool:
+        """Tell Assist the agent can stream deltas to LiquidAI TTS."""
+        return get_agent_config(self._entry).enable_streaming
+
+    async def async_process(
+        self, user_input: conversation.ConversationInput
+    ) -> conversation.ConversationResult:
+        """Reuse the Assist pipeline chat log so TTS receives live deltas."""
+        existing = current_chat_log.get()
+        if (
+            existing is not None
+            and existing.conversation_id == user_input.conversation_id
+            and existing.delta_listener is not None
+        ):
+            return await self._async_handle_message(user_input, existing)
+
+        return await super().async_process(user_input)
 
     async def async_added_to_hass(self) -> None:
         """Register as the conversation agent for this config entry."""
@@ -166,12 +185,14 @@ class HaAgentConversationEntity(
                     continue
                 produced_content = True
                 yield {"content": chunk}
+                if agent_config.enable_streaming:
+                    await asyncio.sleep(0)
             if not produced_content:
                 yield {"content": EMPTY_RESPONSE_MESSAGE}
 
         try:
             async for _content in chat_log.async_add_delta_content_stream(
-                user_input.agent_id,
+                self.entity_id,
                 delta_stream(),
             ):
                 pass

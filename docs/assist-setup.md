@@ -76,7 +76,8 @@ Checks LLM `/models`, MCP health, `initialize`, and `tools/list`.
    - “How many unread emails do I have?”
 4. Ask a follow-up in the same conversation to confirm memory
 5. Confirm text appears progressively in Assist debug (streaming enabled)
-6. Check HA logs for MCP tool calls and LLM responses
+6. For voice, confirm pipeline debug shows `stream_response: true` and `tts_start_streaming: true` (Home Assistant starts LiquidAI TTS after ~60 characters of assistant text)
+7. Check HA logs for MCP tool calls and LLM responses
 
 ## Troubleshooting
 
@@ -86,6 +87,7 @@ Checks LLM `/models`, MCP health, `initialize`, and `tools/list`.
 | MCP connection failed | Bearer token, `GET /api/health` on proxy host |
 | Tool errors in Assist | Tool instructions in config; MCP proxy logs |
 | No streaming text | Enable streaming in agent settings; HA ≥ 2025.10 |
+| Text streams but speech waits until the end | Pipeline needs `stream_response: true`; ask a longer question so TTS streaming starts; tune LiquidAI “stream first chunk” |
 | Speech issues | [LiquidAI assist setup](https://github.com/holger81/ha_liquidai/blob/main/docs/assist-setup.md) |
 
 ## Related

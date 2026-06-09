@@ -70,9 +70,6 @@ def _load_conversation_module():
     ha_helpers_ar.async_get = MagicMock()
     ha_helpers_aiohttp.async_get_clientsession = MagicMock()
     ha_helpers_entity_platform.AddEntitiesCallback = object
-    class ConversationEntity:
-        pass
-
     class AbstractConversationAgent:
         pass
 
@@ -89,6 +86,13 @@ def _load_conversation_module():
         CONTROL = 1
 
     ha_conversation.ConversationEntityFeature = ConversationEntityFeature
+    class _ConversationEntityBase:
+        async def async_process(self, user_input):
+            raise NotImplementedError
+
+    class ConversationEntity(_ConversationEntityBase):
+        pass
+
     ha_conversation.ConversationEntity = ConversationEntity
     ha_conversation.AbstractConversationAgent = AbstractConversationAgent
     ha_conversation.ConversationInput = ConversationInput
@@ -97,6 +101,8 @@ def _load_conversation_module():
     ha_conversation.async_get_result_from_chat_log = MagicMock()
     ha_exposed.async_should_expose = MagicMock(return_value=True)
     ha_config_entries.ConfigEntry = object
+    ha_chat_log = types.ModuleType("homeassistant.components.conversation.chat_log")
+    ha_chat_log.current_chat_log = types.SimpleNamespace(get=lambda: None)
 
     sys.modules["homeassistant"] = ha_pkg
     sys.modules["homeassistant.core"] = ha_core
@@ -110,6 +116,7 @@ def _load_conversation_module():
     sys.modules["homeassistant.helpers.entity"] = ha_helpers_entity
     sys.modules["homeassistant.components"] = ha_components
     sys.modules["homeassistant.components.conversation"] = ha_conversation
+    sys.modules["homeassistant.components.conversation.chat_log"] = ha_chat_log
     sys.modules["homeassistant.components.homeassistant"] = types.ModuleType(
         "homeassistant.components.homeassistant"
     )
@@ -147,6 +154,20 @@ def _load_conversation_module():
 
 
 conversation_mod = _load_conversation_module()
+
+
+def test_supports_streaming_follows_agent_config() -> None:
+    """Assist pipeline reads supports_streaming from the conversation entity."""
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    entry.title = "HA Agent"
+    entry.data = {"llm_model": "test-model", "conversation_enable_streaming": True}
+
+    entity = conversation_mod.HaAgentConversationEntity(MagicMock(), entry)
+    assert entity.supports_streaming is True
+
+    entry.data["conversation_enable_streaming"] = False
+    assert entity.supports_streaming is False
 
 
 @pytest.mark.asyncio
