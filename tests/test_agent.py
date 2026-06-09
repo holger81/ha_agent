@@ -214,12 +214,10 @@ def _make_incremental_stream(parts: list[str]):
 
 @pytest.mark.asyncio
 async def test_run_agent_yields_stream_deltas_to_assist() -> None:
-    """Streaming mode forwards chat replies in chunks for Assist."""
+    """Streaming mode forwards LLM deltas instead of one buffered reply."""
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(
-        return_value=llm_client.ChatResult(content="Hello there.", tool_calls=[])
-    )
-    mock_llm.chat_stream = MagicMock()
+    mock_llm.chat = AsyncMock()
+    mock_llm.chat_stream = _make_stream("Hello there.")
 
     mock_mcp = MagicMock()
     mock_mcp.get_session_prompt = AsyncMock(return_value="")
@@ -267,17 +265,14 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
 
     assert "".join(chunks) == "Hello there."
     assert len(chunks) > 1
-    mock_llm.chat.assert_awaited_once()
-    mock_llm.chat_stream.assert_not_called()
+    mock_llm.chat.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_run_agent_streams_chunks_as_they_arrive() -> None:
-    """Assist receives partial text from a buffered chat reply."""
+    """Assist receives partial text before the LLM stream finishes."""
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(
-        return_value=llm_client.ChatResult(content="Hello there.", tool_calls=[])
-    )
+    mock_llm.chat_stream = _make_incremental_stream(["Hel", "lo ", "there."])
 
     mock_mcp = MagicMock()
     mock_mcp.get_session_prompt = AsyncMock(return_value="")
@@ -321,7 +316,7 @@ async def test_run_agent_streams_chunks_as_they_arrive() -> None:
     ):
         chunks.append(chunk)
 
-    assert chunks == ["Hello", " there."]
+    assert chunks == ["Hel", "lo", " there."]
     assert "".join(chunks) == "Hello there."
 
 
@@ -332,12 +327,11 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
         '<|tool_call|>call:home_assistant__ha_search_entities'
         '{query:<|"|>camera snapshot<|"|>}<tool_call|>'
     )
+    stream_texts = iter([tool_markup, "Found the camera."])
+
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(
-        side_effect=[
-            llm_client.ChatResult(content=tool_markup, tool_calls=[]),
-            llm_client.ChatResult(content="Found the camera.", tool_calls=[]),
-        ]
+    mock_llm.chat_stream = MagicMock(
+        side_effect=lambda *_args, **_kwargs: _make_stream(next(stream_texts))()
     )
 
     mock_mcp = MagicMock()

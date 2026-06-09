@@ -29,23 +29,11 @@ if TYPE_CHECKING:
 FALLBACK_MESSAGE = "Sorry, I couldn't complete that request."
 
 
-async def _yield_buffered_text(text: str) -> AsyncGenerator[str, None]:
-    """Yield a completed reply in chunks for Assist without a second LLM call."""
-    if not text:
-        return
-    for index, word in enumerate(text.split(" ")):
-        if index == 0:
-            yield word
-        else:
-            yield f" {word}"
-
-
 async def _yield_streamed_assistant_text(
     llm: LlmClient,
     messages: list[dict[str, Any]],
     backend: LlmBackend,
-    *,
-    tools: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]],
 ) -> AsyncGenerator[tuple[str, StreamChatSession], None]:
     """Stream assistant text to Assist while accumulating the raw response."""
     session = StreamChatSession()
@@ -166,52 +154,76 @@ async def run_agent(
             )
         )
 
-        result = await llm.chat(messages, active_backend, tools=tools)
-        if result.tool_calls:
-            messages.append(result.assistant_message)
-            for call in result.tool_calls:
-                output = await execute_tool(mcp_client, call)
-                messages.append(tool_result_message(call, output))
-            use_chat_backend = True
-            continue
-
-        if await _execute_embedded_tool_calls(
-            mcp_client,
-            (result.content or "").strip(),
-            messages,
-        ):
-            use_chat_backend = True
-            continue
-
-        assistant_text = strip_embedded_tool_markup((result.content or "").strip())
-        if is_tool_call_only_text(result.content):
-            assistant_text = ""
-
         if agent_config.enable_streaming:
-            if assistant_text:
-                async for chunk in _yield_buffered_text(assistant_text):
+            session = StreamChatSession()
+            async for chunk, active_session in _yield_streamed_assistant_text(
+                llm,
+                messages,
+                active_backend,
+                tools,
+            ):
+                session = active_session
+                if chunk:
                     yield chunk
-            else:
-                session = StreamChatSession()
-                async for chunk, active_session in _yield_streamed_assistant_text(
-                    llm,
-                    messages,
-                    active_backend,
-                    tools=None,
-                ):
-                    session = active_session
-                    if chunk:
-                        yield chunk
-                assistant_text = strip_embedded_tool_markup(session.content)
-                if await _execute_embedded_tool_calls(
-                    mcp_client,
-                    session.content.strip(),
-                    messages,
-                ):
-                    use_chat_backend = True
-                    continue
-        elif assistant_text:
-            yield assistant_text
+
+            raw_buffer = session.content
+            if session.tool_calls:
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments,
+                            },
+                        }
+                        for call in session.tool_calls
+                    ],
+                }
+                messages.append(assistant_message)
+                for call in session.tool_calls:
+                    output = await execute_tool(mcp_client, call)
+                    messages.append(tool_result_message(call, output))
+                use_chat_backend = True
+                continue
+
+            if await _execute_embedded_tool_calls(
+                mcp_client,
+                raw_buffer.strip(),
+                messages,
+            ):
+                use_chat_backend = True
+                continue
+
+            assistant_text = strip_embedded_tool_markup(raw_buffer)
+            if not assistant_text and is_tool_call_only_text(raw_buffer):
+                assistant_text = ""
+        else:
+            result = await llm.chat(messages, active_backend, tools=tools)
+            if result.tool_calls:
+                messages.append(result.assistant_message)
+                for call in result.tool_calls:
+                    output = await execute_tool(mcp_client, call)
+                    messages.append(tool_result_message(call, output))
+                use_chat_backend = True
+                continue
+
+            if await _execute_embedded_tool_calls(
+                mcp_client,
+                (result.content or "").strip(),
+                messages,
+            ):
+                use_chat_backend = True
+                continue
+
+            assistant_text = (result.content or "").strip()
+            if assistant_text and not is_tool_call_only_text(assistant_text):
+                yield assistant_text
+            elif assistant_text:
+                assistant_text = ""
 
         append_turn(
             hass,

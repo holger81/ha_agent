@@ -5,11 +5,10 @@ from __future__ import annotations
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_config_entry
 
 from .const import (
     CONF_ACTION_LLM_MODEL,
@@ -88,29 +87,9 @@ class _HaAgentModelSelectBase(SelectEntity):
         return True
 
     async def async_added_to_hass(self) -> None:
-        """Load model list and track config entry updates."""
+        """Load model list from the LLM server."""
         await super().async_added_to_hass()
         await self._async_refresh_models()
-        self.async_on_remove(
-            async_track_config_entry(
-                self.hass,
-                self._async_config_entry_updated,
-                self._entry.entry_id,
-            )
-        )
-
-    @callback
-    def _async_config_entry_updated(
-        self,
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-    ) -> None:
-        """Refresh state when the config entry changes."""
-        if entry.entry_id != self._entry.entry_id:
-            return
-        self._entry = entry
-        self.async_write_ha_state()
-        self.hass.async_create_task(self._async_refresh_models())
 
     async def _async_refresh_models(self) -> None:
         """Fetch the latest model list from the LLM server."""

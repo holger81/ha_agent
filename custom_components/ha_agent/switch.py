@@ -5,9 +5,8 @@ from __future__ import annotations
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_config_entry
 
 from .const import CONF_ACTION_MODEL_ENABLED, DOMAIN
 
@@ -43,29 +42,6 @@ class HaAgentActionRoutingSwitch(SwitchEntity):
     def is_on(self) -> bool:
         """Return whether action routing is enabled."""
         return bool(self._entry.data.get(CONF_ACTION_MODEL_ENABLED))
-
-    async def async_added_to_hass(self) -> None:
-        """Track config entry updates."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            async_track_config_entry(
-                self.hass,
-                self._async_config_entry_updated,
-                self._entry.entry_id,
-            )
-        )
-
-    @callback
-    def _async_config_entry_updated(
-        self,
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-    ) -> None:
-        """Refresh state when the config entry changes."""
-        if entry.entry_id != self._entry.entry_id:
-            return
-        self._entry = entry
-        self.async_write_ha_state()
 
     async def _async_set_enabled(self, enabled: bool) -> None:
         data = dict(self._entry.data)

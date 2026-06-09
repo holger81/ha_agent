@@ -11,7 +11,6 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_config_entry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .config_helpers import get_llm_backend, get_mcp_config
@@ -96,28 +95,6 @@ class _HaAgentDiagnosticSensor(SensorEntity):
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
         }
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            async_track_config_entry(
-                self.hass,
-                self._async_config_entry_updated,
-                self._entry.entry_id,
-            )
-        )
-
-    @callback
-    def _async_config_entry_updated(
-        self,
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-    ) -> None:
-        if entry.entry_id != self._entry.entry_id:
-            return
-        self._entry = entry
-        self.async_write_ha_state()
-
 
 class HaAgentLastRouteSensor(_HaAgentDiagnosticSensor):
     """Show the route used for the last Assist turn."""
