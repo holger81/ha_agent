@@ -16,8 +16,23 @@ _NEWS_QUERY = re.compile(
     r"\b(news|headlines|briefing|nachrichten|headline)\b",
     re.IGNORECASE,
 )
+_TURN_OFF = re.compile(r"\bturn\b(?:\s+\w+){0,6}\s+off\b", re.IGNORECASE)
+_TURN_ON = re.compile(r"\bturn\b(?:\s+\w+){0,6}\s+on\b", re.IGNORECASE)
 _DEVICE_ACTION = re.compile(
-    r"\b(open|close|turn on|turn off|toggle|lock|unlock)\b",
+    r"\b("
+    r"open|close|toggle|lock|unlock|"
+    r"switch\s+(?:on|off)|"
+    r"turn\s+(?:on|off)|"
+    r"turn\b(?:\s+\w+){0,6}\s+(?:on|off)"
+    r")\b",
+    re.IGNORECASE,
+)
+_FOLLOW_UP_REF = re.compile(
+    r"\b(them|those|these|it|that|again|back)\b",
+    re.IGNORECASE,
+)
+_ENTITY_ID = re.compile(
+    r"\b(?:light|switch|cover|fan|lock|climate|media_player)\.[a-z0-9_]+\b",
     re.IGNORECASE,
 )
 _EMAIL_QUERY = re.compile(
@@ -104,9 +119,9 @@ def entity_matches_query(entity: dict[str, Any], query: str) -> bool:
 def _service_hint_for_query(query: str) -> str:
     """Return a homeassistant service hint for common device actions."""
     lowered = query.lower()
-    if "turn off" in lowered or "switch off" in lowered:
+    if _TURN_OFF.search(query) or "switch off" in lowered:
         return "turn_off"
-    if "turn on" in lowered or "switch on" in lowered:
+    if _TURN_ON.search(query) or "switch on" in lowered:
         return "turn_on"
     if "toggle" in lowered:
         return "toggle"
@@ -121,11 +136,23 @@ def _service_hint_for_query(query: str) -> str:
     return "turn_on"
 
 
-def _device_action_hint(query: str, exposed: list[dict[str, Any]]) -> str | None:
+def _history_entity_ids(history: list[dict[str, str]]) -> list[str]:
+    """Return entity ids mentioned in prior conversation turns."""
+    combined = " ".join(message.get("content", "") for message in history[-6:])
+    return _entity_ids_from_text(combined)
+
+
+def _device_action_hint(
+    query: str,
+    exposed: list[dict[str, Any]],
+    *,
+    history: list[dict[str, str]] | None = None,
+) -> str | None:
     """Return explicit homeassistant call guidance for device actions."""
     if not is_device_action_query(query):
         return None
 
+    prior_turns = history or []
     matches = [entity for entity in exposed if entity_matches_query(entity, query)]
     service = _service_hint_for_query(query)
     call_example = (
@@ -152,6 +179,19 @@ def _device_action_hint(query: str, exposed: list[dict[str, Any]]) -> str | None
             )
         return "\n".join(lines)
 
+    if history_ids := _history_entity_ids(prior_turns):
+        lines = [
+            "DEVICE ACTION: reuse entity_id values from the prior turn in this "
+            f"conversation. Suggested service: {service}.",
+        ]
+        for entity_id in history_ids:
+            domain = entity_id.split(".", 1)[0]
+            lines.append(
+                f"- Use entity_id {entity_id} with domain {domain} "
+                f"and service {service}"
+            )
+        return "\n".join(lines)
+
     return (
         "DEVICE ACTION: no exposed entity clearly matches. Discover in domain "
         "smart-home with searchToolsForDomain, then callTool. For homeassistant "
@@ -160,19 +200,75 @@ def _device_action_hint(query: str, exposed: list[dict[str, Any]]) -> str | None
     )
 
 
-def build_tool_context(query: str, exposed: list[dict[str, Any]]) -> str:
+def _entity_ids_from_text(text: str) -> list[str]:
+    """Return homeassistant entity ids mentioned in text."""
+    return list(dict.fromkeys(match.group(0) for match in _ENTITY_ID.finditer(text)))
+
+
+def _recent_device_context(history: list[dict[str, str]]) -> bool:
+    """Return True when recent turns mention device actions or entity ids."""
+    combined = " ".join(message.get("content", "") for message in history[-6:])
+    return bool(_DEVICE_ACTION.search(combined) or _entity_ids_from_text(combined))
+
+
+def _recent_news_context(history: list[dict[str, str]]) -> bool:
+    """Return True when recent turns were about news."""
+    combined = " ".join(message.get("content", "") for message in history[-4:])
+    return bool(is_news_query(combined))
+
+
+def _follow_up_device_hint(
+    query: str,
+    history: list[dict[str, str]],
+) -> str | None:
+    """Guide pronoun/retry follow-ups that rely on conversation memory."""
+    if not history or not _FOLLOW_UP_REF.search(query):
+        return None
+    if not _recent_device_context(history):
+        return None
+
+    lines = [
+        "FOLLOW-UP DEVICE ACTION: the user refers to an entity from earlier in "
+        "this conversation. Reuse the same entity_id from the prior successful "
+        "device command and only change the service if needed (turn_on vs turn_off). "
+        "Never pass display names as entity_id.",
+    ]
+    if is_device_action_query(query):
+        service = _service_hint_for_query(query)
+        lines.append(f"Suggested service for this follow-up: {service}")
+    history_text = " ".join(message.get("content", "") for message in history[-6:])
+    if entity_ids := _entity_ids_from_text(history_text):
+        lines.append(
+            "Recent entity_id values from this conversation: "
+            + ", ".join(entity_ids)
+        )
+    return "\n".join(lines)
+
+
+def build_tool_context(
+    query: str,
+    exposed: list[dict[str, Any]],
+    *,
+    history: list[dict[str, str]] | None = None,
+) -> str:
     """Build optional tool hints (not route classifiers)."""
     context_parts: list[str] = []
+    prior_turns = history or []
 
     if exposed:
         context_parts.append(
             "EXPOSED ENTITIES:\n" + format_exposed_entities(exposed)
         )
 
-    if device_hint := _device_action_hint(query, exposed):
+    if device_hint := _device_action_hint(query, exposed, history=prior_turns):
         context_parts.append(device_hint)
 
-    if is_affirmative(query) or is_news_query(query):
+    if follow_up_hint := _follow_up_device_hint(query, prior_turns):
+        context_parts.append(follow_up_hint)
+
+    if is_news_query(query) or (
+        is_affirmative(query) and _recent_news_context(prior_turns)
+    ):
         context_parts.append(
             "NEWS: follow MCP SERVER INSTRUCTIONS. Discover in domain news, "
             "then callTool with the returned toolName."

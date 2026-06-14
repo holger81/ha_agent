@@ -21,7 +21,12 @@ from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
 from .router import TaskRoute, backend_for_route, classify_route
 from .status import record_route, update_agent_status
-from .tools import execute_tool, tool_result_message
+from .tools import (
+    execute_tool,
+    ha_service_entity_id,
+    memory_assistant_text,
+    tool_result_message,
+)
 
 if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
@@ -61,10 +66,36 @@ async def _yield_streamed_assistant_text(
         yield "", session
 
 
+async def _run_tool_call(
+    mcp_client: McpProxyClient,
+    call: ToolCall,
+    *,
+    exposed_entities: list[dict[str, Any]],
+    controlled_entity_ids: list[str],
+) -> str:
+    """Execute one tool call and track controlled homeassistant entities."""
+    output = await execute_tool(
+        mcp_client,
+        call,
+        exposed_entities=exposed_entities,
+    )
+    if not output.startswith("Tool error:") and (
+        entity_id := ha_service_entity_id(
+            call,
+            exposed_entities=exposed_entities,
+        )
+    ):
+        controlled_entity_ids.append(entity_id)
+    return output
+
+
 async def _execute_embedded_tool_calls(
     mcp_client: McpProxyClient,
     content: str,
     messages: list[dict[str, Any]],
+    *,
+    exposed_entities: list[dict[str, Any]],
+    controlled_entity_ids: list[str],
 ) -> bool:
     """Parse and run embedded tool calls from model text. Return True if any ran."""
     embedded = parse_embedded_tool_calls(content)
@@ -78,7 +109,12 @@ async def _execute_embedded_tool_calls(
             name=call.name,
             arguments=call.arguments,
         )
-        output = await execute_tool(mcp_client, tool_call)
+        output = await _run_tool_call(
+            mcp_client,
+            tool_call,
+            exposed_entities=exposed_entities,
+            controlled_entity_ids=controlled_entity_ids,
+        )
         messages.append(tool_result_message(tool_call, output))
     return True
 
@@ -122,18 +158,22 @@ async def run_agent(
             last_error=str(err),
         )
 
-    tool_context = build_tool_context(user_text, exposed_entities)
+    history = get_history(
+        hass,
+        conversation_id,
+        max_turns=agent_config.history_turns,
+    )
+    tool_context = build_tool_context(
+        user_text,
+        exposed_entities,
+        history=history,
+    )
     system_message = build_system_message(
         agent_config.system_prompt,
         agent_config.tool_instructions,
         mcp_session_prompt=mcp_session_prompt,
         tool_context=tool_context,
         extra_system_prompt=extra_system_prompt,
-    )
-    history = get_history(
-        hass,
-        conversation_id,
-        max_turns=agent_config.history_turns,
     )
     messages = build_messages(
         system_message=system_message,
@@ -142,6 +182,7 @@ async def run_agent(
     )
     tools = llm_tools
     use_chat_backend = route != TaskRoute.HA_ACTION
+    controlled_entity_ids: list[str] = []
 
     for _ in range(agent_config.max_iterations):
         active_backend = (
@@ -185,7 +226,12 @@ async def run_agent(
                 }
                 messages.append(assistant_message)
                 for call in session.tool_calls:
-                    output = await execute_tool(mcp_client, call)
+                    output = await _run_tool_call(
+                        mcp_client,
+                        call,
+                        exposed_entities=exposed_entities,
+                        controlled_entity_ids=controlled_entity_ids,
+                    )
                     messages.append(tool_result_message(call, output))
                 use_chat_backend = True
                 continue
@@ -194,6 +240,8 @@ async def run_agent(
                 mcp_client,
                 raw_buffer.strip(),
                 messages,
+                exposed_entities=exposed_entities,
+                controlled_entity_ids=controlled_entity_ids,
             ):
                 use_chat_backend = True
                 continue
@@ -206,7 +254,12 @@ async def run_agent(
             if result.tool_calls:
                 messages.append(result.assistant_message)
                 for call in result.tool_calls:
-                    output = await execute_tool(mcp_client, call)
+                    output = await _run_tool_call(
+                        mcp_client,
+                        call,
+                        exposed_entities=exposed_entities,
+                        controlled_entity_ids=controlled_entity_ids,
+                    )
                     messages.append(tool_result_message(call, output))
                 use_chat_backend = True
                 continue
@@ -215,6 +268,8 @@ async def run_agent(
                 mcp_client,
                 (result.content or "").strip(),
                 messages,
+                exposed_entities=exposed_entities,
+                controlled_entity_ids=controlled_entity_ids,
             ):
                 use_chat_backend = True
                 continue
@@ -229,7 +284,7 @@ async def run_agent(
             hass,
             conversation_id,
             user_text,
-            assistant_text,
+            memory_assistant_text(assistant_text, controlled_entity_ids),
             max_turns=agent_config.history_turns,
         )
         return

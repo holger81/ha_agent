@@ -109,6 +109,28 @@ def test_normalize_flat_ha_call_service_args() -> None:
     assert tool_args["arguments"]["domain"] == "light"
 
 
+def test_normalize_ha_call_service_service_aliases() -> None:
+    """Common LLM service spellings map to homeassistant service ids."""
+    call = llm_client.ToolCall(
+        id="call_4b",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "entity_id": "light.dining",
+                    "service": "turn off",
+                },
+            }
+        ),
+    )
+
+    _tool_name, tool_args = tools._normalize_tool_call(call)
+
+    assert tool_args["arguments"]["service"] == "turn_off"
+    assert tool_args["arguments"]["domain"] == "light"
+
+
 def test_normalize_ha_call_service_infers_domain() -> None:
     """ha_call_service calls missing domain are repaired from entity_id."""
     call = llm_client.ToolCall(
@@ -128,3 +150,40 @@ def test_normalize_ha_call_service_infers_domain() -> None:
     _, tool_args = tools._normalize_tool_call(call)
 
     assert tool_args["arguments"]["domain"] == "light"
+
+
+def test_normalize_ha_call_service_resolves_display_name() -> None:
+    """Display names from the model are mapped to real entity ids."""
+    call = llm_client.ToolCall(
+        id="call_5",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "entity_id": "Dining Room Ceiling Lights",
+                    "service": "turn_off",
+                },
+            }
+        ),
+    )
+    exposed = [
+        {
+            "entity_id": "light.dining_room_ceiling",
+            "name": "Dining Room Ceiling Lights",
+        }
+    ]
+
+    _, tool_args = tools._normalize_tool_call(call, exposed_entities=exposed)
+
+    assert tool_args["arguments"]["entity_id"] == "light.dining_room_ceiling"
+    assert tool_args["arguments"]["domain"] == "light"
+
+
+def test_memory_assistant_text_appends_controlled_entities() -> None:
+    """Conversation memory keeps entity ids for pronoun follow-ups."""
+    text = tools.memory_assistant_text(
+        "The dining room lights have been turned on.",
+        ["light.dining_room_ceiling"],
+    )
+    assert "light.dining_room_ceiling" in text

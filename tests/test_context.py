@@ -134,3 +134,80 @@ def test_is_email_query() -> None:
     """Email intent detection works."""
     assert context.is_email_query("do I have new emails")
     assert not context.is_email_query("turn off the lights")
+
+
+def test_is_device_action_query_matches_turn_them_back_off() -> None:
+    """Pronoun phrases between turn and off still count as device actions."""
+    assert context.is_device_action_query("turn them back off")
+
+
+def test_build_tool_context_turn_them_back_off_uses_turn_off() -> None:
+    """Follow-up off phrasing suggests turn_off, not turn_on."""
+    history = [
+        {
+            "role": "assistant",
+            "content": "Controlled: light.dining_room_ceiling.",
+        }
+    ]
+    tool_context = context.build_tool_context(
+        "turn them back off",
+        [
+            {
+                "entity_id": "light.dining_room_ceiling",
+                "name": "Dining Room Ceiling Lights",
+                "area_name": "Dining room",
+            }
+        ],
+        history=history,
+    )
+    assert "service turn_off" in tool_context
+
+
+def test_build_tool_context_follow_up_hint_from_history() -> None:
+    """Retry/pronoun follow-ups reuse entity ids from prior turns."""
+    history = [
+        {
+            "role": "user",
+            "content": "turn on the dining room lights",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "The dining room lights have been turned on. "
+                "Controlled: light.dining_room_ceiling."
+            ),
+        },
+    ]
+    tool_context = context.build_tool_context(
+        "they are. try again",
+        [],
+        history=history,
+    )
+    assert "FOLLOW-UP DEVICE ACTION" in tool_context
+    assert "light.dining_room_ceiling" in tool_context
+
+
+def test_build_tool_context_turn_them_back_off_reuses_history_entity() -> None:
+    """Pronoun off commands reuse the entity id from the previous turn."""
+    history = [
+        {"role": "user", "content": "turn on the dining room lights"},
+        {
+            "role": "assistant",
+            "content": (
+                "The dining room lights have been turned on. "
+                "Controlled: light.dining_room_ceiling."
+            ),
+        },
+    ]
+    tool_context = context.build_tool_context(
+        "turn them back off",
+        [
+            {
+                "entity_id": "light.dining_room_ceiling",
+                "name": "Dining Room Ceiling Lights",
+            }
+        ],
+        history=history,
+    )
+    assert "service turn_off" in tool_context
+    assert "light.dining_room_ceiling" in tool_context
