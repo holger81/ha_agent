@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
@@ -44,6 +45,7 @@ from .tools import (
     execute_tool,
     ha_service_entity_id,
     memory_assistant_text,
+    parse_tool_arguments,
     tool_result_message,
 )
 
@@ -51,6 +53,49 @@ if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
 
 FALLBACK_MESSAGE = "Sorry, I couldn't complete that request."
+
+
+@dataclass(slots=True, frozen=True)
+class AgentDelta:
+    """One streamed update for the Assist chat log."""
+
+    content: str = ""
+    thinking: str = ""
+
+
+def _tool_call_payload(call: ToolCall) -> tuple[str, dict[str, Any]]:
+    """Return MCP tool name and argument object from a tool call."""
+    args = parse_tool_arguments(call.arguments)
+    inner = args.get("arguments")
+    if isinstance(inner, dict):
+        return str(args.get("toolName") or call.name), inner
+    return str(args.get("toolName") or call.name), args
+
+
+def _tool_display_name(call: ToolCall) -> str:
+    tool_name, _arguments = _tool_call_payload(call)
+    return tool_name
+
+
+def _tool_status_line(call: ToolCall) -> str:
+    tool_name, tool_args = _tool_call_payload(call)
+    if "ha_call_service" in tool_name:
+        service = tool_args.get("service", "service")
+        entity = tool_args.get("entity_id", "entity")
+        return f"Calling {service} on {entity}…\n"
+    if query := tool_args.get("query"):
+        return f"Calling {tool_name} ({query})…\n"
+    return f"Calling {tool_name}…\n"
+
+
+def _tool_result_line(call: ToolCall, output: str) -> str:
+    name = _tool_display_name(call)
+    if output.startswith("Tool error:"):
+        detail = output.removeprefix("Tool error:").strip()
+        if len(detail) > 80:
+            detail = f"{detail[:77]}..."
+        return f"{name} failed: {detail}\n" if detail else f"{name} failed\n"
+    return f"{name} done\n"
 
 
 def _record_tool_call(trace: TurnTrace, call: ToolCall, output: str) -> None:
@@ -75,31 +120,37 @@ async def _yield_streamed_assistant_text(
     messages: list[dict[str, Any]],
     backend: LlmBackend,
     tools: list[dict[str, Any]],
-) -> AsyncGenerator[tuple[str, StreamChatSession], None]:
+    *,
+    show_reasoning: bool,
+) -> AsyncGenerator[tuple[AgentDelta, StreamChatSession], None]:
     """Stream assistant text to Assist while accumulating the raw response."""
     session = StreamChatSession()
     raw_buffer = ""
     yielded_len = 0
 
-    async for delta in llm.chat_stream(
+    async for chunk in llm.chat_stream(
         messages,
         backend,
         tools=tools,
         session=session,
     ):
-        raw_buffer += delta
+        if show_reasoning and chunk.reasoning_content:
+            yield AgentDelta(thinking=chunk.reasoning_content), session
+        if not chunk.content:
+            continue
+        raw_buffer += chunk.content
         safe = safe_stream_display_text(raw_buffer)
         if len(safe) > yielded_len:
-            chunk = safe[yielded_len:]
+            text = safe[yielded_len:]
             yielded_len = len(safe)
-            yield chunk, session
+            yield AgentDelta(content=text), session
 
     session.content = raw_buffer
     assistant_text = strip_embedded_tool_markup(raw_buffer)
     if len(assistant_text) > yielded_len:
-        yield assistant_text[yielded_len:], session
+        yield AgentDelta(content=assistant_text[yielded_len:]), session
     elif not yielded_len:
-        yield "", session
+        yield AgentDelta(), session
 
 
 async def _run_tool_call(
@@ -128,7 +179,34 @@ async def _run_tool_call(
     return output
 
 
-async def _execute_embedded_tool_calls(
+async def _process_tool_calls(
+    agent_config: AgentConfig,
+    calls: list[ToolCall],
+    mcp_client: McpProxyClient,
+    messages: list[dict[str, Any]],
+    *,
+    exposed_entities: list[dict[str, Any]],
+    controlled_entity_ids: list[str],
+    trace: TurnTrace | None = None,
+) -> AsyncGenerator[AgentDelta, None]:
+    """Run tool calls and yield chat progress deltas."""
+    for call in calls:
+        if agent_config.show_reasoning_in_chat:
+            yield AgentDelta(thinking=_tool_status_line(call))
+        output = await _run_tool_call(
+            mcp_client,
+            call,
+            exposed_entities=exposed_entities,
+            controlled_entity_ids=controlled_entity_ids,
+            trace=trace,
+        )
+        if agent_config.show_reasoning_in_chat:
+            yield AgentDelta(thinking=_tool_result_line(call, output))
+        messages.append(tool_result_message(call, output))
+
+
+async def _process_embedded_tool_calls(
+    agent_config: AgentConfig,
     mcp_client: McpProxyClient,
     content: str,
     messages: list[dict[str, Any]],
@@ -136,28 +214,31 @@ async def _execute_embedded_tool_calls(
     exposed_entities: list[dict[str, Any]],
     controlled_entity_ids: list[str],
     trace: TurnTrace | None = None,
-) -> bool:
-    """Parse and run embedded tool calls from model text. Return True if any ran."""
+) -> AsyncGenerator[AgentDelta, None]:
+    """Parse embedded tool markup, run tools, and yield progress deltas."""
     embedded = parse_embedded_tool_calls(content)
     if not embedded:
-        return False
+        return
 
     messages.append({"role": "assistant", "content": content})
-    for index, call in enumerate(embedded):
-        tool_call = ToolCall(
+    calls = [
+        ToolCall(
             id=call.id or f"call_embedded_{index}",
             name=call.name,
             arguments=call.arguments,
         )
-        output = await _run_tool_call(
-            mcp_client,
-            tool_call,
-            exposed_entities=exposed_entities,
-            controlled_entity_ids=controlled_entity_ids,
-            trace=trace,
-        )
-        messages.append(tool_result_message(tool_call, output))
-    return True
+        for index, call in enumerate(embedded)
+    ]
+    async for delta in _process_tool_calls(
+        agent_config,
+        calls,
+        mcp_client,
+        messages,
+        exposed_entities=exposed_entities,
+        controlled_entity_ids=controlled_entity_ids,
+        trace=trace,
+    ):
+        yield delta
 
 
 async def _update_skill_status(hass: HomeAssistant, entry_id: str) -> None:
@@ -262,8 +343,8 @@ async def run_agent(
     user_text: str,
     exposed_entities: list[dict[str, Any]],
     extra_system_prompt: str | None = None,
-) -> AsyncGenerator[str, None]:
-    """Run the tool loop and yield assistant text deltas."""
+) -> AsyncGenerator[AgentDelta, None]:
+    """Run the tool loop and yield assistant chat deltas."""
     history = get_history(
         hass,
         conversation_id,
@@ -288,7 +369,7 @@ async def run_agent(
             max_turns=agent_config.history_turns,
         )
         await _update_skill_status(hass, entry_id)
-        yield confirm
+        yield AgentDelta(content=confirm)
         return
 
     if is_skill_admin_query(user_text) and (
@@ -302,7 +383,7 @@ async def run_agent(
             max_turns=agent_config.history_turns,
         )
         await _update_skill_status(hass, entry_id)
-        yield reply
+        yield AgentDelta(content=reply)
         return
 
     route = classify_route(user_text, exposed_entities, router_config)
@@ -390,15 +471,16 @@ async def run_agent(
 
         if agent_config.enable_streaming:
             session = StreamChatSession()
-            async for chunk, active_session in _yield_streamed_assistant_text(
+            async for delta, active_session in _yield_streamed_assistant_text(
                 llm,
                 messages,
                 active_backend,
                 tools,
+                show_reasoning=agent_config.show_reasoning_in_chat,
             ):
                 session = active_session
-                if chunk:
-                    yield chunk
+                if delta.content or delta.thinking:
+                    yield delta
 
             raw_buffer = session.content
             if session.tool_calls:
@@ -418,26 +500,33 @@ async def run_agent(
                     ],
                 }
                 messages.append(assistant_message)
-                for call in session.tool_calls:
-                    output = await _run_tool_call(
-                        mcp_client,
-                        call,
-                        exposed_entities=exposed_entities,
-                        controlled_entity_ids=controlled_entity_ids,
-                        trace=trace,
-                    )
-                    messages.append(tool_result_message(call, output))
+                async for delta in _process_tool_calls(
+                    agent_config,
+                    session.tool_calls,
+                    mcp_client,
+                    messages,
+                    exposed_entities=exposed_entities,
+                    controlled_entity_ids=controlled_entity_ids,
+                    trace=trace,
+                ):
+                    yield delta
                 use_chat_backend = True
                 continue
 
-            if await _execute_embedded_tool_calls(
-                mcp_client,
-                raw_buffer.strip(),
-                messages,
-                exposed_entities=exposed_entities,
-                controlled_entity_ids=controlled_entity_ids,
-                trace=trace,
-            ):
+            embedded_ran = False
+            if parse_embedded_tool_calls(raw_buffer.strip()):
+                async for delta in _process_embedded_tool_calls(
+                    agent_config,
+                    mcp_client,
+                    raw_buffer.strip(),
+                    messages,
+                    exposed_entities=exposed_entities,
+                    controlled_entity_ids=controlled_entity_ids,
+                    trace=trace,
+                ):
+                    yield delta
+                embedded_ran = True
+            if embedded_ran:
                 use_chat_backend = True
                 continue
 
@@ -448,32 +537,41 @@ async def run_agent(
             result = await llm.chat(messages, active_backend, tools=tools)
             if result.tool_calls:
                 messages.append(result.assistant_message)
-                for call in result.tool_calls:
-                    output = await _run_tool_call(
-                        mcp_client,
-                        call,
-                        exposed_entities=exposed_entities,
-                        controlled_entity_ids=controlled_entity_ids,
-                        trace=trace,
-                    )
-                    messages.append(tool_result_message(call, output))
+                async for delta in _process_tool_calls(
+                    agent_config,
+                    result.tool_calls,
+                    mcp_client,
+                    messages,
+                    exposed_entities=exposed_entities,
+                    controlled_entity_ids=controlled_entity_ids,
+                    trace=trace,
+                ):
+                    yield delta
                 use_chat_backend = True
                 continue
 
-            if await _execute_embedded_tool_calls(
-                mcp_client,
-                (result.content or "").strip(),
-                messages,
-                exposed_entities=exposed_entities,
-                controlled_entity_ids=controlled_entity_ids,
-                trace=trace,
-            ):
+            embedded_ran = False
+            if parse_embedded_tool_calls((result.content or "").strip()):
+                async for delta in _process_embedded_tool_calls(
+                    agent_config,
+                    mcp_client,
+                    (result.content or "").strip(),
+                    messages,
+                    exposed_entities=exposed_entities,
+                    controlled_entity_ids=controlled_entity_ids,
+                    trace=trace,
+                ):
+                    yield delta
+                embedded_ran = True
+            if embedded_ran:
                 use_chat_backend = True
                 continue
 
             assistant_text = (result.content or "").strip()
+            if agent_config.show_reasoning_in_chat and result.reasoning_content:
+                yield AgentDelta(thinking=result.reasoning_content)
             if assistant_text and not is_tool_call_only_text(assistant_text):
-                yield assistant_text
+                yield AgentDelta(content=assistant_text)
             elif assistant_text:
                 assistant_text = ""
 
@@ -491,7 +589,7 @@ async def run_agent(
         )
         if suffix:
             assistant_text = f"{assistant_text}{suffix}".strip()
-            yield suffix
+            yield AgentDelta(content=suffix)
 
         append_turn(
             hass,
@@ -504,7 +602,7 @@ async def run_agent(
 
     trace.fallback = True
     fallback = FALLBACK_MESSAGE
-    yield fallback
+    yield AgentDelta(content=fallback)
     append_turn(
         hass,
         conversation_id,

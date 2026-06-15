@@ -12,7 +12,9 @@ CONF_LLM_API_KEY = "llm_api_key"
 CONF_LLM_MAX_TOKENS = "llm_max_tokens"
 CONF_LLM_TEMPERATURE = "llm_temperature"
 CONF_LLM_TIMEOUT = "llm_timeout"
+# Legacy key; migrated to CONF_LLM_THINKING_LEVEL.
 CONF_LLM_ENABLE_THINKING = "llm_enable_thinking"
+CONF_LLM_THINKING_LEVEL = "llm_thinking_level"
 
 CONF_MCP_URL = "mcp_url"
 CONF_MCP_BEARER_TOKEN = "mcp_bearer_token"
@@ -22,6 +24,7 @@ CONF_MCP_HEALTH_URL = "mcp_health_url"
 CONF_MAX_AGENT_ITERATIONS = "max_agent_iterations"
 CONF_CONVERSATION_HISTORY_TURNS = "conversation_history_turns"
 CONF_CONVERSATION_ENABLE_STREAMING = "conversation_enable_streaming"
+CONF_CONVERSATION_SHOW_REASONING = "conversation_show_reasoning"
 
 CONF_SKILLS_LEARNING_ENABLED = "skills_learning_enabled"
 CONF_SKILLS_AUTO_SAVE = "skills_auto_save"
@@ -70,7 +73,7 @@ DEFAULT_TOOL_INSTRUCTIONS = (
 # Saved during setup before MCP-compliant defaults; reset on upgrade.
 LEGACY_TOOL_INSTRUCTION_MARKERS = ("mcp_call_tool",)
 
-CONFIG_ENTRY_VERSION = 4
+CONFIG_ENTRY_VERSION = 6
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"

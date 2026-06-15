@@ -137,7 +137,7 @@ async def main() -> int:
         max_tokens=256,
         temperature=0.2,
         timeout=60,
-        enable_thinking=False,
+        thinking_level="off",
     )
     mcp_url = args.mcp_url.rstrip("/")
     mcp_config = McpConfig(

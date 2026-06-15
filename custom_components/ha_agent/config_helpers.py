@@ -15,12 +15,14 @@ from .const import (
     CONF_AGENT_SYSTEM_PROMPT,
     CONF_CONVERSATION_ENABLE_STREAMING,
     CONF_CONVERSATION_HISTORY_TURNS,
+    CONF_CONVERSATION_SHOW_REASONING,
     CONF_LLM_API_KEY,
     CONF_LLM_BASE_URL,
     CONF_LLM_ENABLE_THINKING,
     CONF_LLM_MAX_TOKENS,
     CONF_LLM_MODEL,
     CONF_LLM_TEMPERATURE,
+    CONF_LLM_THINKING_LEVEL,
     CONF_LLM_TIMEOUT,
     CONF_MAX_AGENT_ITERATIONS,
     CONF_MCP_BEARER_TOKEN,
@@ -47,6 +49,7 @@ from .const import (
     DEFAULT_SKILLS_MAX_INJECT,
     DEFAULT_TOOL_INSTRUCTIONS,
 )
+from .thinking import DEFAULT_THINKING_LEVEL, normalize_thinking_level
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -62,7 +65,7 @@ class LlmBackend:
     max_tokens: int
     temperature: float
     timeout: int
-    enable_thinking: bool
+    thinking_level: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +87,7 @@ class AgentConfig:
     max_iterations: int
     history_turns: int
     enable_streaming: bool
+    show_reasoning_in_chat: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +124,9 @@ def get_llm_backend(entry: ConfigEntry) -> LlmBackend:
         max_tokens=int(data.get(CONF_LLM_MAX_TOKENS, DEFAULT_LLM_MAX_TOKENS)),
         temperature=float(data.get(CONF_LLM_TEMPERATURE, DEFAULT_LLM_TEMPERATURE)),
         timeout=int(data.get(CONF_LLM_TIMEOUT, DEFAULT_LLM_TIMEOUT)),
-        enable_thinking=bool(data.get(CONF_LLM_ENABLE_THINKING, False)),
+        thinking_level=normalize_thinking_level(
+            data.get(CONF_LLM_THINKING_LEVEL, data.get(CONF_LLM_ENABLE_THINKING))
+        ),
     )
 
 
@@ -159,7 +165,7 @@ def get_action_backend(entry: ConfigEntry) -> LlmBackend | None:
             data.get(CONF_ACTION_LLM_TEMPERATURE, DEFAULT_ACTION_LLM_TEMPERATURE)
         ),
         timeout=chat.timeout,
-        enable_thinking=False,
+        thinking_level=DEFAULT_THINKING_LEVEL,
     )
 
 
@@ -199,5 +205,8 @@ def get_agent_config(entry: ConfigEntry) -> AgentConfig:
         ),
         enable_streaming=bool(
             data.get(CONF_CONVERSATION_ENABLE_STREAMING, True),
+        ),
+        show_reasoning_in_chat=bool(
+            data.get(CONF_CONVERSATION_SHOW_REASONING, True),
         ),
     )

@@ -170,7 +170,7 @@ class HaAgentConversationEntity(
         async def delta_stream() -> AsyncGenerator[dict[str, Any], None]:
             nonlocal produced_content
             yield {"role": "assistant"}
-            async for chunk in run_agent(
+            async for delta in run_agent(
                 self.hass,
                 llm=self._llm,
                 mcp_client=self._mcp,
@@ -184,11 +184,13 @@ class HaAgentConversationEntity(
                 exposed_entities=exposed,
                 extra_system_prompt=user_input.extra_system_prompt,
             ):
-                if not chunk:
-                    continue
-                produced_content = True
-                yield {"content": chunk}
-                if agent_config.enable_streaming:
+                if delta.thinking:
+                    produced_content = True
+                    yield {"thinking_content": delta.thinking}
+                if delta.content:
+                    produced_content = True
+                    yield {"content": delta.content}
+                if agent_config.enable_streaming and (delta.content or delta.thinking):
                     await asyncio.sleep(0)
             if not produced_content:
                 yield {"content": EMPTY_RESPONSE_MESSAGE}

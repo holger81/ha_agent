@@ -14,7 +14,10 @@ from .const import (
     CONF_ACTION_LLM_TEMPERATURE,
     CONF_ACTION_MODEL_ENABLED,
     CONF_AGENT_SYSTEM_PROMPT,
+    CONF_CONVERSATION_SHOW_REASONING,
+    CONF_LLM_ENABLE_THINKING,
     CONF_LLM_MODEL,
+    CONF_LLM_THINKING_LEVEL,
     CONF_SKILLS_AUTO_SAVE,
     CONF_SKILLS_LEARNING_ENABLED,
     CONF_SKILLS_MAX_INJECT,
@@ -31,6 +34,7 @@ from .const import (
 )
 from .skills.commands import async_setup_services
 from .skills.store import close_skill_store, get_skill_store
+from .thinking import normalize_thinking_level
 
 PLATFORMS: list[Platform] = [
     Platform.CONVERSATION,
@@ -80,6 +84,18 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         data.setdefault(CONF_SKILLS_AUTO_SAVE, False)
         data.setdefault(CONF_SKILLS_USE_ENABLED, True)
         data.setdefault(CONF_SKILLS_MAX_INJECT, DEFAULT_SKILLS_MAX_INJECT)
+        version = 4
+
+    if version == 4:
+        if CONF_LLM_THINKING_LEVEL not in data:
+            data[CONF_LLM_THINKING_LEVEL] = normalize_thinking_level(
+                data.get(CONF_LLM_ENABLE_THINKING)
+            )
+        data.pop(CONF_LLM_ENABLE_THINKING, None)
+        version = 5
+
+    if version == 5:
+        data.setdefault(CONF_CONVERSATION_SHOW_REASONING, True)
         version = CONFIG_ENTRY_VERSION
 
     if version != config_entry.version:

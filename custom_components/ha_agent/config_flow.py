@@ -19,12 +19,14 @@ from .const import (
     CONF_AGENT_SYSTEM_PROMPT,
     CONF_CONVERSATION_ENABLE_STREAMING,
     CONF_CONVERSATION_HISTORY_TURNS,
+    CONF_CONVERSATION_SHOW_REASONING,
     CONF_LLM_API_KEY,
     CONF_LLM_BASE_URL,
     CONF_LLM_ENABLE_THINKING,
     CONF_LLM_MAX_TOKENS,
     CONF_LLM_MODEL,
     CONF_LLM_TEMPERATURE,
+    CONF_LLM_THINKING_LEVEL,
     CONF_LLM_TIMEOUT,
     CONF_MAX_AGENT_ITERATIONS,
     CONF_MCP_BEARER_TOKEN,
@@ -54,6 +56,11 @@ from .const import (
 from .llm_client import LlmClient
 from .llm_models import async_fetch_model_options
 from .mcp_client import McpProxyClient
+from .thinking import (
+    DEFAULT_THINKING_LEVEL,
+    THINKING_LEVEL_OPTIONS,
+    normalize_thinking_level,
+)
 
 
 def _agent_prompt_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
@@ -168,9 +175,19 @@ def _llm_schema(
                 ),
             ),
             vol.Optional(
-                CONF_LLM_ENABLE_THINKING,
-                default=defaults.get(CONF_LLM_ENABLE_THINKING, False),
-            ): bool,
+                CONF_LLM_THINKING_LEVEL,
+                default=normalize_thinking_level(
+                    defaults.get(
+                        CONF_LLM_THINKING_LEVEL,
+                        defaults.get(CONF_LLM_ENABLE_THINKING),
+                    )
+                ),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=THINKING_LEVEL_OPTIONS,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                ),
+            ),
         }
     )
 
@@ -311,6 +328,10 @@ def _agent_settings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema
                 CONF_CONVERSATION_ENABLE_STREAMING,
                 default=defaults.get(CONF_CONVERSATION_ENABLE_STREAMING, True),
             ): bool,
+            vol.Optional(
+                CONF_CONVERSATION_SHOW_REASONING,
+                default=defaults.get(CONF_CONVERSATION_SHOW_REASONING, True),
+            ): bool,
         }
     )
 
@@ -367,7 +388,9 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input.get(CONF_LLM_TEMPERATURE, DEFAULT_LLM_TEMPERATURE)
                 ),
                 timeout=int(user_input.get(CONF_LLM_TIMEOUT, DEFAULT_LLM_TIMEOUT)),
-                enable_thinking=bool(user_input.get(CONF_LLM_ENABLE_THINKING, False)),
+                thinking_level=normalize_thinking_level(
+                    user_input.get(CONF_LLM_THINKING_LEVEL, DEFAULT_THINKING_LEVEL)
+                ),
             )
             client = LlmClient(async_create_clientsession(self.hass))
             try:

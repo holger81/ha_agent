@@ -136,8 +136,12 @@ def _backend() -> config_helpers.LlmBackend:
         max_tokens=128,
         temperature=0.2,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
+
+
+def _content(chunks: list) -> list[str]:
+    return [chunk.content for chunk in chunks if chunk.content]
 
 
 def _agent_config(*, streaming: bool = False) -> config_helpers.AgentConfig:
@@ -147,6 +151,7 @@ def _agent_config(*, streaming: bool = False) -> config_helpers.AgentConfig:
         max_iterations=6,
         history_turns=4,
         enable_streaming=streaming,
+        show_reasoning_in_chat=False,
     )
 
 
@@ -259,7 +264,7 @@ async def test_phase4_light_off_with_exposed_entity() -> None:
         )
     ]
 
-    assert chunks == ["The dining room lights are off."]
+    assert _content(chunks) == ["The dining room lights are off."]
     mock_mcp.call_tool.assert_awaited_once()
     call_args = mock_mcp.call_tool.await_args.args
     assert call_args[0] == "callTool"
@@ -321,7 +326,7 @@ async def test_phase4_cover_open_without_exposed_entity() -> None:
         )
     ]
 
-    assert chunks == ["I opened the patio cover."]
+    assert _content(chunks) == ["I opened the patio cover."]
     assert mock_mcp.call_tool.await_count == 2
 
 
@@ -363,7 +368,7 @@ async def test_phase4_news_query_uses_mcp_tool() -> None:
         )
     ]
 
-    assert chunks == ["Here are today's headlines."]
+    assert _content(chunks) == ["Here are today's headlines."]
     mock_mcp.call_tool.assert_awaited_once()
     assert mock_mcp.call_tool.await_args.args[1]["toolName"] == "mcp_news__news_curate"
 
@@ -407,7 +412,7 @@ async def test_phase4_email_unread_count_uses_mcp_tool() -> None:
         )
     ]
 
-    assert chunks == ["You have 3 unread emails."]
+    assert _content(chunks) == ["You have 3 unread emails."]
     mock_mcp.call_tool.assert_awaited_once()
     assert (
         mock_mcp.call_tool.await_args.args[1]["toolName"]

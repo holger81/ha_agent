@@ -14,11 +14,13 @@ from .const import (
     CONF_ACTION_LLM_MODEL,
     CONF_ACTION_MODEL_ENABLED,
     CONF_LLM_MODEL,
+    CONF_LLM_THINKING_LEVEL,
     DOMAIN,
     LOGGER,
 )
 from .llm_client import LlmClient
 from .llm_models import ModelTarget, async_fetch_model_options
+from .thinking import THINKING_LEVEL_OPTIONS, normalize_thinking_level
 
 
 async def async_setup_entry(
@@ -31,6 +33,7 @@ async def async_setup_entry(
         [
             HaAgentChatModelSelect(hass, config_entry),
             HaAgentActionModelSelect(hass, config_entry),
+            HaAgentThinkingLevelSelect(hass, config_entry),
         ]
     )
 
@@ -165,3 +168,36 @@ class HaAgentActionModelSelect(_HaAgentModelSelectBase):
 
     def _is_enabled(self) -> bool:
         return bool(self._entry.data.get(CONF_ACTION_MODEL_ENABLED))
+
+
+class HaAgentThinkingLevelSelect(SelectEntity):
+    """Select reasoning effort for the chat LLM."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:head-lightbulb-outline"
+    _attr_translation_key = "thinking_level"
+    _attr_options = THINKING_LEVEL_OPTIONS
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_thinking_level"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+        }
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the configured thinking level."""
+        return normalize_thinking_level(self._entry.data.get(CONF_LLM_THINKING_LEVEL))
+
+    async def async_select_option(self, option: str) -> None:
+        """Update the reasoning effort level."""
+        if option not in THINKING_LEVEL_OPTIONS:
+            raise ValueError(f"Unknown thinking level: {option}")
+
+        data = dict(self._entry.data)
+        data[CONF_LLM_THINKING_LEVEL] = option
+        self.hass.config_entries.async_update_entry(self._entry, data=data)
+        await self.hass.config_entries.async_reload(self._entry.entry_id)

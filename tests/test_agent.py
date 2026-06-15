@@ -210,7 +210,7 @@ async def test_run_agent_executes_tool_then_replies() -> None:
         max_tokens=128,
         temperature=0.2,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
     agent_config = config_helpers.AgentConfig(
         system_prompt="Test agent",
@@ -218,6 +218,7 @@ async def test_run_agent_executes_tool_then_replies() -> None:
         max_iterations=4,
         history_turns=2,
         enable_streaming=False,
+        show_reasoning_in_chat=False,
     )
     router_config = config_helpers.RouterConfig(
         action_enabled=False,
@@ -249,15 +250,19 @@ async def test_run_agent_executes_tool_then_replies() -> None:
         )
     ]
 
-    assert chunks == ["Done."]
+    assert _agent_content(chunks) == ["Done."]
     assert mock_llm.chat.await_count == 2
     mock_mcp.call_tool.assert_awaited_once()
+
+
+def _agent_content(deltas: list) -> list[str]:
+    return [delta.content for delta in deltas if delta.content]
 
 
 def _make_stream(text: str):
     async def _stream(*_args, **_kwargs):
         for char in text:
-            yield char
+            yield llm_client.StreamChunk(content=char)
 
     return _stream
 
@@ -265,7 +270,7 @@ def _make_stream(text: str):
 def _make_incremental_stream(parts: list[str]):
     async def _stream(*_args, **_kwargs):
         for part in parts:
-            yield part
+            yield llm_client.StreamChunk(content=part)
 
     return _stream
 
@@ -288,7 +293,7 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
         max_tokens=128,
         temperature=0.2,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
     agent_config = config_helpers.AgentConfig(
         system_prompt="Test agent",
@@ -296,6 +301,7 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
         max_iterations=4,
         history_turns=2,
         enable_streaming=True,
+        show_reasoning_in_chat=False,
     )
     router_config = config_helpers.RouterConfig(
         action_enabled=False,
@@ -321,7 +327,7 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
         )
     ]
 
-    assert "".join(chunks) == "Hello there."
+    assert "".join(_agent_content(chunks)) == "Hello there."
     assert len(chunks) > 1
     mock_llm.chat.assert_not_called()
 
@@ -343,7 +349,7 @@ async def test_run_agent_streams_chunks_as_they_arrive() -> None:
         max_tokens=128,
         temperature=0.2,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
     agent_config = config_helpers.AgentConfig(
         system_prompt="Test agent",
@@ -351,11 +357,12 @@ async def test_run_agent_streams_chunks_as_they_arrive() -> None:
         max_iterations=4,
         history_turns=2,
         enable_streaming=True,
+        show_reasoning_in_chat=False,
     )
 
     hass = _mock_hass()
 
-    chunks: list[str] = []
+    chunks: list = []
     async for chunk in agent_mod.run_agent(
         hass,
         llm=mock_llm,
@@ -374,8 +381,8 @@ async def test_run_agent_streams_chunks_as_they_arrive() -> None:
     ):
         chunks.append(chunk)
 
-    assert chunks == ["Hel", "lo", " there."]
-    assert "".join(chunks) == "Hello there."
+    assert _agent_content(chunks) == ["Hel", "lo", " there."]
+    assert "".join(_agent_content(chunks)) == "Hello there."
 
 
 @pytest.mark.asyncio
@@ -404,7 +411,7 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
         max_tokens=128,
         temperature=0.2,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
     agent_config = config_helpers.AgentConfig(
         system_prompt="Test agent",
@@ -412,6 +419,7 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
         max_iterations=4,
         history_turns=2,
         enable_streaming=True,
+        show_reasoning_in_chat=False,
     )
     router_config = config_helpers.RouterConfig(
         action_enabled=False,
@@ -437,6 +445,143 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
         )
     ]
 
-    assert tool_markup not in "".join(chunks)
-    assert "".join(chunks) == "Found the camera."
+    assert tool_markup not in "".join(_agent_content(chunks))
+    assert "".join(_agent_content(chunks)) == "Found the camera."
     mock_mcp.call_tool.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_streams_reasoning_separately() -> None:
+    """Reasoning chunks are yielded as thinking, not spoken content."""
+    async def _stream(*_args, **_kwargs):
+        yield llm_client.StreamChunk(reasoning_content="Thinking…")
+        yield llm_client.StreamChunk(content="Hello.")
+
+    mock_llm = MagicMock()
+    mock_llm.chat_stream = _stream
+    mock_mcp = MagicMock()
+    mock_mcp.get_session_prompt = AsyncMock(return_value="")
+    mock_mcp.get_llm_tools = AsyncMock(return_value=[])
+
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        thinking_level="medium",
+    )
+    agent_config = config_helpers.AgentConfig(
+        system_prompt="Test agent",
+        tool_instructions="Use tools",
+        max_iterations=4,
+        history_turns=2,
+        enable_streaming=True,
+        show_reasoning_in_chat=True,
+    )
+
+    hass = _mock_hass()
+    deltas = [
+        delta
+        async for delta in agent_mod.run_agent(
+            hass,
+            llm=mock_llm,
+            mcp_client=mock_mcp,
+            backend=backend,
+            agent_config=agent_config,
+            router_config=config_helpers.RouterConfig(
+                action_enabled=False,
+                action_backend=None,
+            ),
+            skills_config=DEFAULT_SKILLS_CONFIG,
+            entry_id="test-entry",
+            conversation_id="test-conv",
+            user_text="hi",
+            exposed_entities=[],
+        )
+    ]
+
+    assert [delta.thinking for delta in deltas if delta.thinking] == ["Thinking…"]
+    assert "".join(_agent_content(deltas)) == "Hello."
+
+
+@pytest.mark.asyncio
+async def test_run_agent_shows_tool_progress_in_chat() -> None:
+    """Tool calls emit start and completion lines in the thinking panel."""
+    tool_call = llm_client.ToolCall(
+        id="call_1",
+        name="callTool",
+        arguments=(
+            '{"toolName":"home_assistant__ha_call_service",'
+            '"arguments":{"domain":"light","service":"turn_off",'
+            '"entity_id":"light.dining"}}'
+        ),
+    )
+    first = llm_client.ChatResult(
+        content=None,
+        tool_calls=[tool_call],
+        assistant_message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call_1"}],
+        },
+    )
+    second = llm_client.ChatResult(content="Done.", tool_calls=[])
+
+    mock_llm = MagicMock()
+    mock_llm.chat = AsyncMock(side_effect=[first, second])
+    mock_mcp = MagicMock()
+    mock_mcp.call_tool = AsyncMock(return_value='{"success": true}')
+    mock_mcp.get_session_prompt = AsyncMock(return_value="")
+    mock_mcp.get_llm_tools = AsyncMock(return_value=[])
+
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        thinking_level="off",
+    )
+    agent_config = config_helpers.AgentConfig(
+        system_prompt="Test agent",
+        tool_instructions="Use tools",
+        max_iterations=4,
+        history_turns=2,
+        enable_streaming=False,
+        show_reasoning_in_chat=True,
+    )
+
+    hass = _mock_hass()
+    deltas = [
+        delta
+        async for delta in agent_mod.run_agent(
+            hass,
+            llm=mock_llm,
+            mcp_client=mock_mcp,
+            backend=backend,
+            agent_config=agent_config,
+            router_config=config_helpers.RouterConfig(
+                action_enabled=False,
+                action_backend=None,
+            ),
+            skills_config=DEFAULT_SKILLS_CONFIG,
+            entry_id="test-entry",
+            conversation_id="test-conv",
+            user_text="turn off dining room lights",
+            exposed_entities=[
+                {
+                    "entity_id": "light.dining",
+                    "name": "Dining",
+                    "state": "on",
+                }
+            ],
+        )
+    ]
+
+    thinking = [delta.thinking for delta in deltas if delta.thinking]
+    assert thinking[0] == "Calling turn_off on light.dining…\n"
+    assert thinking[1] == "home_assistant__ha_call_service done\n"
+    assert _agent_content(deltas) == ["Done."]

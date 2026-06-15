@@ -185,3 +185,51 @@ async def test_migrate_entry_adds_skills_defaults() -> None:
     assert data[const.CONF_SKILLS_USE_ENABLED] is True
     assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
 
+
+@pytest.mark.asyncio
+async def test_migrate_entry_converts_thinking_level() -> None:
+    """Version 4 entries convert legacy enable_thinking to thinking_level."""
+    ha_agent = _load_init_module()
+    const = sys.modules["ha_agent.const"]
+
+    entry = MagicMock()
+    entry.version = 4
+    entry.data = {
+        const.CONF_LLM_MODEL: "test-model",
+        const.CONF_LLM_ENABLE_THINKING: True,
+    }
+
+    hass = MagicMock()
+    await ha_agent.async_migrate_entry(hass, entry)
+
+    hass.config_entries.async_update_entry.assert_called_once()
+    _args, kwargs = hass.config_entries.async_update_entry.call_args
+    data = kwargs["data"]
+    assert data[const.CONF_LLM_THINKING_LEVEL] == "medium"
+    assert const.CONF_LLM_ENABLE_THINKING not in data
+    assert data[const.CONF_CONVERSATION_SHOW_REASONING] is True
+    assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
+
+
+@pytest.mark.asyncio
+async def test_migrate_entry_adds_show_reasoning_default() -> None:
+    """Version 5 entries gain show-reasoning default."""
+    ha_agent = _load_init_module()
+    const = sys.modules["ha_agent.const"]
+
+    entry = MagicMock()
+    entry.version = 5
+    entry.data = {
+        const.CONF_LLM_MODEL: "test-model",
+        const.CONF_LLM_THINKING_LEVEL: "medium",
+    }
+
+    hass = MagicMock()
+    await ha_agent.async_migrate_entry(hass, entry)
+
+    hass.config_entries.async_update_entry.assert_called_once()
+    _args, kwargs = hass.config_entries.async_update_entry.call_args
+    data = kwargs["data"]
+    assert data[const.CONF_CONVERSATION_SHOW_REASONING] is True
+    assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
+

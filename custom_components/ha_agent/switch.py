@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_ACTION_MODEL_ENABLED,
+    CONF_CONVERSATION_SHOW_REASONING,
     CONF_SKILLS_AUTO_SAVE,
     CONF_SKILLS_LEARNING_ENABLED,
     CONF_SKILLS_USE_ENABLED,
@@ -29,6 +30,7 @@ async def async_setup_entry(
             HaAgentSkillLearningSwitch(hass, config_entry),
             HaAgentSkillAutoSaveSwitch(hass, config_entry),
             HaAgentSkillUseSwitch(hass, config_entry),
+            HaAgentShowReasoningSwitch(hass, config_entry),
         ]
     )
 
@@ -153,4 +155,18 @@ class HaAgentSkillUseSwitch(_HaAgentConfigSwitch):
             unique_suffix="skill_use",
             translation_key="skill_use",
             icon="mdi:lightning-bolt-outline",
+        )
+
+
+class HaAgentShowReasoningSwitch(_HaAgentConfigSwitch):
+    """Show model reasoning and tool progress in the Assist chat log."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass,
+            entry,
+            conf_key=CONF_CONVERSATION_SHOW_REASONING,
+            unique_suffix="show_reasoning",
+            translation_key="show_reasoning",
+            icon="mdi:head-lightbulb-outline",
         )

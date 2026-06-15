@@ -62,7 +62,7 @@ def _router_config(*, enabled: bool, model: str | None = "action-model") -> obje
             max_tokens=256,
             temperature=0.1,
             timeout=30,
-            enable_thinking=False,
+            thinking_level="off",
         )
     return config_helpers.RouterConfig(
         action_enabled=enabled,
@@ -109,7 +109,7 @@ def test_backend_for_route_returns_action_backend() -> None:
         max_tokens=512,
         temperature=0.3,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
     router_config = _router_config(enabled=True)
     backend = router.backend_for_route(

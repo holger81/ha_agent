@@ -19,6 +19,7 @@ from .const import (
     DEFAULT_LLM_TIMEOUT,
 )
 from .llm_client import LlmClient
+from .thinking import DEFAULT_THINKING_LEVEL
 
 ModelTarget = str  # "chat" | "action"
 
@@ -47,7 +48,7 @@ def llm_backend_from_data(
         max_tokens=256,
         temperature=0.2,
         timeout=int(data.get(CONF_LLM_TIMEOUT, DEFAULT_LLM_TIMEOUT)),
-        enable_thinking=False,
+        thinking_level=DEFAULT_THINKING_LEVEL,
     )
 
 

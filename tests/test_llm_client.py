@@ -37,7 +37,7 @@ def _load_module(name: str):
         sys.modules["homeassistant"] = ha_pkg
         sys.modules["homeassistant.exceptions"] = ha_exc
 
-    for dep in ("const", "config_helpers"):
+    for dep in ("const", "config_helpers", "thinking"):
         if dep != name and f"ha_agent.{dep}" not in sys.modules:
             _load_module(dep)
 
@@ -131,7 +131,7 @@ async def test_chat_parses_response() -> None:
         max_tokens=128,
         temperature=0.2,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
     client = llm_client.LlmClient(session)
     result = await client.chat([{"role": "user", "content": "Hi"}], backend)
@@ -169,7 +169,7 @@ async def test_list_models_returns_sorted_ids() -> None:
         max_tokens=128,
         temperature=0.2,
         timeout=30,
-        enable_thinking=False,
+        thinking_level="off",
     )
     client = llm_client.LlmClient(session)
     models = await client.list_models(backend)
@@ -186,10 +186,98 @@ def test_stream_timeout_uses_idle_limit_without_total_cap() -> None:
         max_tokens=128,
         temperature=0.2,
         timeout=180,
-        enable_thinking=False,
+        thinking_level="off",
     )
     timeout = llm_client.LlmClient._stream_timeout(backend)
 
     assert timeout.total is None
     assert timeout.sock_read == 180
     assert timeout.connect == 30
+
+
+def test_parse_sse_reasoning_content() -> None:
+    """Streaming parser separates reasoning_content from content."""
+
+    async def _run() -> None:
+        client = llm_client.LlmClient(MagicMock())
+        session = llm_client.StreamChatSession()
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.content = self
+
+            async def iter_any(self):
+                payload = {
+                    "choices": [
+                        {
+                            "delta": {
+                                "reasoning_content": "Let me think",
+                                "content": "Hello",
+                            }
+                        }
+                    ]
+                }
+                yield f"data: {json.dumps(payload)}\n\n".encode()
+
+        response = FakeResponse()
+        chunks: list[llm_client.StreamChunk] = []
+        async for chunk in client._iter_sse_deltas(response, session):
+            chunks.append(chunk)
+
+        assert [
+            chunk.reasoning_content for chunk in chunks if chunk.reasoning_content
+        ] == ["Let me think"]
+        assert [chunk.content for chunk in chunks if chunk.content] == ["Hello"]
+        assert session.reasoning_content == "Let me think"
+        assert session.content == "Hello"
+
+    import asyncio
+
+    asyncio.run(_run())
+
+
+def test_payload_includes_thinking_for_medium() -> None:
+    """Chat payloads include reasoning parameters when thinking is enabled."""
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test-model",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        thinking_level="medium",
+    )
+    client = llm_client.LlmClient(MagicMock())
+    payload = client._payload(
+        [{"role": "user", "content": "Hi"}],
+        backend,
+        None,
+        stream=False,
+    )
+
+    assert payload["reasoning_effort"] == "medium"
+    assert payload["reasoning_format"] == "deepseek"
+    assert payload["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_payload_omits_thinking_when_off() -> None:
+    """Off thinking level disables reasoning in the payload."""
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test-model",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        thinking_level="off",
+    )
+    client = llm_client.LlmClient(MagicMock())
+    payload = client._payload(
+        [{"role": "user", "content": "Hi"}],
+        backend,
+        None,
+        stream=False,
+    )
+
+    assert payload["reasoning_effort"] == "none"
+    assert payload["chat_template_kwargs"]["enable_thinking"] is False

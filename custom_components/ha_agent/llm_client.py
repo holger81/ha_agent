@@ -13,6 +13,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .config_helpers import LlmBackend
 from .const import LOGGER
 from .embedded_tools import parse_embedded_tool_calls, strip_embedded_tool_markup
+from .thinking import apply_thinking_to_payload
 
 MCP_CALL_TOOL_SCHEMA: dict[str, Any] = {
     "type": "function",
@@ -54,8 +55,17 @@ class ChatResult:
     """Non-streaming chat completion result."""
 
     content: str | None
+    reasoning_content: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
     assistant_message: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class StreamChunk:
+    """One streamed delta from the LLM server."""
+
+    content: str = ""
+    reasoning_content: str = ""
 
 
 @dataclass(slots=True)
@@ -63,6 +73,7 @@ class StreamChatSession:
     """Mutable stream state populated while iterating chat_stream."""
 
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     _tool_call_builders: dict[int, dict[str, str]] = field(
         default_factory=dict,
@@ -116,6 +127,7 @@ class LlmClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        apply_thinking_to_payload(payload, backend.thinking_level)
         return payload
 
     async def check_connection(self, backend: LlmBackend) -> None:
@@ -195,7 +207,7 @@ class LlmClient:
         backend: LlmBackend,
         tools: list[dict[str, Any]] | None = None,
         session: StreamChatSession | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Stream assistant text deltas from a chat completion."""
         url = f"{backend.base_url}/chat/completions"
         payload = self._payload(messages, backend, tools, stream=True)
@@ -214,12 +226,12 @@ class LlmClient:
                     raise HomeAssistantError(
                         f"LLM stream failed (HTTP {response.status}): {body[:300]}"
                     )
-                async for delta in self._iter_sse_deltas(
+                async for chunk in self._iter_sse_deltas(
                     response,
                     stream_session,
                 ):
-                    if delta:
-                        yield delta
+                    if chunk.content or chunk.reasoning_content:
+                        yield chunk
                 stream_session.tool_calls = self._finalize_stream_tool_calls(
                     stream_session._tool_call_builders
                 )
@@ -239,7 +251,7 @@ class LlmClient:
         self,
         response: aiohttp.ClientResponse,
         session: StreamChatSession,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Parse OpenAI-style SSE chunks."""
         buffer = ""
         async for chunk in response.content.iter_any():
@@ -260,9 +272,20 @@ class LlmClient:
                 for choice in data.get("choices", []):
                     delta = choice.get("delta", {})
                     content = delta.get("content")
+                    reasoning = delta.get("reasoning_content")
+                    content_part = ""
+                    reasoning_part = ""
+                    if reasoning:
+                        session.reasoning_content += reasoning
+                        reasoning_part = reasoning
                     if content:
                         session.content += content
-                        yield content
+                        content_part = content
+                    if content_part or reasoning_part:
+                        yield StreamChunk(
+                            content=content_part,
+                            reasoning_content=reasoning_part,
+                        )
                     for tool_delta in delta.get("tool_calls") or []:
                         self._merge_stream_tool_delta(
                             session._tool_call_builders,
@@ -315,6 +338,7 @@ class LlmClient:
 
         message = choices[0].get("message") or {}
         content = message.get("content")
+        reasoning_content = message.get("reasoning_content")
         raw_tool_calls = message.get("tool_calls") or []
         tool_calls: list[ToolCall] = []
 
@@ -356,6 +380,7 @@ class LlmClient:
 
         return ChatResult(
             content=content,
+            reasoning_content=reasoning_content,
             tool_calls=tool_calls,
             assistant_message=assistant_message,
         )
