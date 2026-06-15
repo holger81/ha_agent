@@ -2,7 +2,7 @@
 
 Project root: `~/Projects/ha_agent`  
 Speech (STT/TTS): [`~/Projects/ha_liquidai`](../ha_liquidai)  
-Legacy stack: `~/Projects/ha_liquidai_n8n` (n8n + Webhook Conversation — to be retired)
+Legacy stack: `~/Projects/ha_liquidai_n8n` (n8n + Webhook Conversation — **retired**; see [docs/migration-from-n8n.md](docs/migration-from-n8n.md))
 
 ## Goal
 
@@ -204,11 +204,12 @@ Phase 5 adds **router options** (still UI-only):
 
 ### End-to-end (Phase 6)
 
-- [ ] Full voice pipeline without n8n
-- [ ] Pointing LLM/MCP at alternate hosts via UI only (no code change)
+- [x] Full voice pipeline without n8n (native STT + HA Agent + native TTS)
+- [x] Pointing LLM/MCP at alternate hosts via UI only (no code change)
+- [x] Migration guide and legacy n8n reference docs
 
 ---
 
 ## Next action
 
-**Phase 5 complete.** Start **Phase 6** — full n8n retirement, HACS polish, and end-to-end migration docs.
+**Phase 6 complete.** Stack is native: **ha_liquidai** (STT/TTS) + **ha_agent** (conversation). Use [docs/migration-from-n8n.md](docs/migration-from-n8n.md) to decommission n8n.

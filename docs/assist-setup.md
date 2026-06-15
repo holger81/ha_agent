@@ -71,7 +71,7 @@ Skills are stored in SQLite with FTS search (`.storage/ha_agent_skills_<entry_id
 | Conversation | **HA Agent** (`conversation.ha_agent`) |
 | Text-to-speech | **LiquidAI TTS** (`tts.ha_liquidai_custom`) |
 
-Remove Webhook Conversation if still wired.
+Remove any old **Webhook Conversation** entry after [migrating from n8n](migration-from-n8n.md).
 
 ## Verify the agent
 
@@ -112,5 +112,6 @@ Checks LLM `/models`, MCP health, `initialize`, and `tools/list`.
 
 ## Related
 
+- [Migration from n8n](migration-from-n8n.md)
 - [PLAN.md](../PLAN.md)
 - [LiquidAI STT/TTS](https://github.com/holger81/ha_liquidai)
