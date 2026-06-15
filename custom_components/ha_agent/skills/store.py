@@ -79,7 +79,7 @@ class SkillStore:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
 
-    @classmethod
+    @staticmethod
     def db_path_for_entry(hass: HomeAssistant, entry_id: str) -> Path:
         """Return the on-disk path for an entry's skill database."""
         storage = Path(hass.config.path(".storage"))
