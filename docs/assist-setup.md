@@ -38,10 +38,30 @@ On the **HA Agent device** page (like Zigbee device settings):
 | **Diagnostic** | MCP tools | Number of session tools loaded |
 | **Diagnostic** | LLM server / MCP Proxy | `online` / `offline` health |
 
-Other ways to change models:
+### Skills (learned workflows)
 
-1. **Integration options** — **Settings → Devices & services → HA Agent → Configure → Models and routing**
-2. **Reconfigure** — full setup wizard (LLM URL, MCP, action model step)
+HA Agent can learn multi-step workflows and reuse them on similar requests.
+
+| Section | Entity | Purpose |
+|---------|--------|---------|
+| **Configuration** | Skill learning | Learn skills from successful multi-step turns |
+| **Configuration** | Skill auto-save | Save without asking (when learning is on) |
+| **Configuration** | Skill auto-use | Inject matching skills into Assist turns |
+| **Diagnostic** | Skills total / enabled | Saved skill counts |
+| **Diagnostic** | Active skill | Best match for the last turn |
+| **Diagnostic** | Last skill improved | Most recent auto-improvement |
+
+**Chat commands** (per skill, no per-skill HA entities):
+
+- “list my skills”
+- “disable the dining room lights skill”
+- “enable skill …”
+- “delete skill …”
+- After a successful multi-step task (learning on, auto-save off): “yes” saves the offered skill
+
+**Services:** `ha_agent.enable_skill`, `disable_skill`, `delete_skill`, `list_skills`
+
+Skills are stored in SQLite with FTS search (`.storage/ha_agent_skills_<entry_id>.db`) so discovery stays fast at large scale. Configure **max skills per turn** under **Configure → Skills**.
 
 ## Configure the Assist pipeline
 

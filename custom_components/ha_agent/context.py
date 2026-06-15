@@ -250,10 +250,14 @@ def build_tool_context(
     exposed: list[dict[str, Any]],
     *,
     history: list[dict[str, str]] | None = None,
+    skill_hints: str = "",
 ) -> str:
     """Build optional tool hints (not route classifiers)."""
     context_parts: list[str] = []
     prior_turns = history or []
+
+    if skill_hints.strip():
+        context_parts.append(skill_hints.strip())
 
     if exposed:
         context_parts.append(

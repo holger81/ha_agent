@@ -23,6 +23,11 @@ CONF_MAX_AGENT_ITERATIONS = "max_agent_iterations"
 CONF_CONVERSATION_HISTORY_TURNS = "conversation_history_turns"
 CONF_CONVERSATION_ENABLE_STREAMING = "conversation_enable_streaming"
 
+CONF_SKILLS_LEARNING_ENABLED = "skills_learning_enabled"
+CONF_SKILLS_AUTO_SAVE = "skills_auto_save"
+CONF_SKILLS_USE_ENABLED = "skills_use_enabled"
+CONF_SKILLS_MAX_INJECT = "skills_max_inject"
+
 CONF_ACTION_MODEL_ENABLED = "action_model_enabled"
 CONF_ACTION_LLM_BASE_URL = "action_llm_base_url"
 CONF_ACTION_LLM_MODEL = "action_llm_model"
@@ -44,6 +49,8 @@ DEFAULT_MCP_TIMEOUT = 120
 DEFAULT_MAX_AGENT_ITERATIONS = 8
 DEFAULT_CONVERSATION_HISTORY_TURNS = 10
 
+DEFAULT_SKILLS_MAX_INJECT = 3
+
 MCP_SESSION_TOOLS_TTL_SECONDS = 3600
 
 DEFAULT_AGENT_SYSTEM_PROMPT = (
@@ -63,7 +70,7 @@ DEFAULT_TOOL_INSTRUCTIONS = (
 # Saved during setup before MCP-compliant defaults; reset on upgrade.
 LEGACY_TOOL_INSTRUCTION_MARKERS = ("mcp_call_tool",)
 
-CONFIG_ENTRY_VERSION = 3
+CONFIG_ENTRY_VERSION = 4
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"

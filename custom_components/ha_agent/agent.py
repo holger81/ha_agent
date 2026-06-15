@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 
-from .config_helpers import AgentConfig, LlmBackend, RouterConfig
+from .config_helpers import AgentConfig, LlmBackend, RouterConfig, SkillsConfig
 from .const import LOGGER
-from .context import build_messages, build_system_message, build_tool_context
+from .context import (
+    build_messages,
+    build_system_message,
+    build_tool_context,
+    is_affirmative,
+)
 from .embedded_tools import (
     is_tool_call_only_text,
     parse_embedded_tool_calls,
@@ -20,6 +26,19 @@ from .llm_client import LlmClient, StreamChatSession, ToolCall
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
 from .router import TaskRoute, backend_for_route, classify_route
+from .skills.commands import (
+    _MANUAL_SAVE,
+    is_skill_admin_query,
+    queue_pending_save,
+    try_confirm_pending_save,
+    try_handle_skill_command,
+)
+from .skills.creator import create_skill_from_trace
+from .skills.discovery import build_skill_hints, discover_skills
+from .skills.evaluator import evaluate_skill_use
+from .skills.models import TurnTrace
+from .skills.runtime import should_offer_skill_creation
+from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
 from .tools import (
     execute_tool,
@@ -32,6 +51,23 @@ if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
 
 FALLBACK_MESSAGE = "Sorry, I couldn't complete that request."
+
+
+def _record_tool_call(trace: TurnTrace, call: ToolCall, output: str) -> None:
+    """Append a tool call to the turn trace."""
+    try:
+        arguments = json.loads(call.arguments) if call.arguments else {}
+    except json.JSONDecodeError:
+        arguments = {"raw": call.arguments}
+    trace.tool_calls.append(
+        {
+            "toolName": call.name,
+            "name": call.name,
+            "arguments": arguments,
+        }
+    )
+    if output.startswith("Tool error:"):
+        trace.tool_errors += 1
 
 
 async def _yield_streamed_assistant_text(
@@ -72,6 +108,7 @@ async def _run_tool_call(
     *,
     exposed_entities: list[dict[str, Any]],
     controlled_entity_ids: list[str],
+    trace: TurnTrace | None = None,
 ) -> str:
     """Execute one tool call and track controlled homeassistant entities."""
     output = await execute_tool(
@@ -79,6 +116,8 @@ async def _run_tool_call(
         call,
         exposed_entities=exposed_entities,
     )
+    if trace is not None:
+        _record_tool_call(trace, call, output)
     if not output.startswith("Tool error:") and (
         entity_id := ha_service_entity_id(
             call,
@@ -96,6 +135,7 @@ async def _execute_embedded_tool_calls(
     *,
     exposed_entities: list[dict[str, Any]],
     controlled_entity_ids: list[str],
+    trace: TurnTrace | None = None,
 ) -> bool:
     """Parse and run embedded tool calls from model text. Return True if any ran."""
     embedded = parse_embedded_tool_calls(content)
@@ -114,9 +154,98 @@ async def _execute_embedded_tool_calls(
             tool_call,
             exposed_entities=exposed_entities,
             controlled_entity_ids=controlled_entity_ids,
+            trace=trace,
         )
         messages.append(tool_result_message(tool_call, output))
     return True
+
+
+async def _update_skill_status(hass: HomeAssistant, entry_id: str) -> None:
+    """Refresh skill diagnostic counters."""
+    store = get_skill_store(hass, entry_id)
+
+    def _counts() -> tuple[int, int]:
+        return store.count_skills(), store.count_skills(enabled_only=True)
+
+    total, enabled = await hass.async_add_executor_job(_counts)
+    update_agent_status(
+        hass,
+        entry_id,
+        skills_total=total,
+        skills_enabled=enabled,
+    )
+
+
+async def _post_turn_skills(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    llm: LlmClient,
+    backend: LlmBackend,
+    skills_config: SkillsConfig,
+    trace: TurnTrace,
+    history: list[dict[str, str]],
+    matched_skills: list,
+) -> str:
+    """Run skill learning/evaluation hooks. Return optional reply suffix."""
+    suffix = ""
+
+    if matched_skills and skills_config.use_enabled:
+        primary = matched_skills[0]
+
+        async def _evaluate() -> None:
+            try:
+                await evaluate_skill_use(
+                    hass,
+                    entry_id,
+                    llm,
+                    backend,
+                    skill=primary,
+                    trace=trace,
+                )
+                await _update_skill_status(hass, entry_id)
+            except Exception as err:
+                LOGGER.warning("Skill evaluation failed: %s", err)
+
+        hass.async_create_task(_evaluate())
+
+    manual_save = bool(_MANUAL_SAVE.search(trace.user_text))
+    offer = should_offer_skill_creation(
+        trace,
+        learning_enabled=skills_config.learning_enabled,
+    )
+    if not offer and not manual_save:
+        return suffix
+
+    if manual_save or skills_config.auto_save:
+
+        async def _save() -> None:
+            try:
+                await create_skill_from_trace(
+                    hass,
+                    entry_id,
+                    llm,
+                    backend,
+                    trace=trace,
+                    history=history,
+                )
+                await _update_skill_status(hass, entry_id)
+            except Exception as err:
+                LOGGER.warning("Skill creation failed: %s", err)
+
+        if skills_config.auto_save or manual_save:
+            hass.async_create_task(_save())
+            suffix = " Saving this as a skill."
+        return suffix
+
+    queue_pending_save(
+        hass,
+        entry_id,
+        trace.conversation_id,
+        trace=trace,
+        history=history,
+    )
+    return " Save this as a skill?"
 
 
 async def run_agent(
@@ -127,6 +256,7 @@ async def run_agent(
     backend: LlmBackend,
     agent_config: AgentConfig,
     router_config: RouterConfig,
+    skills_config: SkillsConfig,
     entry_id: str,
     conversation_id: str | None,
     user_text: str,
@@ -134,8 +264,74 @@ async def run_agent(
     extra_system_prompt: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run the tool loop and yield assistant text deltas."""
+    history = get_history(
+        hass,
+        conversation_id,
+        max_turns=agent_config.history_turns,
+    )
+
+    if is_affirmative(user_text) and (
+        confirm := await try_confirm_pending_save(
+            hass,
+            entry_id,
+            conversation_id,
+            user_text,
+            llm=llm,
+            backend=backend,
+        )
+    ):
+        append_turn(
+            hass,
+            conversation_id,
+            user_text,
+            confirm,
+            max_turns=agent_config.history_turns,
+        )
+        await _update_skill_status(hass, entry_id)
+        yield confirm
+        return
+
+    if is_skill_admin_query(user_text) and (
+        reply := await try_handle_skill_command(hass, entry_id, user_text)
+    ):
+        append_turn(
+            hass,
+            conversation_id,
+            user_text,
+            reply,
+            max_turns=agent_config.history_turns,
+        )
+        await _update_skill_status(hass, entry_id)
+        yield reply
+        return
+
     route = classify_route(user_text, exposed_entities, router_config)
     record_route(hass, entry_id, route)
+
+    matched_skills = []
+    skill_hints = ""
+    if skills_config.use_enabled:
+        matched_skills = await discover_skills(
+            hass,
+            entry_id,
+            user_text,
+            max_inject=skills_config.max_inject,
+        )
+        skill_hints = build_skill_hints(matched_skills)
+        update_agent_status(
+            hass,
+            entry_id,
+            active_skill=matched_skills[0].title if matched_skills else "none",
+        )
+    else:
+        update_agent_status(hass, entry_id, active_skill="none")
+
+    trace = TurnTrace(
+        user_text=user_text,
+        history_len=len(history),
+        matched_skill_ids=[skill.id for skill in matched_skills],
+        conversation_id=conversation_id,
+    )
 
     mcp_session_prompt = ""
     llm_tools = mcp_tools_to_openai_schemas(FALLBACK_MCP_TOOLS)
@@ -158,15 +354,11 @@ async def run_agent(
             last_error=str(err),
         )
 
-    history = get_history(
-        hass,
-        conversation_id,
-        max_turns=agent_config.history_turns,
-    )
     tool_context = build_tool_context(
         user_text,
         exposed_entities,
         history=history,
+        skill_hints=skill_hints,
     )
     system_message = build_system_message(
         agent_config.system_prompt,
@@ -184,7 +376,8 @@ async def run_agent(
     use_chat_backend = route != TaskRoute.HA_ACTION
     controlled_entity_ids: list[str] = []
 
-    for _ in range(agent_config.max_iterations):
+    for iteration in range(agent_config.max_iterations):
+        trace.iterations = iteration + 1
         active_backend = (
             backend
             if use_chat_backend
@@ -231,6 +424,7 @@ async def run_agent(
                         call,
                         exposed_entities=exposed_entities,
                         controlled_entity_ids=controlled_entity_ids,
+                        trace=trace,
                     )
                     messages.append(tool_result_message(call, output))
                 use_chat_backend = True
@@ -242,6 +436,7 @@ async def run_agent(
                 messages,
                 exposed_entities=exposed_entities,
                 controlled_entity_ids=controlled_entity_ids,
+                trace=trace,
             ):
                 use_chat_backend = True
                 continue
@@ -259,6 +454,7 @@ async def run_agent(
                         call,
                         exposed_entities=exposed_entities,
                         controlled_entity_ids=controlled_entity_ids,
+                        trace=trace,
                     )
                     messages.append(tool_result_message(call, output))
                 use_chat_backend = True
@@ -270,6 +466,7 @@ async def run_agent(
                 messages,
                 exposed_entities=exposed_entities,
                 controlled_entity_ids=controlled_entity_ids,
+                trace=trace,
             ):
                 use_chat_backend = True
                 continue
@@ -280,6 +477,22 @@ async def run_agent(
             elif assistant_text:
                 assistant_text = ""
 
+        trace.assistant_text = assistant_text
+        trace.controlled_entity_ids = list(controlled_entity_ids)
+        suffix = await _post_turn_skills(
+            hass,
+            entry_id=entry_id,
+            llm=llm,
+            backend=backend,
+            skills_config=skills_config,
+            trace=trace,
+            history=history,
+            matched_skills=matched_skills,
+        )
+        if suffix:
+            assistant_text = f"{assistant_text}{suffix}".strip()
+            yield suffix
+
         append_turn(
             hass,
             conversation_id,
@@ -289,6 +502,7 @@ async def run_agent(
         )
         return
 
+    trace.fallback = True
     fallback = FALLBACK_MESSAGE
     yield fallback
     append_turn(

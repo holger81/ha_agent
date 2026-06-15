@@ -20,6 +20,10 @@ class AgentStatus(TypedDict, total=False):
     llm_reachable: bool
     mcp_reachable: bool
     last_error: str | None
+    active_skill: str | None
+    skills_total: int
+    skills_enabled: int
+    last_skill_improved: str | None
 
 
 @callback

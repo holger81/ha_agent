@@ -32,6 +32,9 @@ MODULE_DEPS: dict[str, list[str]] = {
         "memory",
         "router",
         "status",
+        "embedded_tools",
+        "mcp_session",
+        "mcp_errors",
     ],
     "router": ["config_helpers", "context"],
     "status": ["const"],
@@ -52,10 +55,44 @@ def _ensure_ha_stubs() -> None:
 
         ha_core.HomeAssistant = object
         ha_core.callback = callback
+
+        class ServiceCall:
+            def __init__(self, data: dict | None = None) -> None:
+                self.data = data or {}
+
+        ha_core.ServiceCall = ServiceCall
         ha_exc.HomeAssistantError = HomeAssistantError
         sys.modules["homeassistant"] = ha_pkg
         sys.modules["homeassistant.exceptions"] = ha_exc
         sys.modules["homeassistant.core"] = ha_core
+
+
+def _load_skills_modules() -> None:
+    skills_path = COMPONENT / "skills"
+    if "ha_agent.skills" not in sys.modules:
+        skills_pkg = types.ModuleType("ha_agent.skills")
+        skills_pkg.__path__ = [str(skills_path)]  # type: ignore[attr-defined]
+        sys.modules["ha_agent.skills"] = skills_pkg
+
+    for name in (
+        "models",
+        "store",
+        "format",
+        "discovery",
+        "runtime",
+        "creator",
+        "evaluator",
+        "commands",
+    ):
+        mod_name = f"ha_agent.skills.{name}"
+        if mod_name in sys.modules:
+            continue
+        path = skills_path / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(mod_name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = module
+        spec.loader.exec_module(module)
 
 
 def _load_module(name: str):
@@ -73,6 +110,9 @@ def _load_module(name: str):
     for dep in MODULE_DEPS.get(name, []):
         if f"ha_agent.{dep}" not in sys.modules:
             _load_module(dep)
+
+    if name == "agent":
+        _load_skills_modules()
 
     path = COMPONENT / f"{name}.py"
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -114,9 +154,22 @@ def _router_config() -> config_helpers.RouterConfig:
     return config_helpers.RouterConfig(action_enabled=False, action_backend=None)
 
 
+def _skills_config() -> config_helpers.SkillsConfig:
+    return config_helpers.SkillsConfig(
+        learning_enabled=False,
+        auto_save=False,
+        use_enabled=False,
+        max_inject=3,
+    )
+
+
 def _hass() -> MagicMock:
     hass = MagicMock()
     hass.data = {}
+    hass.async_add_executor_job = AsyncMock(
+        side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)
+    )
+    hass.async_create_task = MagicMock()
     return hass
 
 
@@ -191,6 +244,7 @@ async def test_phase4_light_off_with_exposed_entity() -> None:
             backend=_backend(),
             agent_config=_agent_config(),
             router_config=_router_config(),
+            skills_config=_skills_config(),
             entry_id="phase4-entry",
             conversation_id="phase4-light",
             user_text="turn off the dining room lights",
@@ -259,6 +313,7 @@ async def test_phase4_cover_open_without_exposed_entity() -> None:
             backend=_backend(),
             agent_config=_agent_config(),
             router_config=_router_config(),
+            skills_config=_skills_config(),
             entry_id="phase4-entry",
             conversation_id="phase4-cover",
             user_text="open the patio cover",
@@ -300,6 +355,7 @@ async def test_phase4_news_query_uses_mcp_tool() -> None:
             backend=_backend(),
             agent_config=_agent_config(),
             router_config=_router_config(),
+            skills_config=_skills_config(),
             entry_id="phase4-entry",
             conversation_id="phase4-news",
             user_text="What's the news?",
@@ -343,6 +399,7 @@ async def test_phase4_email_unread_count_uses_mcp_tool() -> None:
             backend=_backend(),
             agent_config=_agent_config(),
             router_config=_router_config(),
+            skills_config=_skills_config(),
             entry_id="phase4-entry",
             conversation_id="phase4-email",
             user_text="how many unread emails do I have",
@@ -379,6 +436,7 @@ async def test_phase4_conversation_memory_across_turns() -> None:
             backend=backend,
             agent_config=agent_config,
             router_config=_router_config(),
+            skills_config=_skills_config(),
             entry_id="phase4-entry",
             conversation_id="phase4-memory",
             user_text=user_text,

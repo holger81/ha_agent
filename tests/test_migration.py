@@ -63,11 +63,31 @@ def _ensure_ha_stubs() -> None:
     if "homeassistant.core" not in sys.modules:
         ha_core = types.ModuleType("homeassistant.core")
         ha_core.HomeAssistant = object
+
+        class ServiceCall:
+            def __init__(self, data: dict | None = None) -> None:
+                self.data = data or {}
+
+        ha_core.ServiceCall = ServiceCall
+
+        def callback(func):
+            return func
+
+        ha_core.callback = callback
         sys.modules["homeassistant.core"] = ha_core
 
 
 def _load_init_module():
     _ensure_ha_stubs()
+
+    ha_core = sys.modules.get("homeassistant.core")
+    if ha_core is not None and not hasattr(ha_core, "ServiceCall"):
+
+        class ServiceCall:
+            def __init__(self, data: dict | None = None) -> None:
+                self.data = data or {}
+
+        ha_core.ServiceCall = ServiceCall
 
     for mod in list(sys.modules):
         if mod == "ha_agent" or mod.startswith("ha_agent."):
@@ -139,4 +159,29 @@ async def test_migrate_entry_adds_action_model_defaults() -> None:
     data = kwargs["data"]
     assert data[const.CONF_ACTION_MODEL_ENABLED] is False
     assert data[const.CONF_ACTION_LLM_MODEL] == ""
+    assert data[const.CONF_SKILLS_LEARNING_ENABLED] is False
     assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
+
+
+@pytest.mark.asyncio
+async def test_migrate_entry_adds_skills_defaults() -> None:
+    """Version 3 entries gain skills defaults."""
+    ha_agent = _load_init_module()
+    const = sys.modules["ha_agent.const"]
+
+    entry = MagicMock()
+    entry.version = 3
+    entry.data = {
+        const.CONF_LLM_MODEL: "test-model",
+    }
+
+    hass = MagicMock()
+    await ha_agent.async_migrate_entry(hass, entry)
+
+    hass.config_entries.async_update_entry.assert_called_once()
+    _args, kwargs = hass.config_entries.async_update_entry.call_args
+    data = kwargs["data"]
+    assert data[const.CONF_SKILLS_LEARNING_ENABLED] is False
+    assert data[const.CONF_SKILLS_USE_ENABLED] is True
+    assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
+

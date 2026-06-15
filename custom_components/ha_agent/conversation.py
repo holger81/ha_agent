@@ -24,6 +24,7 @@ from .config_helpers import (
     get_llm_backend,
     get_mcp_config,
     get_router_config,
+    get_skills_config,
 )
 from .const import (
     ASSIST_EXPOSE_ASSISTANT,
@@ -161,6 +162,7 @@ class HaAgentConversationEntity(
         backend = get_llm_backend(self._entry)
         agent_config = get_agent_config(self._entry)
         router_config = get_router_config(self._entry)
+        skills_config = get_skills_config(self._entry)
         exposed = await collect_exposed_entities(self.hass)
 
         produced_content = False
@@ -175,6 +177,7 @@ class HaAgentConversationEntity(
                 backend=backend,
                 agent_config=agent_config,
                 router_config=router_config,
+                skills_config=skills_config,
                 entry_id=self._entry.entry_id,
                 conversation_id=chat_log.conversation_id,
                 user_text=user_text,

@@ -32,6 +32,9 @@ MODULE_DEPS: dict[str, list[str]] = {
         "memory",
         "router",
         "status",
+        "embedded_tools",
+        "mcp_session",
+        "mcp_errors",
     ],
     "router": ["config_helpers", "context"],
     "status": ["const"],
@@ -52,6 +55,12 @@ def _ensure_ha_stubs() -> None:
 
         ha_core.HomeAssistant = object
         ha_core.callback = callback
+
+        class ServiceCall:
+            def __init__(self, data: dict | None = None) -> None:
+                self.data = data or {}
+
+        ha_core.ServiceCall = ServiceCall
         ha_exc.HomeAssistantError = HomeAssistantError
         sys.modules["homeassistant"] = ha_pkg
         sys.modules["homeassistant.exceptions"] = ha_exc
@@ -64,6 +73,35 @@ def _ensure_ha_stubs() -> None:
         sys.modules["homeassistant.components.conversation"] = types.ModuleType(
             "homeassistant.components.conversation"
         )
+
+
+def _load_skills_modules() -> None:
+    """Load skills subpackage modules for agent imports."""
+    skills_path = COMPONENT / "skills"
+    if "ha_agent.skills" not in sys.modules:
+        skills_pkg = types.ModuleType("ha_agent.skills")
+        skills_pkg.__path__ = [str(skills_path)]  # type: ignore[attr-defined]
+        sys.modules["ha_agent.skills"] = skills_pkg
+
+    for name in (
+        "models",
+        "store",
+        "format",
+        "discovery",
+        "runtime",
+        "creator",
+        "evaluator",
+        "commands",
+    ):
+        mod_name = f"ha_agent.skills.{name}"
+        if mod_name in sys.modules:
+            continue
+        path = skills_path / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(mod_name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = module
+        spec.loader.exec_module(module)
 
 
 def _load_module(name: str):
@@ -82,6 +120,9 @@ def _load_module(name: str):
         if f"ha_agent.{dep}" not in sys.modules:
             _load_module(dep)
 
+    if name == "agent":
+        _load_skills_modules()
+
     path = COMPONENT / f"{name}.py"
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
@@ -94,6 +135,23 @@ def _load_module(name: str):
 agent_mod = _load_module("agent")
 config_helpers = _load_module("config_helpers")
 llm_client = _load_module("llm_client")
+
+DEFAULT_SKILLS_CONFIG = config_helpers.SkillsConfig(
+    learning_enabled=False,
+    auto_save=False,
+    use_enabled=False,
+    max_inject=3,
+)
+
+
+def _mock_hass() -> MagicMock:
+    hass = MagicMock()
+    hass.data = {}
+    hass.async_add_executor_job = AsyncMock(
+        side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)
+    )
+    hass.async_create_task = MagicMock()
+    return hass
 
 
 @pytest.mark.asyncio
@@ -166,8 +224,7 @@ async def test_run_agent_executes_tool_then_replies() -> None:
         action_backend=None,
     )
 
-    hass = MagicMock()
-    hass.data = {}
+    hass = _mock_hass()
 
     chunks = [
         chunk
@@ -178,6 +235,7 @@ async def test_run_agent_executes_tool_then_replies() -> None:
             backend=backend,
             agent_config=agent_config,
             router_config=router_config,
+            skills_config=DEFAULT_SKILLS_CONFIG,
             entry_id="test-entry",
             conversation_id="test-conv",
             user_text="turn off dining room lights",
@@ -244,8 +302,7 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
         action_backend=None,
     )
 
-    hass = MagicMock()
-    hass.data = {}
+    hass = _mock_hass()
 
     chunks = [
         chunk
@@ -256,6 +313,7 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
             backend=backend,
             agent_config=agent_config,
             router_config=router_config,
+            skills_config=DEFAULT_SKILLS_CONFIG,
             entry_id="test-entry",
             conversation_id="test-conv",
             user_text="hi",
@@ -295,8 +353,7 @@ async def test_run_agent_streams_chunks_as_they_arrive() -> None:
         enable_streaming=True,
     )
 
-    hass = MagicMock()
-    hass.data = {}
+    hass = _mock_hass()
 
     chunks: list[str] = []
     async for chunk in agent_mod.run_agent(
@@ -309,6 +366,7 @@ async def test_run_agent_streams_chunks_as_they_arrive() -> None:
             action_enabled=False,
             action_backend=None,
         ),
+        skills_config=DEFAULT_SKILLS_CONFIG,
         entry_id="test-entry",
         conversation_id="test-conv",
         user_text="hi",
@@ -360,8 +418,7 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
         action_backend=None,
     )
 
-    hass = MagicMock()
-    hass.data = {}
+    hass = _mock_hass()
 
     chunks = [
         chunk
@@ -372,6 +429,7 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
             backend=backend,
             agent_config=agent_config,
             router_config=router_config,
+            skills_config=DEFAULT_SKILLS_CONFIG,
             entry_id="test-entry",
             conversation_id="test-conv",
             user_text="snapshot the front door",

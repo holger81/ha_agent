@@ -31,6 +31,7 @@ from .const import (
     CONF_MCP_HEALTH_URL,
     CONF_MCP_TIMEOUT,
     CONF_MCP_URL,
+    CONF_SKILLS_MAX_INJECT,
     CONF_TOOL_INSTRUCTIONS,
     CONFIG_ENTRY_VERSION,
     DEFAULT_ACTION_LLM_MAX_TOKENS,
@@ -45,6 +46,7 @@ from .const import (
     DEFAULT_MAX_AGENT_ITERATIONS,
     DEFAULT_MCP_TIMEOUT,
     DEFAULT_MCP_URL,
+    DEFAULT_SKILLS_MAX_INJECT,
     DEFAULT_TOOL_INSTRUCTIONS,
     DOMAIN,
     LOGGER,
@@ -490,7 +492,7 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class HaAgentOptionsFlowHandler(config_entries.OptionsFlow):
-    """Quick model and routing changes from the integration page."""
+    """Quick model, routing, and skills changes from the integration page."""
 
     async def async_step_init(
         self,
@@ -498,17 +500,8 @@ class HaAgentOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> config_entries.FlowResult:
         """Change chat/action models without full reconfigure."""
         if user_input is not None:
-            data = dict(self.config_entry.data)
-            data[CONF_LLM_MODEL] = user_input[CONF_LLM_MODEL]
-            data[CONF_ACTION_MODEL_ENABLED] = user_input[CONF_ACTION_MODEL_ENABLED]
-            action_model = user_input.get(CONF_ACTION_LLM_MODEL)
-            if action_model:
-                data[CONF_ACTION_LLM_MODEL] = action_model
-            else:
-                data.pop(CONF_ACTION_LLM_MODEL, None)
-            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
+            self._models_input = user_input
+            return await self.async_step_skills()
 
         client = LlmClient(async_create_clientsession(self.hass))
         chat_models = await async_fetch_model_options(
@@ -539,6 +532,52 @@ class HaAgentOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_ACTION_LLM_MODEL,
                         default=defaults.get(CONF_ACTION_LLM_MODEL, ""),
                     ): _model_selector(defaults, action_models),
+                }
+            ),
+        )
+
+    async def async_step_skills(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.FlowResult:
+        """Configure skill discovery limits."""
+        if user_input is not None:
+            data = dict(self.config_entry.data)
+            if hasattr(self, "_models_input") and self._models_input:
+                models = self._models_input
+                data[CONF_LLM_MODEL] = models[CONF_LLM_MODEL]
+                data[CONF_ACTION_MODEL_ENABLED] = models[CONF_ACTION_MODEL_ENABLED]
+                action_model = models.get(CONF_ACTION_LLM_MODEL)
+                if action_model:
+                    data[CONF_ACTION_LLM_MODEL] = action_model
+                else:
+                    data.pop(CONF_ACTION_LLM_MODEL, None)
+            data[CONF_SKILLS_MAX_INJECT] = int(
+                user_input.get(CONF_SKILLS_MAX_INJECT, DEFAULT_SKILLS_MAX_INJECT)
+            )
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        defaults = self.config_entry.data
+        return self.async_show_form(
+            step_id="skills",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_SKILLS_MAX_INJECT,
+                        default=defaults.get(
+                            CONF_SKILLS_MAX_INJECT,
+                            DEFAULT_SKILLS_MAX_INJECT,
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=10,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        ),
+                    ),
                 }
             ),
         )

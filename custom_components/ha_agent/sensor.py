@@ -79,6 +79,10 @@ async def async_setup_entry(
             HaAgentActionModelSensor(hass, config_entry),
             HaAgentLlmReachableSensor(coordinator, config_entry),
             HaAgentMcpReachableSensor(coordinator, config_entry),
+            HaAgentSkillsTotalSensor(hass, config_entry),
+            HaAgentSkillsEnabledSensor(hass, config_entry),
+            HaAgentActiveSkillSensor(hass, config_entry),
+            HaAgentLastSkillImprovedSensor(hass, config_entry),
         ]
     )
 
@@ -249,4 +253,72 @@ class HaAgentMcpReachableSensor(_HaAgentReachableSensor):
             translation_key="mcp_reachable",
             name="MCP Proxy",
             icon="mdi:lan-connect",
+        )
+
+
+class HaAgentSkillsTotalSensor(_HaAgentDiagnosticSensor):
+    """Show total saved skills."""
+
+    _attr_icon = "mdi:book-open-page-variant"
+    _attr_name = "Skills total"
+    _attr_translation_key = "skills_total"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(hass, entry)
+        self._attr_unique_id = f"{entry.entry_id}_skills_total"
+
+    @property
+    def native_value(self) -> int | None:
+        value = get_agent_status(self.hass, self._entry.entry_id).get("skills_total")
+        return int(value) if value is not None else 0
+
+
+class HaAgentSkillsEnabledSensor(_HaAgentDiagnosticSensor):
+    """Show enabled skill count."""
+
+    _attr_icon = "mdi:book-check"
+    _attr_name = "Skills enabled"
+    _attr_translation_key = "skills_enabled"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(hass, entry)
+        self._attr_unique_id = f"{entry.entry_id}_skills_enabled"
+
+    @property
+    def native_value(self) -> int | None:
+        value = get_agent_status(self.hass, self._entry.entry_id).get("skills_enabled")
+        return int(value) if value is not None else 0
+
+
+class HaAgentActiveSkillSensor(_HaAgentDiagnosticSensor):
+    """Show the best-matching skill for the last turn."""
+
+    _attr_icon = "mdi:star-circle"
+    _attr_name = "Active skill"
+    _attr_translation_key = "active_skill"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(hass, entry)
+        self._attr_unique_id = f"{entry.entry_id}_active_skill"
+
+    @property
+    def native_value(self) -> str | None:
+        return get_agent_status(self.hass, self._entry.entry_id).get("active_skill")
+
+
+class HaAgentLastSkillImprovedSensor(_HaAgentDiagnosticSensor):
+    """Show the last skill that was auto-improved."""
+
+    _attr_icon = "mdi:auto-fix"
+    _attr_name = "Last skill improved"
+    _attr_translation_key = "last_skill_improved"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(hass, entry)
+        self._attr_unique_id = f"{entry.entry_id}_last_skill_improved"
+
+    @property
+    def native_value(self) -> str | None:
+        return get_agent_status(self.hass, self._entry.entry_id).get(
+            "last_skill_improved"
         )

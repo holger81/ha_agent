@@ -27,6 +27,10 @@ from .const import (
     CONF_MCP_HEALTH_URL,
     CONF_MCP_TIMEOUT,
     CONF_MCP_URL,
+    CONF_SKILLS_AUTO_SAVE,
+    CONF_SKILLS_LEARNING_ENABLED,
+    CONF_SKILLS_MAX_INJECT,
+    CONF_SKILLS_USE_ENABLED,
     CONF_TOOL_INSTRUCTIONS,
     DEFAULT_ACTION_LLM_MAX_TOKENS,
     DEFAULT_ACTION_LLM_TEMPERATURE,
@@ -40,6 +44,7 @@ from .const import (
     DEFAULT_MAX_AGENT_ITERATIONS,
     DEFAULT_MCP_TIMEOUT,
     DEFAULT_MCP_URL,
+    DEFAULT_SKILLS_MAX_INJECT,
     DEFAULT_TOOL_INSTRUCTIONS,
 )
 
@@ -79,6 +84,16 @@ class AgentConfig:
     max_iterations: int
     history_turns: int
     enable_streaming: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SkillsConfig:
+    """Learned skills behaviour settings."""
+
+    learning_enabled: bool
+    auto_save: bool
+    use_enabled: bool
+    max_inject: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +160,17 @@ def get_action_backend(entry: ConfigEntry) -> LlmBackend | None:
         ),
         timeout=chat.timeout,
         enable_thinking=False,
+    )
+
+
+def get_skills_config(entry: ConfigEntry) -> SkillsConfig:
+    """Return skills settings for the config entry."""
+    data = entry.data
+    return SkillsConfig(
+        learning_enabled=bool(data.get(CONF_SKILLS_LEARNING_ENABLED, False)),
+        auto_save=bool(data.get(CONF_SKILLS_AUTO_SAVE, False)),
+        use_enabled=bool(data.get(CONF_SKILLS_USE_ENABLED, True)),
+        max_inject=int(data.get(CONF_SKILLS_MAX_INJECT, DEFAULT_SKILLS_MAX_INJECT)),
     )
 
 

@@ -15,15 +15,22 @@ from .const import (
     CONF_ACTION_MODEL_ENABLED,
     CONF_AGENT_SYSTEM_PROMPT,
     CONF_LLM_MODEL,
+    CONF_SKILLS_AUTO_SAVE,
+    CONF_SKILLS_LEARNING_ENABLED,
+    CONF_SKILLS_MAX_INJECT,
+    CONF_SKILLS_USE_ENABLED,
     CONF_TOOL_INSTRUCTIONS,
     CONFIG_ENTRY_VERSION,
     DEFAULT_ACTION_LLM_MAX_TOKENS,
     DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
+    DEFAULT_SKILLS_MAX_INJECT,
     DEFAULT_TOOL_INSTRUCTIONS,
     DOMAIN,
     LEGACY_TOOL_INSTRUCTION_MARKERS,
 )
+from .skills.commands import async_setup_services
+from .skills.store import close_skill_store, get_skill_store
 
 PLATFORMS: list[Platform] = [
     Platform.CONVERSATION,
@@ -66,6 +73,13 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             DEFAULT_ACTION_LLM_TEMPERATURE,
         )
         data.setdefault(CONF_ACTION_LLM_MAX_TOKENS, DEFAULT_ACTION_LLM_MAX_TOKENS)
+        version = 3
+
+    if version == 3:
+        data.setdefault(CONF_SKILLS_LEARNING_ENABLED, False)
+        data.setdefault(CONF_SKILLS_AUTO_SAVE, False)
+        data.setdefault(CONF_SKILLS_USE_ENABLED, True)
+        data.setdefault(CONF_SKILLS_MAX_INJECT, DEFAULT_SKILLS_MAX_INJECT)
         version = CONFIG_ENTRY_VERSION
 
     if version != config_entry.version:
@@ -88,6 +102,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name=entry.title,
         model=entry.data.get(CONF_LLM_MODEL),
     )
+    get_skill_store(hass, entry.entry_id)
+    await async_setup_services(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -95,6 +111,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    close_skill_store(hass, entry.entry_id)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

@@ -71,6 +71,13 @@
           "action_model_enabled": "Enable action model routing",
           "action_llm_model": "Action model"
         }
+      },
+      "skills": {
+        "title": "Skills",
+        "description": "Configure how many learned skills are injected per Assist turn.",
+        "data": {
+          "skills_max_inject": "Max skills per turn"
+        }
       }
     }
   },
@@ -86,6 +93,15 @@
     "switch": {
       "action_model_routing": {
         "name": "Action model routing"
+      },
+      "skill_learning": {
+        "name": "Skill learning"
+      },
+      "skill_auto_save": {
+        "name": "Skill auto-save"
+      },
+      "skill_use": {
+        "name": "Skill auto-use"
       }
     },
     "sensor": {
@@ -106,6 +122,18 @@
       },
       "mcp_reachable": {
         "name": "MCP Proxy"
+      },
+      "skills_total": {
+        "name": "Skills total"
+      },
+      "skills_enabled": {
+        "name": "Skills enabled"
+      },
+      "active_skill": {
+        "name": "Active skill"
+      },
+      "last_skill_improved": {
+        "name": "Last skill improved"
       }
     }
   }
