@@ -17,6 +17,7 @@ class HaAgentPanel extends HTMLElement {
     this._streaming = false;
     this._msgId = 1;
     this._unsubEvents = null;
+    this._eventsReady = null;
   }
 
   _newConversationId() {
@@ -27,8 +28,7 @@ class HaAgentPanel extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (first) {
-      this._subscribeEvents();
-      this._bootstrap();
+      void this._bootstrap();
     }
   }
 
@@ -39,28 +39,37 @@ class HaAgentPanel extends HTMLElement {
 
   disconnectedCallback() {
     if (this._unsubEvents) {
-      this._unsubEvents();
+      void this._unsubEvents();
       this._unsubEvents = null;
     }
   }
 
-  _subscribeEvents() {
-    this._unsubEvents = this._hass.connection.subscribeEvents((ev) => {
-      const data = ev.data || {};
-      if (data.entry_id && data.entry_id !== this._entryId) {
-        return;
-      }
-      if (ev.event_type === "ha_agent_chat_delta") {
-        this._handleDelta(data);
-      }
-      if (ev.event_type === "ha_agent_chat_done") {
-        if (data.conversation_id !== this._conversationId) return;
-        this._streaming = false;
-        this._render();
-        this._loadPendingDraft();
-        this._refreshStatus();
-      }
-    });
+  async _ensureEventSubscription() {
+    if (this._eventsReady) {
+      return this._eventsReady;
+    }
+    this._eventsReady = (async () => {
+      const onDelta = (ev) => {
+        this._handleDelta(ev.data || {});
+      };
+      const onDone = (ev) => {
+        void this._handleChatDone(ev.data || {});
+      };
+      const conn = this._hass.connection;
+      const unsubDelta = await conn.subscribeEvents(
+        onDelta,
+        "ha_agent_chat_delta"
+      );
+      const unsubDone = await conn.subscribeEvents(
+        onDone,
+        "ha_agent_chat_done"
+      );
+      this._unsubEvents = async () => {
+        await unsubDelta();
+        await unsubDone();
+      };
+    })();
+    return this._eventsReady;
   }
 
   async _call(type, payload = {}) {
@@ -71,6 +80,7 @@ class HaAgentPanel extends HTMLElement {
   }
 
   async _bootstrap() {
+    await this._ensureEventSubscription();
     const data = await this._call("ha_agent/subscribe", {});
     this._entryId = data.entry_id;
     this._config = data.config;
@@ -142,6 +152,7 @@ class HaAgentPanel extends HTMLElement {
   }
 
   _handleDelta(data) {
+    if (data.entry_id && data.entry_id !== this._entryId) return;
     if (data.conversation_id !== this._conversationId) return;
     let msg = this._messages[this._messages.length - 1];
     if (!msg || msg.role !== "assistant" || !this._streaming) {
@@ -157,17 +168,49 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  async _handleChatDone(data) {
+    if (data.entry_id && data.entry_id !== this._entryId) return;
+    if (data.conversation_id !== this._conversationId) return;
+    this._streaming = false;
+    if (data.error) {
+      this._messages.push({
+        role: "assistant",
+        content: `Error: ${data.error}`,
+        thinking: "",
+      });
+    } else {
+      const last = this._messages[this._messages.length - 1];
+      if (!last || last.role !== "assistant" || (!last.content && !last.thinking)) {
+        await this._loadHistory();
+      }
+    }
+    this._render();
+    await this._loadPendingDraft();
+    await this._refreshStatus();
+  }
+
   async _sendMessage(text) {
     if (!text.trim() || this._streaming) return;
+    await this._ensureEventSubscription();
     this._messages.push({ role: "user", content: text.trim(), thinking: "" });
     this._streaming = true;
     this._render();
-    await this._call("ha_agent/chat/send", {
-      entry_id: this._entryId,
-      conversation_id: this._conversationId,
-      text: text.trim(),
-    });
-    await this._loadThreads();
+    try {
+      await this._call("ha_agent/chat/send", {
+        entry_id: this._entryId,
+        conversation_id: this._conversationId,
+        text: text.trim(),
+      });
+      await this._loadThreads();
+    } catch (err) {
+      this._streaming = false;
+      this._messages.push({
+        role: "assistant",
+        content: `Error: ${err?.message || err}`,
+        thinking: "",
+      });
+      this._render();
+    }
   }
 
   _styles() {
