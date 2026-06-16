@@ -35,9 +35,11 @@ MODULE_DEPS: dict[str, list[str]] = {
         "embedded_tools",
         "mcp_session",
         "mcp_errors",
+        "activity",
     ],
     "router": ["config_helpers", "context"],
     "status": ["const"],
+    "activity": ["const"],
 }
 
 
@@ -122,6 +124,22 @@ def _load_module(name: str):
 
     if name == "agent":
         _load_skills_modules()
+
+    if name == "activity":
+        _load_skills_modules()
+        if "ha_agent.api" not in sys.modules:
+            api_pkg = types.ModuleType("ha_agent.api")
+            api_pkg.__path__ = [str(COMPONENT / "api")]  # type: ignore[attr-defined]
+            sys.modules["ha_agent.api"] = api_pkg
+        if "ha_agent.api.serialize" not in sys.modules:
+            serialize_path = COMPONENT / "api" / "serialize.py"
+            spec = importlib.util.spec_from_file_location(
+                "ha_agent.api.serialize", serialize_path
+            )
+            assert spec is not None and spec.loader is not None
+            ser = importlib.util.module_from_spec(spec)
+            sys.modules["ha_agent.api.serialize"] = ser
+            spec.loader.exec_module(ser)
 
     path = COMPONENT / f"{name}.py"
     spec = importlib.util.spec_from_file_location(module_name, path)

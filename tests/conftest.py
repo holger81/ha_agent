@@ -28,11 +28,15 @@ def _ensure_homeassistant_stubs() -> None:
         def __init__(self, data: dict | None = None) -> None:
             self.data = data or {}
 
+    class SupportsResponse:
+        ONLY = "only"
+
     def callback(func):
         return func
 
     ha_core.HomeAssistant = HomeAssistant
     ha_core.ServiceCall = ServiceCall
+    ha_core.SupportsResponse = SupportsResponse
     ha_core.callback = callback
     sys.modules["homeassistant.core"] = ha_core
 

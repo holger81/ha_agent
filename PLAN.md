@@ -213,3 +213,25 @@ Phase 5 adds **router options** (still UI-only):
 ## Next action
 
 **Phase 6 complete.** Stack is native: **ha_liquidai** (STT/TTS) + **ha_agent** (conversation). Use [docs/migration-from-n8n.md](docs/migration-from-n8n.md) to decommission n8n.
+
+---
+
+### Phase 7 — HA Agent Console (sidebar panel)
+
+**Scope:** Admin sidebar panel with custom WebSocket API, text chat streaming, skills CRUD, settings, activity log, threads, and optional memory persistence.
+
+#### Status
+
+- [x] **7a** — `panel.py`, static frontend path, manifest deps (`http`, `frontend`, `panel_custom`), `ha_agent/subscribe` + `ha_agent/status`, panel shell
+- [x] **7b** — `api/chat.py` streaming via bus events; `api/skills.py` list/get/search/set_enabled/delete; chat + skills tabs; WS tests; [docs/agent-console.md](docs/agent-console.md)
+- [x] **7c** — Skills create/update; pending draft get/confirm/dismiss; editor form in panel
+- [x] **7d** — `api/config.py` get/set; settings tab with health polling
+- [x] **7e** — `activity.py` ring buffer; `record_turn` in `run_agent`; activity tab
+- [x] **7f** — Memory persistence toggle; conversation threads; skills export/import; narrow layout + `translations/en.json`
+
+#### Exit criteria
+
+- [x] Panel appears in sidebar for admins without manual YAML
+- [x] Chat reproduces agent answers with thinking/tool blocks in UI
+- [x] Skills table matches SQLite store; toggle/delete reflected on next turn
+- [x] Unit tests for serialize, activity, chat events, migration v7

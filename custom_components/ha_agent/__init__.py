@@ -14,6 +14,7 @@ from .const import (
     CONF_ACTION_LLM_TEMPERATURE,
     CONF_ACTION_MODEL_ENABLED,
     CONF_AGENT_SYSTEM_PROMPT,
+    CONF_CONVERSATION_MEMORY_PERSIST,
     CONF_CONVERSATION_SHOW_REASONING,
     CONF_LLM_ENABLE_THINKING,
     CONF_LLM_MODEL,
@@ -32,9 +33,13 @@ from .const import (
     DOMAIN,
     LEGACY_TOOL_INSTRUCTION_MARKERS,
 )
+from .memory import async_load_memory
+from .panel import async_register_panel
 from .skills.commands import async_setup_services
 from .skills.store import close_skill_store, get_skill_store
 from .thinking import normalize_thinking_level
+from .threads import async_load_threads
+from .websocket_api import async_register_handlers
 
 PLATFORMS: list[Platform] = [
     Platform.CONVERSATION,
@@ -96,6 +101,10 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
     if version == 5:
         data.setdefault(CONF_CONVERSATION_SHOW_REASONING, True)
+        version = 6
+
+    if version == 6:
+        data.setdefault(CONF_CONVERSATION_MEMORY_PERSIST, False)
         version = CONFIG_ENTRY_VERSION
 
     if version != config_entry.version:
@@ -105,6 +114,13 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             version=version,
         )
 
+    return True
+
+
+async def async_setup(hass: HomeAssistant) -> bool:
+    """Set up HA Agent global handlers."""
+    async_register_handlers(hass)
+    await async_register_panel(hass)
     return True
 
 
@@ -120,6 +136,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     get_skill_store(hass, entry.entry_id)
     await async_setup_services(hass)
+    await async_load_memory(hass, entry.entry_id)
+    await async_load_threads(hass, entry.entry_id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True

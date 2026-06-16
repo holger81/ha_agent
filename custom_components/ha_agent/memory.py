@@ -1,12 +1,19 @@
-"""Per-conversation history for multi-turn Assist."""
+"""Per-conversation history for multi-turn Assist and console."""
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from homeassistant.core import HomeAssistant, callback
 
-from .const import DATA_KEY
+from .const import CONF_CONVERSATION_MEMORY_PERSIST, DATA_KEY, DOMAIN, LOGGER
 
 MEMORY_KEY = "conversation_memory"
+
+
+def _memory_file(hass: HomeAssistant, entry_id: str) -> Path:
+    return Path(hass.config.path(".storage")) / f"{DOMAIN}_memory_{entry_id}.json"
 
 
 @callback
@@ -41,6 +48,7 @@ def append_turn(
     assistant_text: str,
     *,
     max_turns: int,
+    entry_id: str | None = None,
 ) -> None:
     """Append a user/assistant turn to memory."""
     if not conversation_id or max_turns <= 0:
@@ -59,6 +67,9 @@ def append_turn(
     if len(history) > max_messages:
         store[conversation_id] = history[-max_messages:]
 
+    if entry_id:
+        _maybe_persist(hass, entry_id)
+
 
 @callback
 def clear_conversation(hass: HomeAssistant, conversation_id: str | None) -> None:
@@ -67,3 +78,43 @@ def clear_conversation(hass: HomeAssistant, conversation_id: str | None) -> None
         return
     store = _memory_store(hass)
     store.pop(conversation_id, None)
+
+
+def _entry_wants_persist(hass: HomeAssistant, entry_id: str) -> bool:
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None:
+        return False
+    return bool(entry.data.get(CONF_CONVERSATION_MEMORY_PERSIST, False))
+
+
+def _maybe_persist(hass: HomeAssistant, entry_id: str) -> None:
+    if _entry_wants_persist(hass, entry_id):
+        hass.async_create_task(async_save_memory(hass, entry_id))
+
+
+async def async_load_memory(hass: HomeAssistant, entry_id: str) -> None:
+    """Load persisted conversation memory from disk."""
+    path = _memory_file(hass, entry_id)
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as err:
+        LOGGER.warning("Failed to load HA Agent memory for %s: %s", entry_id, err)
+        return
+    if not isinstance(data, dict):
+        return
+    store = _memory_store(hass)
+    for conversation_id, messages in data.items():
+        if isinstance(messages, list):
+            store[conversation_id] = messages
+
+
+async def async_save_memory(hass: HomeAssistant, entry_id: str) -> None:
+    """Persist in-memory conversations to disk."""
+    store = _memory_store(hass)
+    path = _memory_file(hass, entry_id)
+    try:
+        path.write_text(json.dumps(store, indent=2), encoding="utf-8")
+    except OSError as err:
+        LOGGER.warning("Failed to save HA Agent memory for %s: %s", entry_id, err)

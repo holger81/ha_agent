@@ -25,6 +25,7 @@ CONF_MAX_AGENT_ITERATIONS = "max_agent_iterations"
 CONF_CONVERSATION_HISTORY_TURNS = "conversation_history_turns"
 CONF_CONVERSATION_ENABLE_STREAMING = "conversation_enable_streaming"
 CONF_CONVERSATION_SHOW_REASONING = "conversation_show_reasoning"
+CONF_CONVERSATION_MEMORY_PERSIST = "conversation_memory_persist"
 
 CONF_SKILLS_LEARNING_ENABLED = "skills_learning_enabled"
 CONF_SKILLS_AUTO_SAVE = "skills_auto_save"
@@ -73,7 +74,7 @@ DEFAULT_TOOL_INSTRUCTIONS = (
 # Saved during setup before MCP-compliant defaults; reset on upgrade.
 LEGACY_TOOL_INSTRUCTION_MARKERS = ("mcp_call_tool",)
 
-CONFIG_ENTRY_VERSION = 6
+CONFIG_ENTRY_VERSION = 7
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"

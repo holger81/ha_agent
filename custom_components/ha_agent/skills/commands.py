@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 
 from ..const import DATA_KEY, DOMAIN, LOGGER
 from ..context import is_affirmative
@@ -232,14 +232,27 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         store = get_skill_store(hass, entry_id)
         await hass.async_add_executor_job(store.delete_skill, skill_id)
 
-    async def list_skills(call: ServiceCall) -> None:
+    async def list_skills(call: ServiceCall):
         entry_id = _entry_id_from_call(hass, call)
         if not entry_id:
-            return
+            return {"skills": []}
         store = get_skill_store(hass, entry_id)
         skills = await hass.async_add_executor_job(store.list_recent, limit=50)
-        names = [f"{skill.title} ({skill.id})" for skill in skills]
-        LOGGER.info("HA Agent skills for %s: %s", entry_id, ", ".join(names) or "none")
+        payload = [
+            {
+                "id": skill.id,
+                "title": skill.title,
+                "enabled": skill.enabled,
+                "use_count": skill.use_count,
+            }
+            for skill in skills
+        ]
+        LOGGER.info(
+            "HA Agent skills for %s: %s",
+            entry_id,
+            ", ".join(skill["title"] for skill in payload) or "none",
+        )
+        return {"skills": payload}
 
     hass.services.async_register(
         DOMAIN,
@@ -259,8 +272,20 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         delete_skill,
         schema=_skill_service_schema(),
     )
-    hass.services.async_register(DOMAIN, "list_skills", list_skills)
+    hass.services.async_register(
+        DOMAIN,
+        "list_skills",
+        list_skills,
+        schema=_list_skills_schema(),
+        supports_response=SupportsResponse.ONLY,
+    )
     hass.data.setdefault(DATA_KEY, {})["services_registered"] = True
+
+
+def _list_skills_schema():
+    import voluptuous as vol
+
+    return vol.Schema({vol.Optional("entry_id"): str})
 
 
 def _skill_service_schema():

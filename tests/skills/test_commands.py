@@ -27,7 +27,26 @@ def _load_commands():
     skills_pkg.__path__ = [str(COMPONENT / "skills")]  # type: ignore[attr-defined]
     sys.modules["ha_agent.skills"] = skills_pkg
 
-    for name in ("const",):
+    if "homeassistant.core" not in sys.modules:
+        ha_core = types.ModuleType("homeassistant.core")
+        ha_core.HomeAssistant = object
+
+        class ServiceCall:
+            def __init__(self, data: dict | None = None) -> None:
+                self.data = data or {}
+
+        class SupportsResponse:
+            ONLY = "only"
+
+        def callback(func):
+            return func
+
+        ha_core.ServiceCall = ServiceCall
+        ha_core.SupportsResponse = SupportsResponse
+        ha_core.callback = callback
+        sys.modules["homeassistant.core"] = ha_core
+
+    for name in ("const", "context"):
         path = COMPONENT / f"{name}.py"
         spec = importlib.util.spec_from_file_location(f"ha_agent.{name}", path)
         module = importlib.util.module_from_spec(spec)

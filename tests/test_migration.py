@@ -68,7 +68,11 @@ def _ensure_ha_stubs() -> None:
             def __init__(self, data: dict | None = None) -> None:
                 self.data = data or {}
 
+        class SupportsResponse:
+            ONLY = "only"
+
         ha_core.ServiceCall = ServiceCall
+        ha_core.SupportsResponse = SupportsResponse
 
         def callback(func):
             return func
@@ -76,9 +80,57 @@ def _ensure_ha_stubs() -> None:
         ha_core.callback = callback
         sys.modules["homeassistant.core"] = ha_core
 
+    if "homeassistant.components" not in sys.modules:
+        components = types.ModuleType("homeassistant.components")
+        components.__path__ = []  # type: ignore[attr-defined]
+        sys.modules["homeassistant.components"] = components
+
+    if "homeassistant.components.panel_custom" not in sys.modules:
+        panel_custom = types.ModuleType("homeassistant.components.panel_custom")
+
+        async def _async_register_panel(*_args, **_kwargs) -> None:
+            return None
+
+        panel_custom.async_register_panel = _async_register_panel
+        sys.modules["homeassistant.components.panel_custom"] = panel_custom
+
+    if "homeassistant.components.http" not in sys.modules:
+        http = types.ModuleType("homeassistant.components.http")
+        http.StaticPathConfig = object
+        sys.modules["homeassistant.components.http"] = http
+
+    if "homeassistant.components.websocket_api" not in sys.modules:
+        ws_api = types.ModuleType("homeassistant.components.websocket_api")
+        ws_api.async_register_command = lambda *_args, **_kwargs: None
+        sys.modules["homeassistant.components.websocket_api"] = ws_api
+
+    if "homeassistant.helpers.storage" not in sys.modules:
+        storage = types.ModuleType("homeassistant.helpers.storage")
+
+        class Store:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.data = {}
+
+            async def async_load(self) -> dict:
+                return self.data
+
+            async def async_save(self) -> None:
+                return None
+
+        storage.Store = Store
+        sys.modules["homeassistant.helpers.storage"] = storage
+
 
 def _load_init_module():
     _ensure_ha_stubs()
+
+    ha_core = sys.modules.get("homeassistant.core")
+    if ha_core is not None and not hasattr(ha_core, "SupportsResponse"):
+
+        class SupportsResponse:
+            ONLY = "only"
+
+        ha_core.SupportsResponse = SupportsResponse
 
     ha_core = sys.modules.get("homeassistant.core")
     if ha_core is not None and not hasattr(ha_core, "ServiceCall"):
@@ -104,6 +156,26 @@ def _load_init_module():
     package = types.ModuleType("ha_agent")
     package.__path__ = [str(COMPONENT)]  # type: ignore[attr-defined]
     sys.modules["ha_agent"] = package
+
+    panel_stub = types.ModuleType("ha_agent.panel")
+
+    async def _register_panel(_hass) -> None:
+        return None
+
+    panel_stub.async_register_panel = _register_panel
+    sys.modules["ha_agent.panel"] = panel_stub
+
+    ws_stub = types.ModuleType("ha_agent.websocket_api")
+    ws_stub.async_register_handlers = lambda _hass: None
+    sys.modules["ha_agent.websocket_api"] = ws_stub
+
+    for name in ("thinking",):
+        path = COMPONENT / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(f"ha_agent.{name}", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[f"ha_agent.{name}"] = module
+        spec.loader.exec_module(module)
 
     path = COMPONENT / "__init__.py"
     spec = importlib.util.spec_from_file_location("ha_agent", path)
@@ -231,5 +303,28 @@ async def test_migrate_entry_adds_show_reasoning_default() -> None:
     _args, kwargs = hass.config_entries.async_update_entry.call_args
     data = kwargs["data"]
     assert data[const.CONF_CONVERSATION_SHOW_REASONING] is True
+    assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
+
+
+@pytest.mark.asyncio
+async def test_migrate_entry_adds_memory_persist_default() -> None:
+    """Version 6 entries gain conversation memory persistence default."""
+    ha_agent = _load_init_module()
+    const = sys.modules["ha_agent.const"]
+
+    entry = MagicMock()
+    entry.version = 6
+    entry.data = {
+        const.CONF_LLM_MODEL: "test-model",
+        const.CONF_CONVERSATION_SHOW_REASONING: True,
+    }
+
+    hass = MagicMock()
+    await ha_agent.async_migrate_entry(hass, entry)
+
+    hass.config_entries.async_update_entry.assert_called_once()
+    _args, kwargs = hass.config_entries.async_update_entry.call_args
+    data = kwargs["data"]
+    assert data[const.CONF_CONVERSATION_MEMORY_PERSIST] is False
     assert kwargs["version"] == const.CONFIG_ENTRY_VERSION
 

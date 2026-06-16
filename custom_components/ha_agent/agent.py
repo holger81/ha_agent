@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 
+from .activity import record_turn
 from .config_helpers import AgentConfig, LlmBackend, RouterConfig, SkillsConfig
 from .const import LOGGER
 from .context import (
@@ -367,6 +368,7 @@ async def run_agent(
             user_text,
             confirm,
             max_turns=agent_config.history_turns,
+            entry_id=entry_id,
         )
         await _update_skill_status(hass, entry_id)
         yield AgentDelta(content=confirm)
@@ -381,6 +383,7 @@ async def run_agent(
             user_text,
             reply,
             max_turns=agent_config.history_turns,
+            entry_id=entry_id,
         )
         await _update_skill_status(hass, entry_id)
         yield AgentDelta(content=reply)
@@ -597,7 +600,9 @@ async def run_agent(
             user_text,
             memory_assistant_text(assistant_text, controlled_entity_ids),
             max_turns=agent_config.history_turns,
+            entry_id=entry_id,
         )
+        record_turn(hass, entry_id, trace)
         return
 
     trace.fallback = True
@@ -609,4 +614,6 @@ async def run_agent(
         user_text,
         fallback,
         max_turns=agent_config.history_turns,
+        entry_id=entry_id,
     )
+    record_turn(hass, entry_id, trace)

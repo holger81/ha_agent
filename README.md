@@ -181,6 +181,10 @@ Automations can call `ha_agent.enable_skill`, `ha_agent.disable_skill`, `ha_agen
 
 The agent keeps short per-conversation history (configurable turn count). Pronouns and phrases like *“them”*, *“again”*, and *“back”* can refer to entities controlled in the previous turn.
 
+### HA Agent Console
+
+Open the **HA Agent** item in the Home Assistant sidebar (admin only) for text chat, skills management, settings, and an activity log — without using Assist voice. See **[Agent Console](docs/agent-console.md)** for the WebSocket API and feature overview.
+
 ---
 
 ## Architecture (short)
@@ -207,7 +211,7 @@ python3 scripts/smoke_test_phase4.py
 
 In Assist, try a device command, a news question, and a follow-up in the same conversation. Enable streaming in agent settings and check that replies appear progressively.
 
-More detail: **[Assist pipeline setup](docs/assist-setup.md)** · **[Migration from n8n](docs/migration-from-n8n.md)** · **[LiquidAI STT/TTS](https://github.com/holger81/ha_liquidai/blob/main/docs/assist-setup.md)**
+More detail: **[Assist pipeline setup](docs/assist-setup.md)** · **[HA Agent Console](docs/agent-console.md)** · **[Migration from n8n](docs/migration-from-n8n.md)** · **[LiquidAI STT/TTS](https://github.com/holger81/ha_liquidai/blob/main/docs/assist-setup.md)**
 
 ---
 
