@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
@@ -42,6 +43,8 @@ from .skills.store import close_skill_store, get_skill_store
 from .thinking import normalize_thinking_level
 from .threads import async_load_threads
 from .websocket_api import async_register_handlers
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
     Platform.CONVERSATION,

@@ -34,5 +34,3 @@ list_skills:
       example: abc123
       name: Config entry ID
   name: List skills
-  response:
-    optional: false

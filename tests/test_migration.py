@@ -120,6 +120,15 @@ def _ensure_ha_stubs() -> None:
         storage.Store = Store
         sys.modules["homeassistant.helpers.storage"] = storage
 
+    if "homeassistant.helpers.config_validation" not in sys.modules:
+        ha_cv = types.ModuleType("homeassistant.helpers.config_validation")
+
+        def config_entry_only_config_schema(_domain: str):
+            return lambda _: {}
+
+        ha_cv.config_entry_only_config_schema = config_entry_only_config_schema
+        sys.modules["homeassistant.helpers.config_validation"] = ha_cv
+
 
 def _load_init_module():
     _ensure_ha_stubs()
