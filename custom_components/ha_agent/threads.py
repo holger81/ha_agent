@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ def upsert_thread(
         current["title"] = title
     if pinned is not None:
         current["pinned"] = pinned
+    current["updated_at"] = time.time()
     current.setdefault("title", conversation_id[:8])
     current.setdefault("pinned", False)
     threads[conversation_id] = current
@@ -62,7 +64,13 @@ def list_threads(hass: HomeAssistant, entry_id: str) -> list[dict[str, Any]]:
         {"conversation_id": cid, **meta}
         for cid, meta in threads.items()
     ]
-    result.sort(key=lambda item: (not item.get("pinned", False), item.get("title", "")))
+    result.sort(
+        key=lambda item: (
+            not item.get("pinned", False),
+            -(item.get("updated_at") or 0),
+            item.get("title", ""),
+        )
+    )
     return result
 
 

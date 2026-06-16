@@ -20,9 +20,9 @@ from ..const import DATA_KEY
 from ..conversation import collect_exposed_entities
 from ..llm_client import LlmClient
 from ..mcp_client import McpProxyClient
-from ..memory import clear_conversation, get_history
+from ..memory import append_user_message, clear_conversation, get_history
 from ..status import get_agent_status
-from ..threads import upsert_thread
+from ..threads import async_save_threads, upsert_thread
 from .helpers import get_entry
 
 CHAT_TASKS_KEY = "chat_tasks"
@@ -60,12 +60,20 @@ async def stream_chat(
         router_config = get_router_config(entry)
         skills_config = get_skills_config(entry)
         exposed = await collect_exposed_entities(hass)
+        append_user_message(
+            hass,
+            conversation_id,
+            text,
+            max_turns=agent_config.history_turns,
+            entry_id=entry_id,
+        )
         upsert_thread(
             hass,
             entry_id,
             conversation_id,
             title=text[:48] if text else None,
         )
+        await async_save_threads(hass, entry_id)
 
         payload_base: dict[str, Any] = {
             "entry_id": entry_id,

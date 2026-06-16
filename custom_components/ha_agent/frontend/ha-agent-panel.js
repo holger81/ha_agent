@@ -88,9 +88,12 @@ class HaAgentPanel extends HTMLElement {
     await Promise.all([
       this._loadThreads(),
       this._loadSkills(),
-      this._loadHistory(),
       this._loadPendingDraft(),
     ]);
+    if (this._threads.length > 0) {
+      this._conversationId = this._threads[0].conversation_id;
+    }
+    await this._loadHistory();
     this._render();
   }
 
@@ -271,6 +274,15 @@ class HaAgentPanel extends HTMLElement {
       .bubble.user { align-self: flex-end; background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .bubble.assistant { align-self: flex-start; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
       .bubble.typing { opacity: 0.7; font-style: italic; }
+      .empty-chat {
+        align-self: center;
+        margin: auto;
+        max-width: 28rem;
+        text-align: center;
+        opacity: 0.75;
+        line-height: 1.5;
+        padding: 24px 12px;
+      }
       .thinking { opacity: 0.75; font-size: 0.9em; margin-bottom: 6px; border-left: 3px solid var(--primary-color); padding-left: 8px; }
       .composer { display: flex; gap: 8px; margin-top: 12px; }
       .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
@@ -312,6 +324,12 @@ class HaAgentPanel extends HTMLElement {
       ? '<div class="bubble assistant typing">Thinking…</div>'
       : "";
 
+    const empty = !messages && !typing
+      ? `<div class="empty-chat">No messages in this chat yet.${
+          this._threads.length ? " History may have been cleared after a restart unless memory persistence is enabled in Settings." : ""
+        }</div>`
+      : "";
+
     const draft = this._pendingDraft
       ? `<div class="banner">Pending skill from last turn.
          <div class="actions">
@@ -329,7 +347,7 @@ class HaAgentPanel extends HTMLElement {
         </div>
         <div class="chat-main">
           ${draft}
-          <div class="messages">${messages}${typing}</div>
+          <div class="messages">${messages}${typing}${empty}</div>
           <div class="composer">
             <input id="chat-input" placeholder="Message HA Agent..." ${this._streaming ? "disabled" : ""} />
             <button data-action="send" ${this._streaming ? "disabled" : ""}>Send</button>
@@ -499,6 +517,7 @@ class HaAgentPanel extends HTMLElement {
 
     this.shadowRoot.querySelectorAll("[data-thread]").forEach((el) => {
       el.onclick = async () => {
+        if (this._streaming) return;
         this._conversationId = el.getAttribute("data-thread");
         await this._loadHistory();
         this._render();

@@ -41,6 +41,34 @@ def get_history(
 
 
 @callback
+def append_user_message(
+    hass: HomeAssistant,
+    conversation_id: str | None,
+    user_text: str,
+    *,
+    max_turns: int,
+    entry_id: str | None = None,
+) -> None:
+    """Append only the user side of a turn (for immediate history visibility)."""
+    if not conversation_id or max_turns <= 0 or not user_text.strip():
+        return
+
+    store = _memory_store(hass)
+    history = store.setdefault(conversation_id, [])
+    last = history[-1] if history else None
+    if last and last.get("role") == "user" and last.get("content") == user_text.strip():
+        return
+    history.append({"role": "user", "content": user_text.strip()})
+
+    max_messages = max_turns * 2
+    if len(history) > max_messages:
+        store[conversation_id] = history[-max_messages:]
+
+    if entry_id:
+        _maybe_persist(hass, entry_id)
+
+
+@callback
 def append_turn(
     hass: HomeAssistant,
     conversation_id: str | None,
@@ -59,7 +87,13 @@ def append_turn(
     store = _memory_store(hass)
     history = store.setdefault(conversation_id, [])
     if user_text.strip():
-        history.append({"role": "user", "content": user_text.strip()})
+        last = history[-1] if history else None
+        if not (
+            last
+            and last.get("role") == "user"
+            and last.get("content") == user_text.strip()
+        ):
+            history.append({"role": "user", "content": user_text.strip()})
     if assistant_text.strip():
         history.append({"role": "assistant", "content": assistant_text.strip()})
 

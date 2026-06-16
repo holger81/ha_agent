@@ -99,3 +99,16 @@ def test_clear_conversation_removes_history() -> None:
     memory.clear_conversation(hass, "conv-3")
 
     assert memory.get_history(hass, "conv-3", max_turns=3) == []
+
+
+def test_append_user_message_dedupes_same_user_text() -> None:
+    """User message is stored immediately and not duplicated."""
+    hass = types.SimpleNamespace(data={})
+    memory.append_user_message(hass, "conv-4", "hello", max_turns=3)
+    memory.append_user_message(hass, "conv-4", "hello", max_turns=3)
+    memory.append_turn(hass, "conv-4", "hello", "hi there", max_turns=3)
+
+    assert memory.get_history(hass, "conv-4", max_turns=3) == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ]
