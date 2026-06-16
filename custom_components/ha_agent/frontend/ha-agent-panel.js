@@ -179,11 +179,17 @@ class HaAgentPanel extends HTMLElement {
         thinking: "",
       });
     } else {
-      const last = this._messages[this._messages.length - 1];
-      if (!last || last.role !== "assistant" || (!last.content && !last.thinking)) {
-        await this._loadHistory();
-      }
+      await this._loadHistory();
     }
+    this._render();
+    await this._loadPendingDraft();
+    await this._refreshStatus();
+  }
+
+  async _finishStreamingTurn() {
+    if (!this._streaming) return;
+    this._streaming = false;
+    await this._loadHistory();
     this._render();
     await this._loadPendingDraft();
     await this._refreshStatus();
@@ -202,6 +208,7 @@ class HaAgentPanel extends HTMLElement {
         text: text.trim(),
       });
       await this._loadThreads();
+      await this._finishStreamingTurn();
     } catch (err) {
       this._streaming = false;
       this._messages.push({
@@ -231,13 +238,39 @@ class HaAgentPanel extends HTMLElement {
       }
       .tab.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .panel { flex: 1; overflow: auto; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
-      .chat-layout { display: grid; grid-template-columns: ${this._narrow ? "1fr" : "220px 1fr"}; gap: 12px; height: 100%; }
-      .thread { padding: 8px; border-radius: 8px; cursor: pointer; margin-bottom: 6px; border: 1px solid transparent; }
-      .thread.active { border-color: var(--primary-color); background: rgba(0,0,0,0.04); }
-      .messages { display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
-      .bubble { padding: 10px 12px; border-radius: 12px; max-width: 90%; white-space: pre-wrap; }
+      .chat-layout { display: grid; grid-template-columns: ${this._narrow ? "1fr" : "200px 1fr"}; gap: 12px; min-height: 320px; }
+      .thread-sidebar { display: flex; flex-direction: column; gap: 8px; }
+      .thread-list-title {
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.65;
+        margin: 0;
+      }
+      .thread {
+        padding: 8px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+        border: 1px solid var(--divider-color, #444);
+        background: var(--card-background-color, #1c1c1c);
+        font-size: 0.9rem;
+        line-height: 1.3;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .thread:hover { border-color: var(--primary-color); }
+      .thread.active {
+        border-color: var(--primary-color);
+        background: color-mix(in srgb, var(--primary-color) 18%, transparent);
+      }
+      .chat-main { display: flex; flex-direction: column; min-height: 280px; }
+      .messages { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 200px; }
+      .bubble { padding: 10px 12px; border-radius: 12px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
       .bubble.user { align-self: flex-end; background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      .bubble.assistant { align-self: flex-start; background: var(--secondary-background-color, #f4f4f4); }
+      .bubble.assistant { align-self: flex-start; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
+      .bubble.typing { opacity: 0.7; font-style: italic; }
       .thinking { opacity: 0.75; font-size: 0.9em; margin-bottom: 6px; border-left: 3px solid var(--primary-color); padding-left: 8px; }
       .composer { display: flex; gap: 8px; margin-top: 12px; }
       .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
@@ -250,6 +283,7 @@ class HaAgentPanel extends HTMLElement {
       .form-grid label { display: grid; gap: 4px; }
       textarea { min-height: 120px; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .thread-sidebar.hidden { display: none; }
     `;
   }
 
@@ -265,6 +299,7 @@ class HaAgentPanel extends HTMLElement {
       .join("");
 
     const messages = this._messages
+      .filter((m) => m.content || m.thinking)
       .map((m) => {
         const thinking = m.thinking
           ? `<div class="thinking">${this._escape(m.thinking)}</div>`
@@ -272,6 +307,10 @@ class HaAgentPanel extends HTMLElement {
         return `<div class="bubble ${m.role}">${thinking}${this._escape(m.content)}</div>`;
       })
       .join("");
+
+    const typing = this._streaming
+      ? '<div class="bubble assistant typing">Thinking…</div>'
+      : "";
 
     const draft = this._pendingDraft
       ? `<div class="banner">Pending skill from last turn.
@@ -283,19 +322,18 @@ class HaAgentPanel extends HTMLElement {
 
     return `
       <div class="chat-layout">
-        <div>
-          <div class="actions" style="margin-bottom:8px">
-            <button data-action="new-thread">New chat</button>
-          </div>
-          ${threads}
+        <div class="thread-sidebar ${this._narrow ? "hidden" : ""}">
+          <p class="thread-list-title">Chats</p>
+          <button data-action="new-thread">New chat</button>
+          ${threads || '<div class="thread">No chats yet</div>'}
         </div>
-        <div>
+        <div class="chat-main">
           ${draft}
-          <div class="messages">${messages}</div>
+          <div class="messages">${messages}${typing}</div>
           <div class="composer">
             <input id="chat-input" placeholder="Message HA Agent..." ${this._streaming ? "disabled" : ""} />
             <button data-action="send" ${this._streaming ? "disabled" : ""}>Send</button>
-            <button data-action="clear-history">Clear</button>
+            <button data-action="clear-history" ${this._streaming ? "disabled" : ""}>Clear</button>
           </div>
         </div>
       </div>`;
