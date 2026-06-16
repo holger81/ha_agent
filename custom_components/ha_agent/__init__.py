@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -117,7 +119,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     return True
 
 
-async def async_setup(hass: HomeAssistant) -> bool:
+async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
     """Set up HA Agent global handlers."""
     async_register_handlers(hass)
     await async_register_panel(hass)
