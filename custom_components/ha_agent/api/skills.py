@@ -199,7 +199,7 @@ async def confirm_pending_draft(
     conversation_id: str,
 ) -> dict[str, Any]:
     """Confirm and save a pending skill draft."""
-    draft = pop_pending_draft(hass, conversation_id)
+    draft = runtime_get_pending_draft(hass, conversation_id)
     if draft is None or draft.entry_id != entry_id:
         raise HomeAssistantError("No pending skill draft for this conversation")
     session = async_get_clientsession(hass)
@@ -215,7 +215,10 @@ async def confirm_pending_draft(
         history=draft.history,
     )
     if skill is None:
-        raise HomeAssistantError("Failed to save skill from draft")
+        raise HomeAssistantError(
+            "Failed to save skill from draft. Check HA Agent logs and LLM connectivity."
+        )
+    pop_pending_draft(hass, conversation_id)
     return skill_to_dict(skill)
 
 

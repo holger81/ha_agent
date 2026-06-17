@@ -26,6 +26,7 @@ class HaAgentPanel extends HTMLElement {
     this._threadSearchTimer = null;
     this._messagesScrollEl = null;
     this._historyLoadSeq = 0;
+    this._skillSaveNotice = null;
   }
 
   _newConversationId() {
@@ -693,9 +694,13 @@ class HaAgentPanel extends HTMLElement {
     const draft = this._pendingDraft
       ? `<div class="banner">Pending skill from last turn.
          <div class="actions">
-           <button data-action="confirm-draft">Save skill</button>
-           <button data-action="dismiss-draft">Dismiss</button>
+           <button data-action="confirm-draft" ${this._streaming ? "disabled" : ""}>Save skill</button>
+           <button data-action="dismiss-draft" ${this._streaming ? "disabled" : ""}>Dismiss</button>
          </div></div>`
+      : "";
+
+    const skillNotice = this._skillSaveNotice
+      ? `<div class="banner skill-notice">${this._escape(this._skillSaveNotice)}</div>`
       : "";
 
     const emptyThreads = this._threadSearch.trim()
@@ -718,6 +723,7 @@ class HaAgentPanel extends HTMLElement {
           <div class="thread-list">${threads || `<div class="thread">${emptyThreads}</div>`}</div>
         </div>
         <div class="chat-main">
+          ${skillNotice}
           ${draft}
           <div class="messages">${messages}${typing}${empty}</div>
           <div class="composer">
@@ -1061,21 +1067,35 @@ class HaAgentPanel extends HTMLElement {
     });
 
     this.shadowRoot.querySelector('[data-action="confirm-draft"]')?.addEventListener("click", async () => {
-      await this._call("ha_agent/skills/pending_confirm", {
-        entry_id: this._entryId,
-        conversation_id: this._conversationId,
-      });
-      this._pendingDraft = null;
-      await this._loadSkills();
+      if (this._streaming) return;
+      this._skillSaveNotice = null;
+      try {
+        const data = await this._call("ha_agent/skills/pending_confirm", {
+          entry_id: this._entryId,
+          conversation_id: this._conversationId,
+        });
+        this._pendingDraft = null;
+        this._skillSaveNotice = `Saved skill: ${data.skill?.title || "Skill"}.`;
+        await this._loadSkills();
+      } catch (err) {
+        this._skillSaveNotice = `Could not save skill: ${err?.message || err}`;
+        await this._loadPendingDraft();
+      }
       this._render();
     });
 
     this.shadowRoot.querySelector('[data-action="dismiss-draft"]')?.addEventListener("click", async () => {
-      await this._call("ha_agent/skills/pending_dismiss", {
-        entry_id: this._entryId,
-        conversation_id: this._conversationId,
-      });
-      this._pendingDraft = null;
+      if (this._streaming) return;
+      try {
+        await this._call("ha_agent/skills/pending_dismiss", {
+          entry_id: this._entryId,
+          conversation_id: this._conversationId,
+        });
+        this._pendingDraft = null;
+        this._skillSaveNotice = "Pending skill dismissed.";
+      } catch (err) {
+        this._skillSaveNotice = `Could not dismiss skill: ${err?.message || err}`;
+      }
       this._render();
     });
 

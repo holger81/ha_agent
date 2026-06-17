@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -127,14 +126,11 @@ def thinking_from_tool_event(tool: dict[str, Any]) -> str:
 
 def _record_tool_call(trace: TurnTrace, call: ToolCall, output: str) -> None:
     """Append a tool call to the turn trace."""
-    try:
-        arguments = json.loads(call.arguments) if call.arguments else {}
-    except json.JSONDecodeError:
-        arguments = {"raw": call.arguments}
+    tool_name, arguments = _tool_call_payload(call)
     trace.tool_calls.append(
         {
-            "toolName": call.name,
-            "name": call.name,
+            "toolName": tool_name,
+            "name": tool_name,
             "arguments": arguments,
         }
     )

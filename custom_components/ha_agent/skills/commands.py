@@ -121,6 +121,7 @@ async def try_confirm_pending_save(
         history=draft.history,
     )
     if skill is None:
+        set_pending_draft(hass, draft)
         return "I couldn't save that skill. Please try again."
     return f"Saved skill: {skill.title}."
 

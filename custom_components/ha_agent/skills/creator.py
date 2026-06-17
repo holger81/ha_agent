@@ -37,6 +37,7 @@ async def distill_skill_draft(
     """Use the LLM to distill a skill from a successful turn trace."""
     payload = {
         "user_goal": trace.user_text,
+        "assistant_summary": trace.assistant_text,
         "history": history[-10:],
         "tool_calls": trace.tool_calls,
         "controlled_entity_ids": trace.controlled_entity_ids,
@@ -104,6 +105,50 @@ def _parse_skill_draft(content: str) -> SkillDraft | None:
     )
 
 
+def _fallback_skill_draft(trace: TurnTrace) -> SkillDraft | None:
+    """Build a minimal skill draft from trace data when LLM distillation fails."""
+    if not trace.tool_calls:
+        return None
+
+    goal = trace.user_text.strip()
+    title = (goal[:64] if goal else "Learned workflow").split("\n")[0].strip()
+    if not title:
+        title = "Learned workflow"
+
+    tool_steps = [
+        {
+            "toolName": str(call.get("toolName") or call.get("name") or "").strip(),
+            "arguments": call.get("arguments")
+            if isinstance(call.get("arguments"), dict)
+            else {},
+        }
+        for call in trace.tool_calls
+        if str(call.get("toolName") or call.get("name") or "").strip()
+    ]
+    if not tool_steps:
+        return None
+
+    step_lines = []
+    for index, step in enumerate(tool_steps, start=1):
+        args = json.dumps(step["arguments"], ensure_ascii=True, sort_keys=True)
+        step_lines.append(f"{index}. Call `{step['toolName']}` with `{args}`.")
+
+    body = f"Goal: {goal or title}\n\n" + "\n".join(step_lines)
+    if trace.assistant_text.strip():
+        body += f"\n\nExpected outcome:\n{trace.assistant_text.strip()}"
+
+    triggers = [goal[:120]] if goal else [title]
+    description = f"Handles requests like: {title}"
+
+    return SkillDraft(
+        title=title,
+        description=description,
+        triggers=triggers,
+        body=body,
+        tool_steps=tool_steps,
+    )
+
+
 async def save_skill_from_draft(
     hass: HomeAssistant,
     entry_id: str,
@@ -151,6 +196,8 @@ async def create_skill_from_trace(
         trace=trace,
         history=history,
     )
+    if draft is None:
+        draft = _fallback_skill_draft(trace)
     if draft is None:
         return None
 
