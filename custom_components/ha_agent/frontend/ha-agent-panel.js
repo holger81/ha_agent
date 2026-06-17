@@ -25,6 +25,7 @@ class HaAgentPanel extends HTMLElement {
     this._threadSearch = "";
     this._threadSearchTimer = null;
     this._messagesScrollEl = null;
+    this._historyLoadSeq = 0;
   }
 
   _newConversationId() {
@@ -227,7 +228,15 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  _hasRenderableMessage(message) {
+    if (message.tools && message.tools.length) return true;
+    if (String(message.thinking || "").trim()) return true;
+    if (String(message.content || "").trim()) return true;
+    return false;
+  }
+
   _applyHistory(history) {
+    if (this._streaming) return;
     this._messages = (history || []).map((item) => ({
       role: item.role,
       content: item.content,
@@ -238,10 +247,12 @@ class HaAgentPanel extends HTMLElement {
 
   async _loadHistory() {
     if (!this._entryId) return;
+    const seq = ++this._historyLoadSeq;
     const data = await this._call("ha_agent/chat/history/list", {
       entry_id: this._entryId,
       conversation_id: this._conversationId,
     });
+    if (seq !== this._historyLoadSeq || this._streaming) return;
     this._applyHistory(data.history);
   }
 
@@ -347,7 +358,8 @@ class HaAgentPanel extends HTMLElement {
       return;
     }
     this._stickToBottom = false;
-    el.scrollTop = saved.scrollTop;
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.scrollTop = Math.min(saved.scrollTop, maxScroll);
   }
 
   _bindMessagesScroll(el) {
@@ -378,8 +390,6 @@ class HaAgentPanel extends HTMLElement {
         content: `Error: ${data.error}`,
         thinking: "",
       });
-    } else {
-      await this._loadHistory();
     }
     this._render();
     await Promise.all([this._loadThreads(), this._loadPendingDraft()]);
@@ -407,15 +417,15 @@ class HaAgentPanel extends HTMLElement {
       });
       if (result?.history) {
         this._clearTurnTimeout();
-        this._applyHistory(result.history);
         this._streaming = false;
+        this._applyHistory(result.history);
         await Promise.all([this._loadThreads(), this._loadPendingDraft()]);
         await this._refreshStatus();
         this._render();
       } else if (!result?.started) {
         this._clearTurnTimeout();
-        await this._loadHistory();
         this._streaming = false;
+        await this._loadHistory();
         this._render();
       }
     } catch (err) {
@@ -625,6 +635,16 @@ class HaAgentPanel extends HTMLElement {
     `;
   }
 
+  _renderAssistantBody(content) {
+    const trimmed = String(content || "").trim();
+    if (!trimmed) return "";
+    const md = this._formatMarkdown(trimmed);
+    if (md.trim()) {
+      return `<div class="md">${md}</div>`;
+    }
+    return `<div class="md"><p>${this._escape(trimmed)}</p></div>`;
+  }
+
   _renderChat() {
     const threads = this._threads
       .map((t) => {
@@ -644,7 +664,7 @@ class HaAgentPanel extends HTMLElement {
       .join("");
 
     const messages = this._messages
-      .filter((m) => m.content || m.thinking || (m.tools && m.tools.length))
+      .filter((m) => this._hasRenderableMessage(m))
       .map((m) => {
         const thinking = m.thinking
           ? `<div class="thinking">${this._escape(m.thinking)}</div>`
@@ -654,7 +674,7 @@ class HaAgentPanel extends HTMLElement {
           .join("");
         const body =
           m.role === "assistant"
-            ? `<div class="md">${this._formatMarkdown(m.content)}</div>`
+            ? this._renderAssistantBody(m.content)
             : this._escape(m.content);
         return `<div class="bubble ${m.role}">${thinking}${tools}${body}</div>`;
       })
@@ -1034,6 +1054,7 @@ class HaAgentPanel extends HTMLElement {
       el.onclick = async () => {
         if (this._streaming) return;
         this._conversationId = el.getAttribute("data-thread");
+        this._stickToBottom = true;
         await this._loadHistory();
         this._render();
       };
