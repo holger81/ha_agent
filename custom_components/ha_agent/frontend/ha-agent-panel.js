@@ -27,6 +27,9 @@ class HaAgentPanel extends HTMLElement {
     this._messagesScrollEl = null;
     this._historyLoadSeq = 0;
     this._skillSaveNotice = null;
+    this._editingSkill = null;
+    this._viewingSkill = null;
+    this._skillNotice = null;
   }
 
   _newConversationId() {
@@ -332,8 +335,68 @@ class HaAgentPanel extends HTMLElement {
     this._chatRenderPending = true;
     requestAnimationFrame(() => {
       this._chatRenderPending = false;
+      if (this._tab !== "chat") {
+        return;
+      }
+      if (this.shadowRoot?.querySelector(".messages")) {
+        this._updateChatMessages();
+        return;
+      }
       this._render();
     });
+  }
+
+  _shouldShowTypingIndicator() {
+    if (!this._streaming) return false;
+    const last = this._messages[this._messages.length - 1];
+    if (!last || last.role !== "assistant") return true;
+    return !(
+      String(last.thinking || "").trim() ||
+      String(last.content || "").trim() ||
+      (last.tools && last.tools.length)
+    );
+  }
+
+  _renderMessageListHtml() {
+    const messages = this._messages
+      .filter((m) => this._hasRenderableMessage(m))
+      .map((m) => {
+        const thinking = m.thinking
+          ? `<div class="thinking">${this._escape(m.thinking)}</div>`
+          : "";
+        const tools = (m.tools || [])
+          .map((tool) => this._renderToolCall(tool))
+          .join("");
+        const body =
+          m.role === "assistant"
+            ? this._renderAssistantBody(m.content)
+            : this._escape(m.content);
+        return `<div class="bubble ${m.role}">${thinking}${tools}${body}</div>`;
+      })
+      .join("");
+
+    const typing = this._shouldShowTypingIndicator()
+      ? '<div class="bubble assistant typing">Thinking…</div>'
+      : "";
+
+    const empty = !messages && !typing
+      ? `<div class="empty-chat">No messages in this chat yet.${
+          this._threads.length ? " History may have been cleared after a restart unless memory persistence is enabled in Settings." : ""
+        }</div>`
+      : "";
+
+    return `${messages}${typing}${empty}`;
+  }
+
+  _updateChatMessages() {
+    const messagesEl = this.shadowRoot?.querySelector(".messages");
+    if (!messagesEl) {
+      this._render();
+      return;
+    }
+    const saved = this._captureMessagesScroll();
+    messagesEl.innerHTML = this._renderMessageListHtml();
+    this._restoreMessagesScroll(saved);
   }
 
   _captureMessagesScroll() {
@@ -460,6 +523,39 @@ class HaAgentPanel extends HTMLElement {
       .tab.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .panel { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
       .activity-hint { margin-top: 10px; opacity: 0.75; font-size: 0.9rem; }
+      .skill-notice {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+        margin-bottom: 12px;
+      }
+      .skill-detail, .skill-editor {
+        margin-top: 16px;
+        padding: 14px;
+        border-radius: 10px;
+        border: 1px solid var(--divider-color, #444);
+        background: var(--card-background-color, #1c1c1c);
+      }
+      .skill-detail h3, .skill-editor h3 { margin: 0 0 8px; }
+      .skill-meta { opacity: 0.8; font-size: 0.9rem; margin-bottom: 10px; }
+      .skill-body {
+        white-space: pre-wrap;
+        line-height: 1.45;
+        margin: 10px 0;
+        padding: 10px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 4%, transparent);
+      }
+      .skill-triggers { margin: 8px 0 0; padding-left: 1.2em; }
+      .skill-tool-steps {
+        margin-top: 10px;
+        padding: 10px;
+        border-radius: 8px;
+        overflow-x: auto;
+        font-family: var(--code-font-family, monospace);
+        font-size: 0.85em;
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 6%, transparent);
+      }
       .panel.chat-panel { overflow: hidden; display: flex; flex-direction: column; padding: 0; }
       .chat-layout { display: grid; grid-template-columns: ${this._narrow ? "1fr" : "200px 1fr"}; gap: 12px; flex: 1; min-height: 0; height: 100%; padding: 12px; box-sizing: border-box; }
       .thread-sidebar { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
@@ -626,6 +722,7 @@ class HaAgentPanel extends HTMLElement {
       .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--divider-color, #ddd); vertical-align: top; }
+      tr.active-skill-row { background: color-mix(in srgb, var(--primary-color) 12%, transparent); }
       .status-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
       .chip { padding: 6px 10px; border-radius: 999px; background: var(--secondary-background-color, #eee); font-size: 0.9em; }
       .banner { padding: 10px; border-radius: 8px; background: #fff4d6; margin-bottom: 12px; }
@@ -665,32 +762,7 @@ class HaAgentPanel extends HTMLElement {
       })
       .join("");
 
-    const messages = this._messages
-      .filter((m) => this._hasRenderableMessage(m))
-      .map((m) => {
-        const thinking = m.thinking
-          ? `<div class="thinking">${this._escape(m.thinking)}</div>`
-          : "";
-        const tools = (m.tools || [])
-          .map((tool) => this._renderToolCall(tool))
-          .join("");
-        const body =
-          m.role === "assistant"
-            ? this._renderAssistantBody(m.content)
-            : this._escape(m.content);
-        return `<div class="bubble ${m.role}">${thinking}${tools}${body}</div>`;
-      })
-      .join("");
-
-    const typing = this._streaming
-      ? '<div class="bubble assistant typing">Thinking…</div>'
-      : "";
-
-    const empty = !messages && !typing
-      ? `<div class="empty-chat">No messages in this chat yet.${
-          this._threads.length ? " History may have been cleared after a restart unless memory persistence is enabled in Settings." : ""
-        }</div>`
-      : "";
+    const messageListHtml = this._renderMessageListHtml();
 
     const draft = this._pendingDraft
       ? `<div class="banner">Pending skill from last turn.
@@ -726,7 +798,7 @@ class HaAgentPanel extends HTMLElement {
         <div class="chat-main">
           ${skillNotice}
           ${draft}
-          <div class="messages">${messages}${typing}${empty}</div>
+          <div class="messages">${messageListHtml}</div>
           <div class="composer">
             <input id="chat-input" placeholder="Message HA Agent..." ${this._streaming ? "disabled" : ""} />
             <button data-action="send" ${this._streaming ? "disabled" : ""}>Send</button>
@@ -736,18 +808,74 @@ class HaAgentPanel extends HTMLElement {
       </div>`;
   }
 
+  _renderSkillDetail() {
+    const skill = this._viewingSkill;
+    if (!skill) return "";
+    const triggers = (skill.triggers || [])
+      .map((t) => `<li>${this._escape(t)}</li>`)
+      .join("");
+    const toolSteps = this._escape(
+      JSON.stringify(skill.tool_steps || [], null, 2)
+    );
+    return `
+      <div class="skill-detail">
+        <h3>${this._escape(skill.title || "Skill")}</h3>
+        <div class="skill-meta">
+          ${skill.enabled ? "Enabled" : "Disabled"} · used ${skill.use_count || 0} times
+          ${skill.version ? ` · v${skill.version}` : ""}
+        </div>
+        <p>${this._escape(skill.description || "")}</p>
+        <div class="skill-body">${this._escape(skill.body || "")}</div>
+        ${triggers ? `<ul class="skill-triggers">${triggers}</ul>` : ""}
+        ${
+          (skill.tool_steps || []).length
+            ? `<pre class="skill-tool-steps">${toolSteps}</pre>`
+            : ""
+        }
+        <div class="actions">
+          <button data-action="skill-detail-edit">Edit</button>
+          <button data-action="skill-detail-delete">Delete</button>
+          <button data-action="skill-detail-close">Close</button>
+        </div>
+      </div>`;
+  }
+
+  _renderSkillEditor() {
+    const skill = this._editingSkill;
+    if (!skill) return "";
+    return `
+      <div class="skill-editor">
+        <h3>${skill.id ? "Edit skill" : "New skill"}</h3>
+        <div class="form-grid">
+          <label>Title<input id="skill-title" value="${this._escape(skill.title || "")}" /></label>
+          <label>Description<textarea id="skill-description">${this._escape(skill.description || "")}</textarea></label>
+          <label>Triggers (one per line)<textarea id="skill-triggers">${this._escape((skill.triggers || []).join("\n"))}</textarea></label>
+          <label>Body<textarea id="skill-body">${this._escape(skill.body || "")}</textarea></label>
+          <label>Tool steps JSON<textarea id="skill-tool-steps">${this._escape(JSON.stringify(skill.tool_steps || [], null, 2))}</textarea></label>
+          <label><input type="checkbox" id="skill-enabled" ${skill.enabled !== false ? "checked" : ""}/> Enabled</label>
+          <div class="actions">
+            <button data-action="skill-save">Save</button>
+            <button data-action="skill-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
   _renderSkills() {
+    const notice = this._skillNotice
+      ? `<div class="skill-notice">${this._escape(this._skillNotice)}</div>`
+      : "";
     const rows = this._skills
       .map(
         (s) => `
-      <tr>
+      <tr class="${this._viewingSkill?.id === s.id ? "active-skill-row" : ""}">
         <td>${this._escape(s.title)}</td>
         <td>${s.enabled ? "Yes" : "No"}</td>
         <td>${s.use_count || 0}</td>
         <td class="actions">
           <button data-skill-view="${s.id}">View</button>
-          <button data-skill-toggle="${s.id}">${s.enabled ? "Disable" : "Enable"}</button>
           <button data-skill-edit="${s.id}">Edit</button>
+          <button data-skill-toggle="${s.id}">${s.enabled ? "Disable" : "Enable"}</button>
           <button data-skill-delete="${s.id}">Delete</button>
         </td>
       </tr>`
@@ -755,6 +883,7 @@ class HaAgentPanel extends HTMLElement {
       .join("");
 
     return `
+      ${notice}
       <div class="actions" style="margin-bottom:12px">
         <input id="skill-search" placeholder="Search skills..." />
         <button data-action="skill-search">Search</button>
@@ -766,7 +895,109 @@ class HaAgentPanel extends HTMLElement {
         <thead><tr><th>Title</th><th>Enabled</th><th>Uses</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="4">No skills yet.</td></tr>'}</tbody>
       </table>
-      <div id="skill-editor" hidden></div>`;
+      ${this._renderSkillDetail()}
+      ${this._renderSkillEditor()}`;
+  }
+
+  _openSkillEditor(skill = null) {
+    this._viewingSkill = null;
+    this._editingSkill = skill
+      ? { ...skill }
+      : {
+          title: "",
+          description: "",
+          triggers: [],
+          body: "",
+          tool_steps: [],
+          enabled: true,
+        };
+    this._tab = "skills";
+    this._render();
+  }
+
+  async _viewSkill(skillId) {
+    const data = await this._call("ha_agent/skills/get", {
+      entry_id: this._entryId,
+      skill_id: skillId,
+    });
+    this._viewingSkill = data.skill;
+    this._editingSkill = null;
+    this._render();
+  }
+
+  async _deleteSkill(skillId) {
+    if (!confirm("Delete this skill permanently?")) return;
+    try {
+      await this._call("ha_agent/skills/delete", {
+        entry_id: this._entryId,
+        skill_id: skillId,
+      });
+      if (this._viewingSkill?.id === skillId) {
+        this._viewingSkill = null;
+      }
+      if (this._editingSkill?.id === skillId) {
+        this._editingSkill = null;
+      }
+      this._skillNotice = "Skill deleted.";
+      await this._loadSkills();
+      this._render();
+    } catch (err) {
+      this._skillNotice = `Could not delete skill: ${err?.message || err}`;
+      this._render();
+    }
+  }
+
+  async _saveSkillEditor() {
+    const editor = this.shadowRoot.querySelector(".skill-editor");
+    if (!editor || !this._editingSkill) return;
+    let toolSteps = [];
+    try {
+      toolSteps = JSON.parse(
+        editor.querySelector("#skill-tool-steps")?.value || "[]"
+      );
+      if (!Array.isArray(toolSteps)) {
+        throw new Error("Tool steps must be a JSON array");
+      }
+    } catch (err) {
+      this._skillNotice = `Invalid tool steps JSON: ${err?.message || err}`;
+      this._render();
+      return;
+    }
+
+    const payload = {
+      title: editor.querySelector("#skill-title")?.value || "",
+      description: editor.querySelector("#skill-description")?.value || "",
+      triggers: String(editor.querySelector("#skill-triggers")?.value || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      body: editor.querySelector("#skill-body")?.value || "",
+      tool_steps: toolSteps,
+      enabled: Boolean(editor.querySelector("#skill-enabled")?.checked),
+    };
+
+    try {
+      if (this._editingSkill.id) {
+        await this._call("ha_agent/skills/update", {
+          entry_id: this._entryId,
+          skill_id: this._editingSkill.id,
+          skill: payload,
+        });
+        this._skillNotice = `Updated skill: ${payload.title}.`;
+      } else {
+        await this._call("ha_agent/skills/create", {
+          entry_id: this._entryId,
+          skill: payload,
+        });
+        this._skillNotice = `Created skill: ${payload.title}.`;
+      }
+      this._editingSkill = null;
+      await this._loadSkills();
+      this._render();
+    } catch (err) {
+      this._skillNotice = `Could not save skill: ${err?.message || err}`;
+      this._render();
+    }
   }
 
   _renderSettings() {
@@ -982,10 +1213,11 @@ class HaAgentPanel extends HTMLElement {
     if (!this.shadowRoot) return;
     const tabs = ["chat", "skills", "settings", "activity"];
     const tabButtons = tabs
-      .map(
-        (t) =>
-          `<button class="tab ${this._tab === t ? "active" : ""}" data-tab="${t}">${t[0].toUpperCase()}${t.slice(1)}</button>`
-      )
+      .map((t) => {
+        const label = `${t[0].toUpperCase()}${t.slice(1)}`;
+        const busy = this._streaming && t === "chat" ? " …" : "";
+        return `<button class="tab ${this._tab === t ? "active" : ""}" data-tab="${t}">${label}${busy}</button>`;
+      })
       .join("");
 
     const savedScroll =
@@ -1020,6 +1252,7 @@ class HaAgentPanel extends HTMLElement {
       el.onclick = async () => {
         this._tab = el.getAttribute("data-tab");
         if (this._tab === "activity") await this._loadActivity();
+        if (this._tab === "skills") await this._loadSkills();
         this._render();
       };
     });
@@ -1083,7 +1316,8 @@ class HaAgentPanel extends HTMLElement {
           conversation_id: this._conversationId,
         });
         this._pendingDraft = null;
-        this._skillSaveNotice = `Saved skill: ${data.skill?.title || "Skill"}.`;
+        this._skillSaveNotice = `Saved skill: ${data.skill?.title || "Skill"}. Open the Skills tab to review or edit it.`;
+        this._skillNotice = this._skillSaveNotice;
         await this._loadSkills();
       } catch (err) {
         this._skillSaveNotice = `Could not save skill: ${err?.message || err}`;
@@ -1171,25 +1405,13 @@ class HaAgentPanel extends HTMLElement {
 
     this.shadowRoot.querySelectorAll("[data-skill-delete]").forEach((el) => {
       el.onclick = async () => {
-        const id = el.getAttribute("data-skill-delete");
-        if (!confirm("Delete this skill?")) return;
-        await this._call("ha_agent/skills/delete", {
-          entry_id: this._entryId,
-          skill_id: id,
-        });
-        await this._loadSkills();
-        this._render();
+        await this._deleteSkill(el.getAttribute("data-skill-delete"));
       };
     });
 
     this.shadowRoot.querySelectorAll("[data-skill-view]").forEach((el) => {
       el.onclick = async () => {
-        const id = el.getAttribute("data-skill-view");
-        const data = await this._call("ha_agent/skills/get", {
-          entry_id: this._entryId,
-          skill_id: id,
-        });
-        alert(`${data.skill.title}\n\n${data.skill.body}`);
+        await this._viewSkill(el.getAttribute("data-skill-view"));
       };
     });
 
@@ -1203,6 +1425,38 @@ class HaAgentPanel extends HTMLElement {
         this._openSkillEditor(data.skill);
       };
     });
+
+    this.shadowRoot
+      .querySelector('[data-action="skill-detail-edit"]')
+      ?.addEventListener("click", () => {
+        if (!this._viewingSkill) return;
+        this._openSkillEditor(this._viewingSkill);
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="skill-detail-delete"]')
+      ?.addEventListener("click", async () => {
+        if (!this._viewingSkill?.id) return;
+        await this._deleteSkill(this._viewingSkill.id);
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="skill-detail-close"]')
+      ?.addEventListener("click", () => {
+        this._viewingSkill = null;
+        this._render();
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="skill-save"]')
+      ?.addEventListener("click", () => void this._saveSkillEditor());
+
+    this.shadowRoot
+      .querySelector('[data-action="skill-cancel"]')
+      ?.addEventListener("click", () => {
+        this._editingSkill = null;
+        this._render();
+      });
 
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {
       const updates = {};
@@ -1219,54 +1473,6 @@ class HaAgentPanel extends HTMLElement {
       this._config = data.config;
       this._render();
     });
-  }
-
-  _openSkillEditor(skill = null) {
-    const editor = this.shadowRoot.querySelector("#skill-editor");
-    if (!editor) return;
-    editor.hidden = false;
-    editor.innerHTML = `
-      <h3>${skill ? "Edit skill" : "New skill"}</h3>
-      <div class="form-grid">
-        <label>Title<input id="skill-title" value="${this._escape(skill?.title || "")}" /></label>
-        <label>Description<textarea id="skill-description">${this._escape(skill?.description || "")}</textarea></label>
-        <label>Triggers (one per line)<textarea id="skill-triggers">${this._escape((skill?.triggers || []).join("\n"))}</textarea></label>
-        <label>Body<textarea id="skill-body">${this._escape(skill?.body || "")}</textarea></label>
-        <label>Tool steps JSON<textarea id="skill-tool-steps">${this._escape(JSON.stringify(skill?.tool_steps || [], null, 2))}</textarea></label>
-        <div class="actions">
-          <button id="skill-save">Save</button>
-          <button id="skill-cancel">Cancel</button>
-        </div>
-      </div>`;
-    editor.querySelector("#skill-cancel").onclick = () => {
-      editor.hidden = true;
-      editor.innerHTML = "";
-      this._render();
-    };
-    editor.querySelector("#skill-save").onclick = async () => {
-      const payload = {
-        title: editor.querySelector("#skill-title").value,
-        description: editor.querySelector("#skill-description").value,
-        triggers: editor.querySelector("#skill-triggers").value.split("\n").map((s) => s.trim()).filter(Boolean),
-        body: editor.querySelector("#skill-body").value,
-        tool_steps: JSON.parse(editor.querySelector("#skill-tool-steps").value || "[]"),
-      };
-      if (skill?.id) {
-        await this._call("ha_agent/skills/update", {
-          entry_id: this._entryId,
-          skill_id: skill.id,
-          skill: payload,
-        });
-      } else {
-        await this._call("ha_agent/skills/create", {
-          entry_id: this._entryId,
-          skill: payload,
-        });
-      }
-      editor.hidden = true;
-      await this._loadSkills();
-      this._render();
-    };
   }
 }
 
