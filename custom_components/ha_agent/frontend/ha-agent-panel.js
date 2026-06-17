@@ -20,6 +20,9 @@ class HaAgentPanel extends HTMLElement {
     this._eventsReady = null;
     this._bootstrapError = null;
     this._turnTimeout = null;
+    this._stickToBottom = true;
+    this._chatRenderPending = false;
+    this._messagesScrollEl = null;
   }
 
   _newConversationId() {
@@ -41,6 +44,10 @@ class HaAgentPanel extends HTMLElement {
 
   disconnectedCallback() {
     this._clearTurnTimeout();
+    if (this._messagesScrollEl) {
+      this._messagesScrollEl.removeEventListener("scroll", this._onMessagesScroll);
+      this._messagesScrollEl = null;
+    }
     if (this._unsubEvents) {
       void this._unsubEvents();
       this._unsubEvents = null;
@@ -217,8 +224,60 @@ class HaAgentPanel extends HTMLElement {
     if (data.content) {
       msg.content += data.content;
     }
-    this._render();
+    this._scheduleChatRender();
   }
+
+  _scheduleChatRender() {
+    if (this._chatRenderPending) return;
+    this._chatRenderPending = true;
+    requestAnimationFrame(() => {
+      this._chatRenderPending = false;
+      this._render();
+    });
+  }
+
+  _captureMessagesScroll() {
+    const el = this.shadowRoot?.querySelector(".messages");
+    if (!el) {
+      return { scrollTop: 0, stickToBottom: this._stickToBottom };
+    }
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+    return {
+      scrollTop: el.scrollTop,
+      stickToBottom: distanceFromBottom < 48,
+    };
+  }
+
+  _restoreMessagesScroll(saved) {
+    const el = this.shadowRoot?.querySelector(".messages");
+    if (!el) return;
+    this._bindMessagesScroll(el);
+    if (saved.stickToBottom) {
+      this._stickToBottom = true;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    this._stickToBottom = false;
+    el.scrollTop = saved.scrollTop;
+  }
+
+  _bindMessagesScroll(el) {
+    if (this._messagesScrollEl === el) return;
+    if (this._messagesScrollEl) {
+      this._messagesScrollEl.removeEventListener("scroll", this._onMessagesScroll);
+    }
+    this._messagesScrollEl = el;
+    el.addEventListener("scroll", this._onMessagesScroll, { passive: true });
+  }
+
+  _onMessagesScroll = () => {
+    const el = this._messagesScrollEl;
+    if (!el) return;
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+    this._stickToBottom = distanceFromBottom < 48;
+  };
 
   async _handleChatDone(data) {
     if (data.entry_id && data.entry_id !== this._entryId) return;
@@ -245,6 +304,7 @@ class HaAgentPanel extends HTMLElement {
     const turnId = this._conversationId;
     this._messages.push({ role: "user", content: text.trim(), thinking: "" });
     this._streaming = true;
+    this._stickToBottom = true;
     this._clearTurnTimeout();
     this._turnTimeout = setTimeout(
       () => void this._recoverStuckTurn(),
@@ -299,8 +359,9 @@ class HaAgentPanel extends HTMLElement {
         cursor: pointer;
       }
       .tab.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      .panel { flex: 1; overflow: auto; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
-      .chat-layout { display: grid; grid-template-columns: ${this._narrow ? "1fr" : "200px 1fr"}; gap: 12px; min-height: 320px; }
+      .panel { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
+      .panel.chat-panel { overflow: hidden; display: flex; flex-direction: column; padding: 0; }
+      .chat-layout { display: grid; grid-template-columns: ${this._narrow ? "1fr" : "200px 1fr"}; gap: 12px; flex: 1; min-height: 0; height: 100%; padding: 12px; box-sizing: border-box; }
       .thread-sidebar { display: flex; flex-direction: column; gap: 8px; }
       .thread-list-title {
         font-size: 0.75rem;
@@ -327,11 +388,37 @@ class HaAgentPanel extends HTMLElement {
         border-color: var(--primary-color);
         background: color-mix(in srgb, var(--primary-color) 18%, transparent);
       }
-      .chat-main { display: flex; flex-direction: column; min-height: 280px; }
-      .messages { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 200px; }
-      .bubble { padding: 10px 12px; border-radius: 12px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
-      .bubble.user { align-self: flex-end; background: var(--primary-color); color: var(--text-primary-color, #fff); }
+      .chat-main { display: flex; flex-direction: column; min-height: 0; height: 100%; overflow: hidden; }
+      .messages {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        overflow-anchor: none;
+        padding-right: 4px;
+      }
+      .bubble { padding: 10px 12px; border-radius: 12px; max-width: 90%; word-break: break-word; }
+      .bubble.user { align-self: flex-end; background: var(--primary-color); color: var(--text-primary-color, #fff); white-space: pre-wrap; }
       .bubble.assistant { align-self: flex-start; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
+      .bubble.assistant .md p { margin: 0.45em 0; }
+      .bubble.assistant .md p:first-child { margin-top: 0; }
+      .bubble.assistant .md p:last-child { margin-bottom: 0; }
+      .bubble.assistant .md ul,
+      .bubble.assistant .md ol { margin: 0.45em 0; padding-left: 1.35em; }
+      .bubble.assistant .md li { margin: 0.3em 0; }
+      .bubble.assistant .md strong { font-weight: 600; }
+      .bubble.assistant .md em { font-style: italic; }
+      .bubble.assistant .md code {
+        font-family: var(--code-font-family, monospace);
+        font-size: 0.92em;
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 12%, transparent);
+        padding: 0.1em 0.35em;
+        border-radius: 4px;
+      }
+      .bubble.assistant .md a { color: var(--primary-color); }
       .bubble.typing { opacity: 0.7; font-style: italic; }
       .empty-chat {
         align-self: center;
@@ -343,7 +430,7 @@ class HaAgentPanel extends HTMLElement {
         padding: 24px 12px;
       }
       .thinking { opacity: 0.75; font-size: 0.9em; margin-bottom: 6px; border-left: 3px solid var(--primary-color); padding-left: 8px; }
-      .composer { display: flex; gap: 8px; margin-top: 12px; }
+      .composer { display: flex; gap: 8px; margin-top: 12px; flex-shrink: 0; }
       .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--divider-color, #ddd); vertical-align: top; }
@@ -375,7 +462,11 @@ class HaAgentPanel extends HTMLElement {
         const thinking = m.thinking
           ? `<div class="thinking">${this._escape(m.thinking)}</div>`
           : "";
-        return `<div class="bubble ${m.role}">${thinking}${this._escape(m.content)}</div>`;
+        const body =
+          m.role === "assistant"
+            ? `<div class="md">${this._formatMarkdown(m.content)}</div>`
+            : this._escape(m.content);
+        return `<div class="bubble ${m.role}">${thinking}${body}</div>`;
       })
       .join("");
 
@@ -510,6 +601,66 @@ class HaAgentPanel extends HTMLElement {
       .replace(/>/g, "&gt;");
   }
 
+  _formatInlineMarkdown(text) {
+    let html = this._escape(text);
+    html = html.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    return html;
+  }
+
+  _formatMarkdown(text) {
+    const lines = String(text || "").split("\n");
+    const blocks = [];
+    let listTag = null;
+
+    const closeList = () => {
+      if (listTag) {
+        blocks.push(`</${listTag}>`);
+        listTag = null;
+      }
+    };
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        closeList();
+        continue;
+      }
+
+      const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+      const numbered = trimmed.match(/^\d+\.\s+(.+)$/);
+      if (bullet) {
+        if (listTag !== "ul") {
+          closeList();
+          blocks.push("<ul>");
+          listTag = "ul";
+        }
+        blocks.push(`<li>${this._formatInlineMarkdown(bullet[1])}</li>`);
+        continue;
+      }
+      if (numbered) {
+        if (listTag !== "ol") {
+          closeList();
+          blocks.push("<ol>");
+          listTag = "ol";
+        }
+        blocks.push(`<li>${this._formatInlineMarkdown(numbered[1])}</li>`);
+        continue;
+      }
+
+      closeList();
+      blocks.push(`<p>${this._formatInlineMarkdown(trimmed)}</p>`);
+    }
+
+    closeList();
+    return blocks.join("");
+  }
+
   _render() {
     if (!this.shadowRoot) return;
     const tabs = ["chat", "skills", "settings", "activity"];
@@ -520,6 +671,9 @@ class HaAgentPanel extends HTMLElement {
       )
       .join("");
 
+    const savedScroll =
+      this._tab === "chat" ? this._captureMessagesScroll() : null;
+
     let body = "";
     if (this._bootstrapError) {
       body = `<div class="banner">Failed to connect: ${this._escape(this._bootstrapError)}</div>`;
@@ -527,6 +681,8 @@ class HaAgentPanel extends HTMLElement {
     if (this._tab === "skills") body = this._renderSkills();
     if (this._tab === "settings") body = this._renderSettings();
     if (this._tab === "activity") body = this._renderActivity();
+
+    const panelClass = this._tab === "chat" ? "panel chat-panel" : "panel";
 
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
@@ -536,8 +692,12 @@ class HaAgentPanel extends HTMLElement {
           <span class="chip">${this._escape(this._config?.title || "")}</span>
         </div>
         <div class="tabs">${tabButtons}</div>
-        <div class="panel">${body}</div>
+        <div class="${panelClass}">${body}</div>
       </div>`;
+
+    if (savedScroll) {
+      this._restoreMessagesScroll(savedScroll);
+    }
 
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((el) => {
       el.onclick = async () => {
