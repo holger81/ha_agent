@@ -21,6 +21,10 @@ def format_skills_for_context(skills: list[Skill]) -> str:
         if skill.tool_steps:
             steps_json = json.dumps(skill.tool_steps, ensure_ascii=True)
             lines.append(f"  Tool steps: {steps_json}")
+            lines.append(
+                "  Run tool_steps in order. After the last step, confirm the "
+                "outcome matches the workflow before answering the user."
+            )
         body_preview = skill.body.strip()
         if body_preview:
             lines.append(f"  Workflow:\n{body_preview}")

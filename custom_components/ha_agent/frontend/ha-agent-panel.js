@@ -459,6 +459,7 @@ class HaAgentPanel extends HTMLElement {
       }
       .tab.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .panel { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
+      .activity-hint { margin-top: 10px; opacity: 0.75; font-size: 0.9rem; }
       .panel.chat-panel { overflow: hidden; display: flex; flex-direction: column; padding: 0; }
       .chat-layout { display: grid; grid-template-columns: ${this._narrow ? "1fr" : "200px 1fr"}; gap: 12px; flex: 1; min-height: 0; height: 100%; padding: 12px; box-sizing: border-box; }
       .thread-sidebar { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
@@ -804,22 +805,29 @@ class HaAgentPanel extends HTMLElement {
 
   _renderActivity() {
     const rows = this._activity
-      .map(
-        (t) => `
-      <tr>
+      .map((t) => {
+        const tools = (t.tool_calls || [])
+          .map((call) => call.toolName || call.name || "tool")
+          .join(", ");
+        const verify = (t.verification_notes || []).join(" | ");
+        const title = [tools, verify].filter(Boolean).join("\n");
+        return `
+      <tr title="${this._escape(title)}">
         <td>${t.timestamp ? new Date(t.timestamp * 1000).toLocaleString() : "—"}</td>
         <td>${this._escape(t.user_text || "")}</td>
+        <td>${this._escape(t.outcome || "—")}</td>
         <td>${t.iterations || 0}</td>
-        <td>${t.tool_errors || 0}</td>
         <td>${(t.tool_calls || []).length}</td>
-      </tr>`
-      )
+        <td>${t.tool_errors || 0}</td>
+      </tr>`;
+      })
       .join("");
     return `
       <table>
-        <thead><tr><th>Time</th><th>User</th><th>Iterations</th><th>Errors</th><th>Tools</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="5">No activity yet.</td></tr>'}</tbody>
-      </table>`;
+        <thead><tr><th>Time</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>Errors</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6">No activity yet.</td></tr>'}</tbody>
+      </table>
+      <p class="activity-hint">Hover a row to see tool names and verification notes.</p>`;
   }
 
   _escape(text) {

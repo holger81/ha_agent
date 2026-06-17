@@ -55,6 +55,8 @@ def turn_trace_to_dict(
         "fallback": trace.fallback,
         "matched_skill_ids": list(trace.matched_skill_ids),
         "controlled_entity_ids": list(trace.controlled_entity_ids),
+        "outcome": trace.outcome,
+        "verification_notes": list(trace.verification_notes),
     }
 
 

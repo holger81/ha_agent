@@ -36,6 +36,7 @@ MODULE_DEPS: dict[str, list[str]] = {
         "mcp_session",
         "mcp_errors",
         "activity",
+        "loop_policy",
     ],
     "router": ["config_helpers", "context"],
     "status": ["const"],

@@ -117,6 +117,18 @@ def test_build_tool_context_adds_capability_hint() -> None:
     assert "MCP SERVER INSTRUCTIONS" in tool_context
 
 
+def test_build_system_message_includes_route_playbook() -> None:
+    """Route playbooks are injected into the system message."""
+    system_message = context.build_system_message(
+        "You are helpful.",
+        "Use tools.",
+        route_playbook="EMAIL PLAYBOOK:\n1. Check inbox.",
+    )
+    assert "EMAIL PLAYBOOK" in system_message
+    assert "You are helpful." in system_message
+    assert "Use tools." in system_message
+
+
 def test_build_system_message_includes_mcp_session_prompt() -> None:
     """System message includes MCP initialize instructions."""
     system_message = context.build_system_message(

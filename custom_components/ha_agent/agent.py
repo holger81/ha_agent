@@ -24,9 +24,10 @@ from .embedded_tools import (
     strip_embedded_tool_markup,
 )
 from .llm_client import LlmClient, StreamChatSession, ToolCall
+from .loop_policy import LoopState, TurnOutcome, check_stuck, finalize_output
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
-from .router import TaskRoute, backend_for_route, classify_route
+from .router import TaskRoute, backend_for_route, classify_route, route_playbook
 from .skills.commands import (
     _MANUAL_SAVE,
     is_skill_admin_query,
@@ -202,25 +203,52 @@ async def _run_tool_call(
     return output
 
 
+def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
+    """Apply terminal fields when the loop detects a repeated tool call."""
+    trace.outcome = TurnOutcome.STUCK
+    trace.assistant_text = loop_state.stuck_message
+    trace.verification_notes = list(loop_state.verification_notes)
+    return loop_state.stuck_message
+
+
 async def _process_tool_calls(
     agent_config: AgentConfig,
     calls: list[ToolCall],
     mcp_client: McpProxyClient,
     messages: list[dict[str, Any]],
     *,
+    hass: HomeAssistant,
     exposed_entities: list[dict[str, Any]],
     controlled_entity_ids: list[str],
+    loop_state: LoopState,
     trace: TurnTrace | None = None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run tool calls and yield chat progress deltas."""
     for call in calls:
+        tool_name, arguments = _tool_call_payload(call)
+        if stuck_msg := check_stuck(loop_state, tool_name, arguments):
+            yield AgentDelta(tool=_tool_event(call, "error", detail=stuck_msg[:200]))
+            messages.append(
+                tool_result_message(call, f"Tool error: {stuck_msg}")
+            )
+            if trace is not None:
+                _record_tool_call(trace, call, f"Tool error: {stuck_msg}")
+            continue
+
         yield AgentDelta(tool=_tool_event(call, "start"))
-        output = await _run_tool_call(
+        raw_output = await _run_tool_call(
             mcp_client,
             call,
             exposed_entities=exposed_entities,
             controlled_entity_ids=controlled_entity_ids,
             trace=trace,
+        )
+        output = finalize_output(
+            tool_name,
+            arguments,
+            raw_output,
+            hass=hass,
+            loop_state=loop_state,
         )
         phase = "error" if output.startswith("Tool error:") else "done"
         yield AgentDelta(
@@ -239,8 +267,10 @@ async def _process_embedded_tool_calls(
     content: str,
     messages: list[dict[str, Any]],
     *,
+    hass: HomeAssistant,
     exposed_entities: list[dict[str, Any]],
     controlled_entity_ids: list[str],
+    loop_state: LoopState,
     trace: TurnTrace | None = None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Parse embedded tool markup, run tools, and yield progress deltas."""
@@ -262,8 +292,10 @@ async def _process_embedded_tool_calls(
         calls,
         mcp_client,
         messages,
+        hass=hass,
         exposed_entities=exposed_entities,
         controlled_entity_ids=controlled_entity_ids,
+        loop_state=loop_state,
         trace=trace,
     ):
         yield delta
@@ -470,13 +502,16 @@ async def run_agent(
         exposed_entities,
         history=history,
         skill_hints=skill_hints,
+        route=route.value,
     )
+    playbook = route_playbook(route)
     system_message = build_system_message(
         agent_config.system_prompt,
         agent_config.tool_instructions,
         mcp_session_prompt=mcp_session_prompt,
         tool_context=tool_context,
         extra_system_prompt=extra_system_prompt,
+        route_playbook=playbook,
     )
     messages = build_messages(
         system_message=system_message,
@@ -486,6 +521,7 @@ async def run_agent(
     tools = llm_tools
     use_chat_backend = route != TaskRoute.HA_ACTION
     controlled_entity_ids: list[str] = []
+    loop_state = LoopState()
 
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
@@ -535,11 +571,25 @@ async def run_agent(
                     session.tool_calls,
                     mcp_client,
                     messages,
+                    hass=hass,
                     exposed_entities=exposed_entities,
                     controlled_entity_ids=controlled_entity_ids,
+                    loop_state=loop_state,
                     trace=trace,
                 ):
                     yield delta
+                if loop_state.stuck:
+                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    append_turn(
+                        hass,
+                        conversation_id,
+                        user_text,
+                        loop_state.stuck_message,
+                        max_turns=agent_config.history_turns,
+                        entry_id=entry_id,
+                    )
+                    record_turn(hass, entry_id, trace)
+                    return
                 use_chat_backend = True
                 continue
 
@@ -550,11 +600,25 @@ async def run_agent(
                     mcp_client,
                     raw_buffer.strip(),
                     messages,
+                    hass=hass,
                     exposed_entities=exposed_entities,
                     controlled_entity_ids=controlled_entity_ids,
+                    loop_state=loop_state,
                     trace=trace,
                 ):
                     yield delta
+                if loop_state.stuck:
+                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    append_turn(
+                        hass,
+                        conversation_id,
+                        user_text,
+                        loop_state.stuck_message,
+                        max_turns=agent_config.history_turns,
+                        entry_id=entry_id,
+                    )
+                    record_turn(hass, entry_id, trace)
+                    return
                 embedded_ran = True
             if embedded_ran:
                 use_chat_backend = True
@@ -572,11 +636,25 @@ async def run_agent(
                     result.tool_calls,
                     mcp_client,
                     messages,
+                    hass=hass,
                     exposed_entities=exposed_entities,
                     controlled_entity_ids=controlled_entity_ids,
+                    loop_state=loop_state,
                     trace=trace,
                 ):
                     yield delta
+                if loop_state.stuck:
+                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    append_turn(
+                        hass,
+                        conversation_id,
+                        user_text,
+                        loop_state.stuck_message,
+                        max_turns=agent_config.history_turns,
+                        entry_id=entry_id,
+                    )
+                    record_turn(hass, entry_id, trace)
+                    return
                 use_chat_backend = True
                 continue
 
@@ -587,11 +665,25 @@ async def run_agent(
                     mcp_client,
                     (result.content or "").strip(),
                     messages,
+                    hass=hass,
                     exposed_entities=exposed_entities,
                     controlled_entity_ids=controlled_entity_ids,
+                    loop_state=loop_state,
                     trace=trace,
                 ):
                     yield delta
+                if loop_state.stuck:
+                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    append_turn(
+                        hass,
+                        conversation_id,
+                        user_text,
+                        loop_state.stuck_message,
+                        max_turns=agent_config.history_turns,
+                        entry_id=entry_id,
+                    )
+                    record_turn(hass, entry_id, trace)
+                    return
                 embedded_ran = True
             if embedded_ran:
                 use_chat_backend = True
@@ -607,6 +699,13 @@ async def run_agent(
 
         trace.assistant_text = assistant_text
         trace.controlled_entity_ids = list(controlled_entity_ids)
+        trace.verification_notes = list(loop_state.verification_notes)
+        if any(note.startswith("VERIFICATION FAILED") for note in trace.verification_notes):
+            trace.outcome = TurnOutcome.PARTIAL
+        elif trace.tool_errors and not assistant_text:
+            trace.outcome = TurnOutcome.FAILED
+        else:
+            trace.outcome = TurnOutcome.SUCCESS
         suffix = await _post_turn_skills(
             hass,
             entry_id=entry_id,
@@ -633,7 +732,12 @@ async def run_agent(
         return
 
     trace.fallback = True
-    fallback = FALLBACK_MESSAGE
+    trace.outcome = TurnOutcome.PARTIAL if trace.tool_calls else TurnOutcome.FAILED
+    trace.verification_notes = list(loop_state.verification_notes)
+    fallback = (
+        f"{FALLBACK_MESSAGE} I used {trace.iterations} steps"
+        f"{' and hit a repeated-tool guard' if loop_state.stuck else ''}."
+    )
     yield AgentDelta(content=fallback)
     append_turn(
         hass,

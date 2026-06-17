@@ -52,6 +52,8 @@ class TurnTrace:
     matched_skill_ids: list[str] = field(default_factory=list)
     controlled_entity_ids: list[str] = field(default_factory=list)
     conversation_id: str | None = None
+    outcome: str = ""
+    verification_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

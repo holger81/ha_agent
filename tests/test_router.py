@@ -81,13 +81,23 @@ def test_classify_route_uses_action_for_device_commands() -> None:
 
 
 def test_classify_route_uses_chat_for_news() -> None:
-    """Non-device queries stay on the chat backend."""
+    """News queries use the news route."""
     route = router.classify_route(
         "what's the news?",
         [],
         _router_config(enabled=True),
     )
-    assert route == router.TaskRoute.CHAT
+    assert route == router.TaskRoute.NEWS
+
+
+def test_classify_route_uses_email_for_mail_queries() -> None:
+    """Email queries use the email route."""
+    route = router.classify_route(
+        "do I have new emails?",
+        [],
+        _router_config(enabled=True),
+    )
+    assert route == router.TaskRoute.EMAIL
 
 
 def test_classify_route_disabled_always_chat() -> None:

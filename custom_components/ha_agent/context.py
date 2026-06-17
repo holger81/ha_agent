@@ -251,6 +251,7 @@ def build_tool_context(
     *,
     history: list[dict[str, str]] | None = None,
     skill_hints: str = "",
+    route: str | None = None,
 ) -> str:
     """Build optional tool hints (not route classifiers)."""
     context_parts: list[str] = []
@@ -270,7 +271,13 @@ def build_tool_context(
     if follow_up_hint := _follow_up_device_hint(query, prior_turns):
         context_parts.append(follow_up_hint)
 
-    if is_news_query(query) or (
+    if route == "email" or is_email_query(query):
+        context_parts.append(
+            "EMAIL: follow MCP SERVER INSTRUCTIONS. Discover in domain email "
+            "with searchToolsForDomain, then callTool. Do not search HA entities."
+        )
+
+    if route == "news" or is_news_query(query) or (
         is_affirmative(query) and _recent_news_context(prior_turns)
     ):
         context_parts.append(
@@ -278,12 +285,6 @@ def build_tool_context(
             "Use that exact toolName (underscores only, no extra server prefix). "
             "Optional arguments: {\"limit\": 5}. "
             "Only use searchToolsForDomain if that call fails."
-        )
-
-    if is_email_query(query):
-        context_parts.append(
-            "EMAIL: follow MCP SERVER INSTRUCTIONS. Discover in domain email "
-            "with searchToolsForDomain, then callTool. Do not search HA entities."
         )
 
     if _CAPABILITY_QUERY.search(query):
@@ -302,9 +303,12 @@ def build_system_message(
     mcp_session_prompt: str = "",
     tool_context: str = "",
     extra_system_prompt: str | None = None,
+    route_playbook: str = "",
 ) -> str:
     """Assemble the system message for the LLM."""
     parts = [agent_system_prompt.strip(), tool_instructions.strip()]
+    if route_playbook.strip():
+        parts.append(route_playbook.strip())
     if mcp_session_prompt.strip():
         parts.append(mcp_session_prompt.strip())
     if tool_context.strip():

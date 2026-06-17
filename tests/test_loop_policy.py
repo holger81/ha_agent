@@ -1,0 +1,74 @@
+"""Unit tests for agent loop policies."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import types
+from pathlib import Path
+from unittest.mock import MagicMock
+
+COMPONENT = (
+    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
+)
+
+
+def _load_loop_policy():
+    mod_name = "ha_agent.loop_policy"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+
+    if "ha_agent" not in sys.modules:
+        package = types.ModuleType("ha_agent")
+        package.__path__ = [str(COMPONENT)]  # type: ignore[attr-defined]
+        sys.modules["ha_agent"] = package
+
+    path = COMPONENT / "loop_policy.py"
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_check_stuck_blocks_repeated_identical_call() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+
+    assert policy.check_stuck(state, "mail_search", {"unread_only": True}) is None
+    blocked = policy.check_stuck(state, "mail_search", {"unread_only": True})
+
+    assert blocked is not None
+    assert state.stuck is True
+    assert "Blocked repeated identical call" in blocked
+
+
+def test_enrich_tool_output_adds_email_recovery_hints() -> None:
+    policy = _load_loop_policy()
+    output = policy.enrich_tool_output(
+        "mail_mcp_imap_search_messages",
+        {},
+        "Tool error: inbox too large to list",
+    )
+
+    assert "RECOVERY HINTS" in output
+    assert "unread_only" in output
+
+
+def test_verify_ha_service_reports_failed_state() -> None:
+    policy = _load_loop_policy()
+    hass = MagicMock()
+    state = MagicMock()
+    state.state = "off"
+    hass.states.get.return_value = state
+
+    note = policy.verify_ha_service(
+        hass,
+        "home_assistant__ha_call_service",
+        {"entity_id": "light.dining", "service": "turn_on"},
+        "ok",
+    )
+
+    assert note is not None
+    assert note.startswith("VERIFICATION FAILED")
