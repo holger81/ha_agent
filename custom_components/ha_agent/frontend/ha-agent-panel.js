@@ -408,6 +408,9 @@ class HaAgentPanel extends HTMLElement {
       .bubble.assistant .md p:last-child { margin-bottom: 0; }
       .bubble.assistant .md ul,
       .bubble.assistant .md ol { margin: 0.45em 0; padding-left: 1.35em; }
+      .bubble.assistant .md ul ul,
+      .bubble.assistant .md ol ul,
+      .bubble.assistant .md ul ol { margin: 0.25em 0 0.35em; }
       .bubble.assistant .md li { margin: 0.3em 0; }
       .bubble.assistant .md strong { font-weight: 600; }
       .bubble.assistant .md em { font-style: italic; }
@@ -613,51 +616,119 @@ class HaAgentPanel extends HTMLElement {
     return html;
   }
 
+  _isSectionHeader(text) {
+    const plain = String(text || "").trim();
+    const colonIdx = plain.indexOf(":");
+    if (colonIdx === -1) return false;
+    return plain.slice(colonIdx + 1).trim() === "";
+  }
+
+  _listLineMatch(line) {
+    const bullet = line.match(/^(\s*)([-*]|\d+\.)\s+(.+)$/);
+    if (!bullet) return null;
+    const ordered = /^\d+\.$/.test(bullet[2]);
+    return {
+      indent: Math.floor(bullet[1].length / 2),
+      ordered,
+      content: bullet[3],
+    };
+  }
+
+  _nestSectionHeaders(nodes) {
+    const nested = [];
+    let index = 0;
+    while (index < nodes.length) {
+      const node = nodes[index];
+      if (this._isSectionHeader(node.content) && node.children.length === 0) {
+        const children = [];
+        index += 1;
+        while (
+          index < nodes.length &&
+          !this._isSectionHeader(nodes[index].content)
+        ) {
+          children.push(nodes[index]);
+          index += 1;
+        }
+        node.children = children;
+        nested.push(node);
+      } else {
+        nested.push(node);
+        index += 1;
+      }
+    }
+    return nested;
+  }
+
+  _buildListTree(items) {
+    const root = { children: [] };
+    const stack = [{ node: root, indent: -1 }];
+    for (const item of items) {
+      while (stack.length > 1 && stack[stack.length - 1].indent >= item.indent) {
+        stack.pop();
+      }
+      const parent = stack[stack.length - 1].node;
+      const node = { content: item.content, children: [] };
+      parent.children.push(node);
+      stack.push({ node, indent: item.indent });
+    }
+    return this._nestSectionHeaders(root.children);
+  }
+
+  _renderListTree(nodes, ordered = false) {
+    if (!nodes.length) return "";
+    const tag = ordered ? "ol" : "ul";
+    const items = nodes
+      .map((node) => {
+        const childHtml = node.children.length
+          ? this._renderListTree(node.children, false)
+          : "";
+        return `<li>${this._formatInlineMarkdown(node.content)}${childHtml}</li>`;
+      })
+      .join("");
+    return `<${tag}>${items}</${tag}>`;
+  }
+
   _formatMarkdown(text) {
     const lines = String(text || "").split("\n");
     const blocks = [];
-    let listTag = null;
+    let index = 0;
 
-    const closeList = () => {
-      if (listTag) {
-        blocks.push(`</${listTag}>`);
-        listTag = null;
-      }
-    };
-
-    for (const line of lines) {
+    while (index < lines.length) {
+      const line = lines[index];
       const trimmed = line.trim();
       if (!trimmed) {
-        closeList();
+        index += 1;
         continue;
       }
 
-      const bullet = trimmed.match(/^[-*]\s+(.+)$/);
-      const numbered = trimmed.match(/^\d+\.\s+(.+)$/);
-      if (bullet) {
-        if (listTag !== "ul") {
-          closeList();
-          blocks.push("<ul>");
-          listTag = "ul";
+      const listMatch = this._listLineMatch(line);
+      if (listMatch) {
+        const items = [];
+        let ordered = listMatch.ordered;
+        while (index < lines.length) {
+          const current = lines[index];
+          if (!current.trim()) {
+            index += 1;
+            break;
+          }
+          const match = this._listLineMatch(current);
+          if (!match) break;
+          if (items.length === 0) {
+            ordered = match.ordered;
+          } else if (match.ordered !== ordered) {
+            break;
+          }
+          items.push(match);
+          index += 1;
         }
-        blocks.push(`<li>${this._formatInlineMarkdown(bullet[1])}</li>`);
-        continue;
-      }
-      if (numbered) {
-        if (listTag !== "ol") {
-          closeList();
-          blocks.push("<ol>");
-          listTag = "ol";
-        }
-        blocks.push(`<li>${this._formatInlineMarkdown(numbered[1])}</li>`);
+        blocks.push(this._renderListTree(this._buildListTree(items), ordered));
         continue;
       }
 
-      closeList();
       blocks.push(`<p>${this._formatInlineMarkdown(trimmed)}</p>`);
+      index += 1;
     }
 
-    closeList();
     return blocks.join("");
   }
 
