@@ -22,6 +22,8 @@ class HaAgentPanel extends HTMLElement {
     this._turnTimeout = null;
     this._stickToBottom = true;
     this._chatRenderPending = false;
+    this._threadSearch = "";
+    this._threadSearchTimer = null;
     this._messagesScrollEl = null;
   }
 
@@ -44,6 +46,7 @@ class HaAgentPanel extends HTMLElement {
 
   disconnectedCallback() {
     this._clearTurnTimeout();
+    this._clearThreadSearchTimer();
     if (this._messagesScrollEl) {
       this._messagesScrollEl.removeEventListener("scroll", this._onMessagesScroll);
       this._messagesScrollEl = null;
@@ -175,12 +178,53 @@ class HaAgentPanel extends HTMLElement {
     this._activity = data.turns || [];
   }
 
-  async _loadThreads() {
+  _clearThreadSearchTimer() {
+    if (this._threadSearchTimer) {
+      clearTimeout(this._threadSearchTimer);
+      this._threadSearchTimer = null;
+    }
+  }
+
+  _onThreadSearchInput(value) {
+    this._threadSearch = value;
+    this._clearThreadSearchTimer();
+    this._threadSearchTimer = setTimeout(async () => {
+      await this._loadThreads(this._threadSearch);
+      this._render();
+    }, 250);
+  }
+
+  async _loadThreads(query = this._threadSearch) {
     if (!this._entryId) return;
-    const data = await this._call("ha_agent/threads/list", {
-      entry_id: this._entryId,
-    });
+    const payload = { entry_id: this._entryId };
+    const trimmed = String(query || "").trim();
+    if (trimmed) {
+      payload.query = trimmed;
+    }
+    const data = await this._call("ha_agent/threads/list", payload);
     this._threads = data.threads || [];
+  }
+
+  async _deleteThread(conversationId) {
+    if (!this._entryId || !conversationId || this._streaming) return;
+    if (!confirm("Delete this chat and its history?")) return;
+
+    await this._call("ha_agent/threads/delete", {
+      entry_id: this._entryId,
+      conversation_id: conversationId,
+    });
+
+    if (this._conversationId === conversationId) {
+      this._conversationId = this._newConversationId();
+      this._messages = [];
+      this._pendingDraft = null;
+    }
+
+    await this._loadThreads(this._threadSearch);
+    if (this._conversationId !== conversationId) {
+      await this._loadHistory();
+    }
+    this._render();
   }
 
   _applyHistory(history) {
@@ -362,7 +406,47 @@ class HaAgentPanel extends HTMLElement {
       .panel { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
       .panel.chat-panel { overflow: hidden; display: flex; flex-direction: column; padding: 0; }
       .chat-layout { display: grid; grid-template-columns: ${this._narrow ? "1fr" : "200px 1fr"}; gap: 12px; flex: 1; min-height: 0; height: 100%; padding: 12px; box-sizing: border-box; }
-      .thread-sidebar { display: flex; flex-direction: column; gap: 8px; }
+      .thread-sidebar { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+      .thread-search {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--divider-color, #444);
+        background: var(--card-background-color, #1c1c1c);
+      }
+      .thread-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; flex: 1; }
+      .thread-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px;
+        align-items: stretch;
+      }
+      .thread-row .thread { min-width: 0; }
+      .thread-delete {
+        border: 1px solid var(--divider-color, #444);
+        background: transparent;
+        color: var(--primary-text-color, #e0e0e0);
+        border-radius: 8px;
+        width: 2rem;
+        cursor: pointer;
+        opacity: 0.65;
+        padding: 0;
+      }
+      .thread-delete:hover {
+        opacity: 1;
+        border-color: var(--error-color, #cf6679);
+        color: var(--error-color, #cf6679);
+      }
+      .thread-snippet {
+        display: block;
+        font-size: 0.78rem;
+        opacity: 0.7;
+        margin-top: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .thread-list-title {
         font-size: 0.75rem;
         font-weight: 600;
@@ -379,6 +463,8 @@ class HaAgentPanel extends HTMLElement {
         background: var(--card-background-color, #1c1c1c);
         font-size: 0.9rem;
         line-height: 1.3;
+      }
+      .thread-title {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -450,13 +536,20 @@ class HaAgentPanel extends HTMLElement {
 
   _renderChat() {
     const threads = this._threads
-      .map(
-        (t) => `
-      <div class="thread ${t.conversation_id === this._conversationId ? "active" : ""}"
-           data-thread="${t.conversation_id}">
-        ${t.pinned ? "📌 " : ""}${t.title || t.conversation_id}
-      </div>`
-      )
+      .map((t) => {
+        const snippet = t.snippet
+          ? `<span class="thread-snippet">${this._escape(t.snippet)}</span>`
+          : "";
+        return `
+      <div class="thread-row">
+        <div class="thread ${t.conversation_id === this._conversationId ? "active" : ""}"
+             data-thread="${t.conversation_id}">
+          <div class="thread-title">${t.pinned ? "📌 " : ""}${this._escape(t.title || t.conversation_id)}</div>
+          ${snippet}
+        </div>
+        <button class="thread-delete" data-delete-thread="${t.conversation_id}" title="Delete chat" ${this._streaming ? "disabled" : ""}>×</button>
+      </div>`;
+      })
       .join("");
 
     const messages = this._messages
@@ -491,12 +584,24 @@ class HaAgentPanel extends HTMLElement {
          </div></div>`
       : "";
 
+    const emptyThreads = this._threadSearch.trim()
+      ? "No chats match your search."
+      : "No chats yet";
+
     return `
       <div class="chat-layout">
         <div class="thread-sidebar ${this._narrow ? "hidden" : ""}">
           <p class="thread-list-title">Chats</p>
-          <button data-action="new-thread">New chat</button>
-          ${threads || '<div class="thread">No chats yet</div>'}
+          <button data-action="new-thread" ${this._streaming ? "disabled" : ""}>New chat</button>
+          <input
+            id="thread-search"
+            class="thread-search"
+            type="search"
+            placeholder="Search chats…"
+            value="${this._escape(this._threadSearch)}"
+            ${this._streaming ? "disabled" : ""}
+          />
+          <div class="thread-list">${threads || `<div class="thread">${emptyThreads}</div>`}</div>
         </div>
         <div class="chat-main">
           ${draft}
@@ -805,6 +910,17 @@ class HaAgentPanel extends HTMLElement {
       this._messages = [];
       await this._loadHistory();
       this._render();
+    });
+
+    this.shadowRoot.querySelector("#thread-search")?.addEventListener("input", (ev) => {
+      this._onThreadSearchInput(ev.target.value);
+    });
+
+    this.shadowRoot.querySelectorAll("[data-delete-thread]").forEach((el) => {
+      el.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        await this._deleteThread(el.getAttribute("data-delete-thread"));
+      });
     });
 
     this.shadowRoot.querySelectorAll("[data-thread]").forEach((el) => {

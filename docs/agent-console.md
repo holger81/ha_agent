@@ -67,8 +67,9 @@ All commands require an authenticated admin WebSocket connection. Pass `entry_id
 | `ha_agent/config/get` | Config snapshot for settings tab. |
 | `ha_agent/config/set` | Partial `updates` dict; may reload integration. |
 | `ha_agent/activity/list` | Paginated turn traces. |
-| `ha_agent/threads/list` | Conversation thread metadata. |
+| `ha_agent/threads/list` | Conversation thread metadata; optional `query` searches titles and message history. |
 | `ha_agent/threads/update` | Rename or pin a thread. |
+| `ha_agent/threads/delete` | Delete a thread, its history, and any pending skill draft. |
 
 ## Memory and threads
 

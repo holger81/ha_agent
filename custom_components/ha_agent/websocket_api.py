@@ -5,6 +5,7 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 
 from .activity import list_turns
 from .api import chat as chat_api
@@ -17,7 +18,13 @@ from .api.helpers import (
     require_admin,
 )
 from .status import get_agent_status
-from .threads import async_save_threads, list_threads, upsert_thread
+from .threads import (
+    async_delete_thread,
+    async_save_threads,
+    list_threads,
+    search_threads,
+    upsert_thread,
+)
 
 
 @callback
@@ -45,6 +52,7 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_activity_list)
     websocket_api.async_register_command(hass, ws_threads_list)
     websocket_api.async_register_command(hass, ws_threads_update)
+    websocket_api.async_register_command(hass, ws_threads_delete)
 
 
 def _entry_id_schema(extra: dict | None = None) -> dict:
@@ -439,13 +447,17 @@ async def ws_activity_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_agent/threads/list",
-        **_entry_id_schema(),
+        **_entry_id_schema({vol.Optional("query"): str}),
     }
 )
 @websocket_api.async_response
 async def ws_threads_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
-    threads = list_threads(hass, msg["entry_id"])
+    query = (msg.get("query") or "").strip()
+    if query:
+        threads = search_threads(hass, msg["entry_id"], query)
+    else:
+        threads = list_threads(hass, msg["entry_id"])
     connection.send_message(
         websocket_api.result_message(msg["id"], {"threads": threads})
     )
@@ -473,4 +485,25 @@ async def ws_threads_update(hass: HomeAssistant, connection, msg: dict) -> None:
     await async_save_threads(hass, msg["entry_id"])
     connection.send_message(
         websocket_api.result_message(msg["id"], {"thread": thread})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/threads/delete",
+        vol.Required("entry_id"): str,
+        vol.Required("conversation_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_threads_delete(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    entry_id = msg["entry_id"]
+    conversation_id = msg["conversation_id"]
+    chat_api.cancel_chat_task(hass, entry_id, conversation_id)
+    deleted = await async_delete_thread(hass, entry_id, conversation_id)
+    if not deleted:
+        raise HomeAssistantError("Conversation not found")
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"success": True})
     )

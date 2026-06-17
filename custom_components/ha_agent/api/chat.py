@@ -53,6 +53,11 @@ def _cancel_chat_task(hass: HomeAssistant, entry_id: str, conversation_id: str) 
         task.cancel()
 
 
+def cancel_chat_task(hass: HomeAssistant, entry_id: str, conversation_id: str) -> None:
+    """Cancel an in-flight console chat turn for a conversation."""
+    _cancel_chat_task(hass, entry_id, conversation_id)
+
+
 def start_chat(
     hass: HomeAssistant,
     *,
