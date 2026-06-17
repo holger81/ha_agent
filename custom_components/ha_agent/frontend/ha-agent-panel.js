@@ -803,14 +803,27 @@ class HaAgentPanel extends HTMLElement {
       .replace(/>/g, "&gt;");
   }
 
+  _shouldBoldSpan(inner) {
+    const text = String(inner || "").trim();
+    if (!text) return false;
+    if (text.endsWith(":") && text.length <= 72) return true;
+    const words = text.split(/\s+/);
+    return text.length <= 36 && words.length <= 4;
+  }
+
   _formatInlineMarkdown(text) {
     let html = this._escape(text);
     html = html.replace(
       /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
     );
-    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    html = html.replace(/\*\*([^*]+)\*\*/g, (_, inner) =>
+      this._shouldBoldSpan(inner) ? `<strong>${inner}</strong>` : inner
+    );
+    html = html.replace(/\*([^*]{1,48})\*/g, (_, inner) => {
+      if (inner.split(/\s+/).length > 5) return `*${inner}*`;
+      return `<em>${inner}</em>`;
+    });
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     return html;
   }
