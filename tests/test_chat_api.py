@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import types
@@ -98,7 +99,7 @@ async def test_stream_chat_fires_delta_and_done_events() -> None:
     hass.config_entries.async_get_entry.return_value = entry
 
     def create_task(coro, name=None):
-        return coro
+        return asyncio.create_task(coro, name=name)
 
     hass.async_create_task = create_task
 
@@ -107,10 +108,18 @@ async def test_stream_chat_fires_delta_and_done_events() -> None:
         patch.object(
             chat,
             "get_agent_config",
-            return_value=MagicMock(history_turns=6),
+            return_value=MagicMock(history_turns=6, max_iterations=8),
         ),
-        patch.object(chat, "get_llm_backend", return_value=MagicMock()),
-        patch.object(chat, "get_mcp_config", return_value=MagicMock()),
+        patch.object(
+            chat,
+            "get_llm_backend",
+            return_value=MagicMock(timeout=120),
+        ),
+        patch.object(
+            chat,
+            "get_mcp_config",
+            return_value=MagicMock(timeout=120),
+        ),
         patch.object(chat, "get_router_config", return_value=MagicMock()),
         patch.object(chat, "get_skills_config", return_value=MagicMock()),
         patch.object(chat, "collect_exposed_entities", new=AsyncMock(return_value=[])),

@@ -19,6 +19,7 @@ class HaAgentPanel extends HTMLElement {
     this._unsubEvents = null;
     this._eventsReady = null;
     this._bootstrapError = null;
+    this._turnTimeout = null;
   }
 
   _newConversationId() {
@@ -39,10 +40,49 @@ class HaAgentPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._clearTurnTimeout();
     if (this._unsubEvents) {
       void this._unsubEvents();
       this._unsubEvents = null;
     }
+  }
+
+  _clearTurnTimeout() {
+    if (this._turnTimeout) {
+      clearTimeout(this._turnTimeout);
+      this._turnTimeout = null;
+    }
+  }
+
+  _turnTimeoutMs() {
+    const llmTimeout = Number(this._config?.llm_timeout) || 120;
+    const maxIterations = Number(this._config?.max_iterations) || 8;
+    return (llmTimeout * maxIterations + 180) * 1000;
+  }
+
+  async _recoverStuckTurn() {
+    if (!this._streaming) return;
+    this._clearTurnTimeout();
+    try {
+      await this._loadHistory();
+    } catch (_err) {
+      /* history poll is best-effort */
+    }
+    const hasAssistant = this._messages.some(
+      (m) => m.role === "assistant" && (m.content || m.thinking)
+    );
+    if (!hasAssistant) {
+      this._messages.push({
+        role: "assistant",
+        content:
+          "Error: No response received. Check HA Agent logs and LLM/MCP connectivity in Settings.",
+        thinking: "",
+      });
+    }
+    this._streaming = false;
+    this._render();
+    await this._loadPendingDraft();
+    await this._refreshStatus();
   }
 
   async _ensureEventSubscription() {
@@ -183,6 +223,7 @@ class HaAgentPanel extends HTMLElement {
   async _handleChatDone(data) {
     if (data.entry_id && data.entry_id !== this._entryId) return;
     if (data.conversation_id !== this._conversationId) return;
+    this._clearTurnTimeout();
     this._streaming = false;
     if (data.error) {
       this._messages.push({
@@ -194,33 +235,43 @@ class HaAgentPanel extends HTMLElement {
       await this._loadHistory();
     }
     this._render();
-    await this._loadPendingDraft();
+    await Promise.all([this._loadThreads(), this._loadPendingDraft()]);
     await this._refreshStatus();
   }
 
   async _sendMessage(text) {
     if (!text.trim() || this._streaming) return;
     await this._ensureEventSubscription();
+    const turnId = this._conversationId;
     this._messages.push({ role: "user", content: text.trim(), thinking: "" });
     this._streaming = true;
+    this._clearTurnTimeout();
+    this._turnTimeout = setTimeout(
+      () => void this._recoverStuckTurn(),
+      this._turnTimeoutMs()
+    );
     this._render();
     try {
       const result = await this._call("ha_agent/chat/send", {
         entry_id: this._entryId,
-        conversation_id: this._conversationId,
+        conversation_id: turnId,
         text: text.trim(),
       });
-      if (result.history) {
+      if (result?.history) {
+        this._clearTurnTimeout();
         this._applyHistory(result.history);
-      } else {
+        this._streaming = false;
+        await Promise.all([this._loadThreads(), this._loadPendingDraft()]);
+        await this._refreshStatus();
+        this._render();
+      } else if (!result?.started) {
+        this._clearTurnTimeout();
         await this._loadHistory();
+        this._streaming = false;
+        this._render();
       }
-      this._streaming = false;
-      await this._loadThreads();
-      await this._loadPendingDraft();
-      await this._refreshStatus();
-      this._render();
     } catch (err) {
+      this._clearTurnTimeout();
       this._streaming = false;
       this._messages.push({
         role: "assistant",

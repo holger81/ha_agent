@@ -16,7 +16,7 @@ from ..config_helpers import (
     get_router_config,
     get_skills_config,
 )
-from ..const import DATA_KEY
+from ..const import DATA_KEY, LOGGER
 from ..conversation import collect_exposed_entities
 from ..llm_client import LlmClient
 from ..mcp_client import McpProxyClient
@@ -26,6 +26,19 @@ from ..threads import async_save_threads, upsert_thread
 from .helpers import get_entry
 
 CHAT_TASKS_KEY = "chat_tasks"
+CHAT_TURN_TIMEOUT_PADDING = 60
+
+
+def _chat_turn_timeout_seconds(entry) -> float:
+    """Upper bound for one console chat turn (MCP + agent loop)."""
+    llm_timeout = get_llm_backend(entry).timeout
+    mcp_timeout = get_mcp_config(entry).timeout
+    max_iterations = get_agent_config(entry).max_iterations
+    return (
+        mcp_timeout
+        + llm_timeout * max(max_iterations, 1)
+        + CHAT_TURN_TIMEOUT_PADDING
+    )
 
 
 def _chat_tasks(hass: HomeAssistant) -> dict[tuple[str, str], asyncio.Task]:
@@ -40,16 +53,17 @@ def _cancel_chat_task(hass: HomeAssistant, entry_id: str, conversation_id: str) 
         task.cancel()
 
 
-async def stream_chat(
+def start_chat(
     hass: HomeAssistant,
     *,
     entry_id: str,
     conversation_id: str,
     text: str,
-) -> None:
-    """Run the agent and stream deltas to the websocket connection."""
+) -> asyncio.Task[None]:
+    """Schedule a chat turn; deltas and completion are sent on the event bus."""
     entry = get_entry(hass, entry_id)
     _cancel_chat_task(hass, entry_id, conversation_id)
+    turn_timeout = _chat_turn_timeout_seconds(entry)
 
     async def _run() -> None:
         session = async_get_clientsession(hass)
@@ -79,63 +93,93 @@ async def stream_chat(
             "entry_id": entry_id,
             "conversation_id": conversation_id,
         }
+        done_payload: dict[str, Any] = {}
+        cancelled = False
         try:
-            async for delta in run_agent(
-                hass,
-                llm=llm,
-                mcp_client=mcp,
-                backend=backend,
-                agent_config=agent_config,
-                router_config=router_config,
-                skills_config=skills_config,
-                entry_id=entry_id,
-                conversation_id=conversation_id,
-                user_text=text,
-                exposed_entities=exposed,
-            ):
-                if not delta.content and not delta.thinking:
-                    continue
-                hass.bus.async_fire(
-                    "ha_agent_chat_delta",
-                    {
-                        **payload_base,
-                        "content": delta.content or None,
-                        "thinking": delta.thinking or None,
-                    },
-                )
+            async with asyncio.timeout(turn_timeout):
+                async for delta in run_agent(
+                    hass,
+                    llm=llm,
+                    mcp_client=mcp,
+                    backend=backend,
+                    agent_config=agent_config,
+                    router_config=router_config,
+                    skills_config=skills_config,
+                    entry_id=entry_id,
+                    conversation_id=conversation_id,
+                    user_text=text,
+                    exposed_entities=exposed,
+                ):
+                    if not delta.content and not delta.thinking:
+                        continue
+                    hass.bus.async_fire(
+                        "ha_agent_chat_delta",
+                        {
+                            **payload_base,
+                            "content": delta.content or None,
+                            "thinking": delta.thinking or None,
+                        },
+                    )
             status = get_agent_status(hass, entry_id)
-            hass.bus.async_fire(
-                "ha_agent_chat_done",
-                {
-                    **payload_base,
-                    "last_route": status.get("last_route"),
-                    "active_skill": status.get("active_skill"),
-                },
+            done_payload = {
+                "last_route": status.get("last_route"),
+                "active_skill": status.get("active_skill"),
+            }
+        except TimeoutError:
+            LOGGER.warning(
+                "Console chat timed out after %ss for %s",
+                turn_timeout,
+                conversation_id,
             )
+            done_payload = {
+                "error": (
+                    f"Chat timed out after {int(turn_timeout)}s. "
+                    "Check LLM and MCP connectivity in Settings."
+                ),
+            }
         except asyncio.CancelledError:
-            hass.bus.async_fire(
-                "ha_agent_chat_done",
-                {
-                    **payload_base,
-                    "cancelled": True,
-                },
-            )
-            raise
+            cancelled = True
+            done_payload = {"cancelled": True}
         except Exception as err:
+            LOGGER.exception("Console chat failed: %s", err)
+            done_payload = {"error": str(err)}
+        finally:
             hass.bus.async_fire(
                 "ha_agent_chat_done",
                 {
                     **payload_base,
-                    "error": str(err),
+                    **done_payload,
                 },
             )
+        if cancelled:
+            raise
 
+    key = (entry_id, conversation_id)
     task = hass.async_create_task(_run(), name=f"ha_agent_chat_{entry_id}")
-    _chat_tasks(hass)[(entry_id, conversation_id)] = task
-    try:
-        await task
-    finally:
-        _chat_tasks(hass).pop((entry_id, conversation_id), None)
+    _chat_tasks(hass)[key] = task
+
+    def _cleanup(_task: asyncio.Task[None]) -> None:
+        _chat_tasks(hass).pop(key, None)
+
+    task.add_done_callback(_cleanup)
+    return task
+
+
+async def stream_chat(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    conversation_id: str,
+    text: str,
+) -> None:
+    """Run the agent to completion (used by tests and blocking callers)."""
+    task = start_chat(
+        hass,
+        entry_id=entry_id,
+        conversation_id=conversation_id,
+        text=text,
+    )
+    await task
 
 
 def list_history(

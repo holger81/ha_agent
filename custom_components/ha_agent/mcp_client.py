@@ -11,7 +11,7 @@ import aiohttp
 from homeassistant.exceptions import HomeAssistantError
 
 from .config_helpers import McpConfig
-from .const import LOGGER, MCP_SESSION_TOOLS_TTL_SECONDS
+from .const import LOGGER, MCP_SESSION_TOOLS_TTL_SECONDS, MCP_TOOLS_LIST_MAX_PAGES
 from .mcp_errors import friendly_mcp_http_error, friendly_mcp_json_error
 from .mcp_session import (
     FALLBACK_MCP_TOOLS,
@@ -142,8 +142,10 @@ class McpProxyClient:
 
         tools: list[dict[str, Any]] = []
         cursor: str | None = None
+        page = 0
 
-        while True:
+        while page < MCP_TOOLS_LIST_MAX_PAGES:
+            page += 1
             params: dict[str, Any] = {}
             if cursor:
                 params["cursor"] = cursor
@@ -152,13 +154,19 @@ class McpProxyClient:
             if not isinstance(result, dict):
                 break
 
-            page = result.get("tools") or []
-            if isinstance(page, list):
-                tools.extend(entry for entry in page if isinstance(entry, dict))
+            page_tools = result.get("tools") or []
+            if isinstance(page_tools, list):
+                tools.extend(entry for entry in page_tools if isinstance(entry, dict))
 
             cursor = result.get("nextCursor")
             if not cursor:
                 break
+
+        if page >= MCP_TOOLS_LIST_MAX_PAGES and cursor:
+            LOGGER.warning(
+                "MCP tools/list stopped after %s pages; more tools may be unavailable",
+                MCP_TOOLS_LIST_MAX_PAGES,
+            )
 
         if tools:
             self._session_tools = tools

@@ -54,6 +54,7 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "title": entry.title,
         "llm_model": llm.model,
         "llm_base_url": llm.base_url,
+        "llm_timeout": llm.timeout,
         "thinking_level": llm.thinking_level,
         "action_model_enabled": router.action_enabled,
         "action_model": (

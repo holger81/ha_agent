@@ -101,10 +101,11 @@ class LlmClient:
 
     @staticmethod
     def _stream_timeout(backend: LlmBackend) -> aiohttp.ClientTimeout:
-        """Idle timeout between stream chunks; no total cap on long replies."""
+        """Idle timeout between chunks plus an absolute cap on stream duration."""
         connect = min(30, backend.timeout)
+        total = max(backend.timeout * 2, backend.timeout + 60)
         return aiohttp.ClientTimeout(
-            total=None,
+            total=total,
             connect=connect,
             sock_read=backend.timeout,
         )

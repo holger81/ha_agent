@@ -34,7 +34,7 @@ All commands require an authenticated admin WebSocket connection. Pass `entry_id
 
 | Type | Description |
 |------|-------------|
-| `ha_agent/chat/send` | `{ entry_id, conversation_id, text }` — streams deltas via bus events, returns `{ history }` when done. |
+| `ha_agent/chat/send` | `{ entry_id, conversation_id, text }` — acks `{ started: true }` immediately; streams deltas via bus events; completion via `ha_agent_chat_done`. |
 | `ha_agent/chat/history/list` | `{ entry_id, conversation_id }` → `{ history }`. |
 | `ha_agent/chat/history/clear` | `{ conversation_id }` → `{ success }`. |
 
