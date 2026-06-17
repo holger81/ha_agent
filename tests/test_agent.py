@@ -600,6 +600,9 @@ async def test_run_agent_shows_tool_progress_in_chat() -> None:
     ]
 
     thinking = [delta.thinking for delta in deltas if delta.thinking]
-    assert thinking[0] == "Calling turn_off on light.dining…\n"
-    assert thinking[1] == "home_assistant__ha_call_service done\n"
+    assert thinking == []
+    tools = [delta.tool for delta in deltas if delta.tool]
+    assert tools[0]["phase"] == "start"
+    assert tools[0]["name"] == "home_assistant__ha_call_service"
+    assert tools[1]["phase"] == "done"
     assert _agent_content(deltas) == ["Done."]

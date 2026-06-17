@@ -18,7 +18,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .agent import run_agent
+from .agent import run_agent, thinking_from_tool_event
 from .config_helpers import (
     get_agent_config,
     get_llm_backend,
@@ -184,13 +184,18 @@ class HaAgentConversationEntity(
                 exposed_entities=exposed,
                 extra_system_prompt=user_input.extra_system_prompt,
             ):
+                if delta.tool and agent_config.show_reasoning_in_chat:
+                    produced_content = True
+                    yield {"thinking_content": thinking_from_tool_event(delta.tool)}
                 if delta.thinking:
                     produced_content = True
                     yield {"thinking_content": delta.thinking}
                 if delta.content:
                     produced_content = True
                     yield {"content": delta.content}
-                if agent_config.enable_streaming and (delta.content or delta.thinking):
+                if agent_config.enable_streaming and (
+                    delta.content or delta.thinking or delta.tool
+                ):
                     await asyncio.sleep(0)
             if not produced_content:
                 yield {"content": EMPTY_RESPONSE_MESSAGE}

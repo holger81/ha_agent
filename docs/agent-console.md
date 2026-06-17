@@ -40,7 +40,7 @@ All commands require an authenticated admin WebSocket connection. Pass `entry_id
 
 **Streaming events** (subscribe via `hass.connection.subscribeEvents`):
 
-- `ha_agent_chat_delta` — `{ entry_id, conversation_id, content?, thinking? }`
+- `ha_agent_chat_delta` — `{ entry_id, conversation_id, content?, thinking?, tool? }`
 - `ha_agent_chat_done` — `{ entry_id, conversation_id, last_route?, active_skill?, error?, cancelled? }`
 
 ### Skills

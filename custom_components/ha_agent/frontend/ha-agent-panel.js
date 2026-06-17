@@ -232,6 +232,7 @@ class HaAgentPanel extends HTMLElement {
       role: item.role,
       content: item.content,
       thinking: "",
+      tools: [],
     }));
   }
 
@@ -259,7 +260,7 @@ class HaAgentPanel extends HTMLElement {
     if (data.conversation_id !== this._conversationId) return;
     let msg = this._messages[this._messages.length - 1];
     if (!msg || msg.role !== "assistant" || !this._streaming) {
-      msg = { role: "assistant", content: "", thinking: "" };
+      msg = { role: "assistant", content: "", thinking: "", tools: [] };
       this._messages.push(msg);
     }
     if (data.thinking) {
@@ -268,7 +269,50 @@ class HaAgentPanel extends HTMLElement {
     if (data.content) {
       msg.content += data.content;
     }
+    if (data.tool) {
+      this._applyToolDelta(msg, data.tool);
+    }
     this._scheduleChatRender();
+  }
+
+  _applyToolDelta(msg, tool) {
+    msg.tools = msg.tools || [];
+    const last = msg.tools[msg.tools.length - 1];
+    if (
+      tool.phase !== "start" &&
+      last &&
+      last.phase === "start" &&
+      last.name === tool.name
+    ) {
+      msg.tools[msg.tools.length - 1] = { ...last, ...tool };
+      return;
+    }
+    msg.tools.push({ ...tool });
+  }
+
+  _renderToolCall(tool) {
+    const phase = tool.phase || "start";
+    const labels = { start: "Running", done: "Done", error: "Failed" };
+    const label = labels[phase] || phase;
+    const name = tool.name || tool.call_name || "tool";
+    const args =
+      tool.arguments && Object.keys(tool.arguments).length
+        ? `<pre class="tool-args">${this._escape(
+            JSON.stringify(tool.arguments, null, 2)
+          )}</pre>`
+        : "";
+    const detail = tool.detail
+      ? `<div class="tool-detail">${this._escape(tool.detail)}</div>`
+      : "";
+    return `
+      <div class="tool-call tool-call--${phase}">
+        <div class="tool-call-header">
+          <span class="tool-call-label">${label}</span>
+          <code class="tool-call-name">${this._escape(name)}</code>
+        </div>
+        ${args}
+        ${detail}
+      </div>`;
   }
 
   _scheduleChatRender() {
@@ -518,7 +562,54 @@ class HaAgentPanel extends HTMLElement {
         line-height: 1.5;
         padding: 24px 12px;
       }
-      .thinking { opacity: 0.75; font-size: 0.9em; margin-bottom: 6px; border-left: 3px solid var(--primary-color); padding-left: 8px; }
+      .thinking { opacity: 0.75; font-size: 0.9em; margin-bottom: 6px; border-left: 3px solid var(--primary-color); padding-left: 8px; white-space: pre-wrap; }
+      .tool-call {
+        margin: 8px 0;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--divider-color, #444);
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 4%, transparent);
+        font-size: 0.85em;
+      }
+      .tool-call--start { border-color: var(--primary-color); }
+      .tool-call--done { border-color: #4caf50; }
+      .tool-call--error { border-color: var(--error-color, #cf6679); }
+      .tool-call-header {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .tool-call-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.8;
+      }
+      .tool-call--start .tool-call-label { color: var(--primary-color); }
+      .tool-call--done .tool-call-label { color: #4caf50; }
+      .tool-call--error .tool-call-label { color: var(--error-color, #cf6679); }
+      .tool-call-name {
+        font-family: var(--code-font-family, monospace);
+        font-size: 0.92em;
+        word-break: break-all;
+      }
+      .tool-args {
+        margin: 6px 0 0;
+        padding: 8px;
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 6%, transparent);
+        overflow-x: auto;
+        white-space: pre-wrap;
+        font-size: 0.85em;
+      }
+      .tool-detail {
+        margin-top: 6px;
+        opacity: 0.85;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
       .composer { display: flex; gap: 8px; margin-top: 12px; flex-shrink: 0; }
       .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
       table { width: 100%; border-collapse: collapse; }
@@ -553,16 +644,19 @@ class HaAgentPanel extends HTMLElement {
       .join("");
 
     const messages = this._messages
-      .filter((m) => m.content || m.thinking)
+      .filter((m) => m.content || m.thinking || (m.tools && m.tools.length))
       .map((m) => {
         const thinking = m.thinking
           ? `<div class="thinking">${this._escape(m.thinking)}</div>`
           : "";
+        const tools = (m.tools || [])
+          .map((tool) => this._renderToolCall(tool))
+          .join("");
         const body =
           m.role === "assistant"
             ? `<div class="md">${this._formatMarkdown(m.content)}</div>`
             : this._escape(m.content);
-        return `<div class="bubble ${m.role}">${thinking}${body}</div>`;
+        return `<div class="bubble ${m.role}">${thinking}${tools}${body}</div>`;
       })
       .join("");
 
@@ -670,7 +764,7 @@ class HaAgentPanel extends HTMLElement {
               .join("")}
           </select>
         </label>
-        <label><input type="checkbox" data-config-bool="show_reasoning_in_chat" ${c.show_reasoning_in_chat ? "checked" : ""}/> Show reasoning in chat</label>
+        <label><input type="checkbox" data-config-bool="show_reasoning_in_chat" ${c.show_reasoning_in_chat ? "checked" : ""}/> Show model reasoning in chat</label>
         <label><input type="checkbox" data-config-bool="enable_streaming" ${c.enable_streaming ? "checked" : ""}/> Enable streaming</label>
         <label><input type="checkbox" data-config-bool="skills_learning_enabled" ${c.skills_learning_enabled ? "checked" : ""}/> Skill learning</label>
         <label><input type="checkbox" data-config-bool="skills_auto_save" ${c.skills_auto_save ? "checked" : ""}/> Skill auto-save</label>

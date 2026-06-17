@@ -180,6 +180,26 @@ def test_normalize_ha_call_service_resolves_display_name() -> None:
     assert tool_args["arguments"]["domain"] == "light"
 
 
+def test_normalize_doubled_mcp_tool_prefix() -> None:
+    """Duplicate MCP server prefixes are collapsed before callTool."""
+    call = llm_client.ToolCall(
+        id="call_news",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "mcp-news__mcp_news__news_curate",
+                "arguments": {"limit": 5},
+            }
+        ),
+    )
+
+    tool_name, tool_args = tools._normalize_tool_call(call)
+
+    assert tool_name == "callTool"
+    assert tool_args["toolName"] == "mcp_news__news_curate"
+    assert tool_args["arguments"]["limit"] == 5
+
+
 def test_memory_assistant_text_appends_controlled_entities() -> None:
     """Conversation memory keeps entity ids for pronoun follow-ups."""
     text = tools.memory_assistant_text(

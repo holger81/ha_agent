@@ -62,6 +62,7 @@ class AgentDelta:
 
     content: str = ""
     thinking: str = ""
+    tool: dict[str, Any] | None = None
 
 
 def _tool_call_payload(call: ToolCall) -> tuple[str, dict[str, Any]]:
@@ -78,25 +79,50 @@ def _tool_display_name(call: ToolCall) -> str:
     return tool_name
 
 
-def _tool_status_line(call: ToolCall) -> str:
-    tool_name, tool_args = _tool_call_payload(call)
-    if "ha_call_service" in tool_name:
-        service = tool_args.get("service", "service")
-        entity = tool_args.get("entity_id", "entity")
-        return f"Calling {service} on {entity}…\n"
-    if query := tool_args.get("query"):
-        return f"Calling {tool_name} ({query})…\n"
-    return f"Calling {tool_name}…\n"
+def _tool_event(call: ToolCall, phase: str, *, detail: str = "") -> dict[str, Any]:
+    """Build a structured tool progress event for the console."""
+    name, arguments = _tool_call_payload(call)
+    event: dict[str, Any] = {
+        "phase": phase,
+        "name": name,
+        "call_name": call.name,
+    }
+    if arguments:
+        event["arguments"] = arguments
+    if detail:
+        event["detail"] = detail
+    return event
 
 
-def _tool_result_line(call: ToolCall, output: str) -> str:
-    name = _tool_display_name(call)
+def _tool_event_detail(call: ToolCall, output: str) -> str:
+    """Return a short result summary for a completed tool call."""
     if output.startswith("Tool error:"):
-        detail = output.removeprefix("Tool error:").strip()
+        return output.removeprefix("Tool error:").strip()[:200]
+    compact = output.replace("\n", " ").strip()
+    return compact[:160]
+
+
+def thinking_from_tool_event(tool: dict[str, Any]) -> str:
+    """Map a structured tool event to Assist thinking text."""
+    name = str(tool.get("name") or tool.get("call_name") or "tool")
+    phase = tool.get("phase")
+    arguments = tool.get("arguments")
+    if phase == "start":
+        if isinstance(arguments, dict) and "ha_call_service" in name:
+            service = arguments.get("service", "service")
+            entity = arguments.get("entity_id", "entity")
+            return f"Calling {service} on {entity}…\n"
+        if isinstance(arguments, dict) and (query := arguments.get("query")):
+            return f"Calling {name} ({query})…\n"
+        return f"Calling {name}…\n"
+    if phase == "error":
+        detail = str(tool.get("detail") or "error").strip()
         if len(detail) > 80:
             detail = f"{detail[:77]}..."
         return f"{name} failed: {detail}\n" if detail else f"{name} failed\n"
-    return f"{name} done\n"
+    if phase == "done":
+        return f"{name} done\n"
+    return ""
 
 
 def _record_tool_call(trace: TurnTrace, call: ToolCall, output: str) -> None:
@@ -192,8 +218,7 @@ async def _process_tool_calls(
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run tool calls and yield chat progress deltas."""
     for call in calls:
-        if agent_config.show_reasoning_in_chat:
-            yield AgentDelta(thinking=_tool_status_line(call))
+        yield AgentDelta(tool=_tool_event(call, "start"))
         output = await _run_tool_call(
             mcp_client,
             call,
@@ -201,8 +226,14 @@ async def _process_tool_calls(
             controlled_entity_ids=controlled_entity_ids,
             trace=trace,
         )
-        if agent_config.show_reasoning_in_chat:
-            yield AgentDelta(thinking=_tool_result_line(call, output))
+        phase = "error" if output.startswith("Tool error:") else "done"
+        yield AgentDelta(
+            tool=_tool_event(
+                call,
+                phase,
+                detail=_tool_event_detail(call, output),
+            )
+        )
         messages.append(tool_result_message(call, output))
 
 

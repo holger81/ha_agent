@@ -125,6 +125,21 @@ def _normalize_ha_call_service_arguments(
     return normalized
 
 
+def _normalize_upstream_tool_name(name: str) -> str:
+    """Fix common LLM mistakes in MCP proxy tool names."""
+    cleaned = name.strip()
+    if not cleaned:
+        return cleaned
+
+    if "__" not in cleaned:
+        return cleaned.replace("-", "_")
+
+    parts = [part.replace("-", "_") for part in cleaned.split("__") if part]
+    while len(parts) >= 3 and parts[0] == parts[1]:
+        parts = [parts[0], *parts[2:]]
+    return "__".join(parts)
+
+
 def _normalize_call_tool_payload(
     payload: dict[str, Any],
     *,
@@ -135,6 +150,9 @@ def _normalize_call_tool_payload(
     arguments = payload.get("arguments")
     if not isinstance(arguments, dict):
         arguments = {}
+
+    if isinstance(upstream, str):
+        upstream = _normalize_upstream_tool_name(upstream)
 
     if isinstance(upstream, str) and upstream.endswith("ha_call_service"):
         arguments = _normalize_ha_call_service_arguments(
@@ -162,6 +180,8 @@ def _normalize_tool_call(
 
     if tool_name == "callTool" and "toolName" in args:
         upstream = args["toolName"]
+        if isinstance(upstream, str):
+            upstream = _normalize_upstream_tool_name(upstream)
         if isinstance(args.get("arguments"), dict):
             nested = dict(args["arguments"])
         else:
@@ -174,6 +194,9 @@ def _normalize_tool_call(
             {"toolName": upstream, "arguments": nested},
             exposed_entities=exposed_entities,
         )
+
+    if tool_name not in {"callTool", "searchTool", "searchToolsForDomain"}:
+        tool_name = _normalize_upstream_tool_name(tool_name)
 
     return tool_name, args
 

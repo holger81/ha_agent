@@ -59,9 +59,9 @@ def test_format_exposed_entities() -> None:
 
 
 def test_build_tool_context_adds_news_hint() -> None:
-    """News queries reference MCP discovery workflow."""
+    """News queries get a direct news_curate tool hint."""
     tool_context = context.build_tool_context("What's the news?", [])
-    assert "domain news" in tool_context
+    assert "mcp_news__news_curate" in tool_context
     assert "callTool" in tool_context
 
 

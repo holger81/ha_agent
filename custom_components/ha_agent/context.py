@@ -274,8 +274,10 @@ def build_tool_context(
         is_affirmative(query) and _recent_news_context(prior_turns)
     ):
         context_parts.append(
-            "NEWS: follow MCP SERVER INSTRUCTIONS. Discover in domain news, "
-            "then callTool with the returned toolName."
+            "NEWS: call callTool with toolName mcp_news__news_curate. "
+            "Use that exact toolName (underscores only, no extra server prefix). "
+            "Optional arguments: {\"limit\": 5}. "
+            "Only use searchToolsForDomain if that call fails."
         )
 
     if is_email_query(query):

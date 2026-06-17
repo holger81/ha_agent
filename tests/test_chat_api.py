@@ -18,12 +18,26 @@ COMPONENT = (
 
 async def _fake_run_agent(*_args, **_kwargs):
     class Delta:
-        def __init__(self, content=None, thinking=None):
+        def __init__(self, content=None, thinking=None, tool=None):
             self.content = content
             self.thinking = thinking
+            self.tool = tool
 
     yield Delta(content="Hello")
-    yield Delta(thinking="Calling tool…")
+    yield Delta(
+        tool={
+            "phase": "start",
+            "name": "mcp_news__news_curate",
+            "call_name": "callTool",
+        }
+    )
+    yield Delta(
+        tool={
+            "phase": "done",
+            "name": "mcp_news__news_curate",
+            "call_name": "callTool",
+        }
+    )
 
 
 def _load_chat_module():
@@ -137,9 +151,9 @@ async def test_stream_chat_fires_delta_and_done_events() -> None:
         )
 
     fired = [call.args for call in hass.bus.async_fire.call_args_list]
-    assert fired[0][0] == "ha_agent_chat_delta"
     assert fired[0][1]["content"] == "Hello"
     assert fired[1][0] == "ha_agent_chat_delta"
-    assert fired[1][1]["thinking"] == "Calling tool…"
-    assert fired[2][0] == "ha_agent_chat_done"
-    assert fired[2][1]["last_route"] == "chat"
+    assert fired[1][1]["tool"]["phase"] == "start"
+    assert fired[2][1]["tool"]["phase"] == "done"
+    assert fired[3][0] == "ha_agent_chat_done"
+    assert fired[3][1]["last_route"] == "chat"
