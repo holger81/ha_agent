@@ -109,14 +109,19 @@ async def ws_status(hass: HomeAssistant, connection, msg: dict) -> None:
 )
 @websocket_api.async_response
 async def ws_chat_send(hass: HomeAssistant, connection, msg: dict) -> None:
-    """Stream a chat turn to the client via events."""
+    """Run a chat turn; stream deltas via events, return final history."""
     require_admin(connection)
-    connection.send_message(websocket_api.result_message(msg["id"], {"started": True}))
+    entry_id = msg["entry_id"]
+    conversation_id = msg["conversation_id"]
     await chat_api.stream_chat(
         hass,
-        entry_id=msg["entry_id"],
-        conversation_id=msg["conversation_id"],
+        entry_id=entry_id,
+        conversation_id=conversation_id,
         text=msg["text"],
+    )
+    history = chat_api.list_history(hass, entry_id, conversation_id)
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"history": history})
     )
 
 

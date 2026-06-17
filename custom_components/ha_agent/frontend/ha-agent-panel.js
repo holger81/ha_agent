@@ -18,6 +18,7 @@ class HaAgentPanel extends HTMLElement {
     this._msgId = 1;
     this._unsubEvents = null;
     this._eventsReady = null;
+    this._bootstrapError = null;
   }
 
   _newConversationId() {
@@ -80,20 +81,24 @@ class HaAgentPanel extends HTMLElement {
   }
 
   async _bootstrap() {
-    await this._ensureEventSubscription();
-    const data = await this._call("ha_agent/subscribe", {});
-    this._entryId = data.entry_id;
-    this._config = data.config;
-    this._status = data.status || {};
-    await Promise.all([
-      this._loadThreads(),
-      this._loadSkills(),
-      this._loadPendingDraft(),
-    ]);
-    if (this._threads.length > 0) {
-      this._conversationId = this._threads[0].conversation_id;
+    try {
+      await this._ensureEventSubscription();
+      const data = await this._call("ha_agent/subscribe", {});
+      this._entryId = data.entry_id;
+      this._config = data.config;
+      this._status = data.status || {};
+      await Promise.all([
+        this._loadThreads(),
+        this._loadSkills(),
+        this._loadPendingDraft(),
+      ]);
+      if (this._threads.length > 0) {
+        this._conversationId = this._threads[0].conversation_id;
+      }
+      await this._loadHistory();
+    } catch (err) {
+      this._bootstrapError = err?.message || String(err);
     }
-    await this._loadHistory();
     this._render();
   }
 
@@ -131,17 +136,21 @@ class HaAgentPanel extends HTMLElement {
     this._threads = data.threads || [];
   }
 
+  _applyHistory(history) {
+    this._messages = (history || []).map((item) => ({
+      role: item.role,
+      content: item.content,
+      thinking: "",
+    }));
+  }
+
   async _loadHistory() {
     if (!this._entryId) return;
     const data = await this._call("ha_agent/chat/history/list", {
       entry_id: this._entryId,
       conversation_id: this._conversationId,
     });
-    this._messages = (data.history || []).map((item) => ({
-      role: item.role,
-      content: item.content,
-      thinking: "",
-    }));
+    this._applyHistory(data.history);
   }
 
   async _loadPendingDraft() {
@@ -189,15 +198,6 @@ class HaAgentPanel extends HTMLElement {
     await this._refreshStatus();
   }
 
-  async _finishStreamingTurn() {
-    if (!this._streaming) return;
-    this._streaming = false;
-    await this._loadHistory();
-    this._render();
-    await this._loadPendingDraft();
-    await this._refreshStatus();
-  }
-
   async _sendMessage(text) {
     if (!text.trim() || this._streaming) return;
     await this._ensureEventSubscription();
@@ -205,13 +205,21 @@ class HaAgentPanel extends HTMLElement {
     this._streaming = true;
     this._render();
     try {
-      await this._call("ha_agent/chat/send", {
+      const result = await this._call("ha_agent/chat/send", {
         entry_id: this._entryId,
         conversation_id: this._conversationId,
         text: text.trim(),
       });
+      if (result.history) {
+        this._applyHistory(result.history);
+      } else {
+        await this._loadHistory();
+      }
+      this._streaming = false;
       await this._loadThreads();
-      await this._finishStreamingTurn();
+      await this._loadPendingDraft();
+      await this._refreshStatus();
+      this._render();
     } catch (err) {
       this._streaming = false;
       this._messages.push({
@@ -462,7 +470,9 @@ class HaAgentPanel extends HTMLElement {
       .join("");
 
     let body = "";
-    if (this._tab === "chat") body = this._renderChat();
+    if (this._bootstrapError) {
+      body = `<div class="banner">Failed to connect: ${this._escape(this._bootstrapError)}</div>`;
+    } else if (this._tab === "chat") body = this._renderChat();
     if (this._tab === "skills") body = this._renderSkills();
     if (this._tab === "settings") body = this._renderSettings();
     if (this._tab === "activity") body = this._renderActivity();
