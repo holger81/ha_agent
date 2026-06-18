@@ -57,6 +57,23 @@ def test_format_skills_for_context() -> None:
     assert "ha_call_service" in block
 
 
+def test_format_skills_for_context_email_route_priority() -> None:
+    """Email and news routes use stronger skill binding text."""
+    skill = Skill(
+        id="1",
+        slug="email-unread",
+        title="Unread email",
+        description="Check unread inbox messages.",
+        triggers=["check inbox"],
+        body="Search unread mail then fetch message bodies.",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages", "arguments": {}}],
+    )
+    block = format_skills_for_context([skill], route="email")
+
+    assert "ACTIVE SKILLS (PRIORITY)" in block
+    assert "tool_steps in order" in block
+
+
 def test_build_tool_context_includes_skill_hints() -> None:
     """Skill hints are injected into tool context."""
     hints = format_skills_for_context(
@@ -72,6 +89,12 @@ def test_build_tool_context_includes_skill_hints() -> None:
             )
         ]
     )
-    context = build_tool_context("what is the news", [], skill_hints=hints)
+    context = build_tool_context(
+        "what is the news",
+        [],
+        skill_hints=hints,
+        route="news",
+    )
     assert "ACTIVE SKILLS" in context
     assert "News briefing" in context
+    assert "execute those steps first" in context

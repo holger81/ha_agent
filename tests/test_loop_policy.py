@@ -59,6 +59,26 @@ def test_check_stuck_hard_blocks_second_duplicate() -> None:
     assert "ask the user for help" in blocked
 
 
+def test_reasoning_stream_stuck_on_repeat() -> None:
+    """Repeated reasoning tails are treated as stuck output."""
+    policy = _load_loop_policy()
+    phrase = "Wait, I'll try mail_mcp__imap_search_messages with mailbox INBOX. "
+    chunk = phrase * 6
+    assert policy.reasoning_stream_stuck(chunk) is True
+
+
+def test_mark_iteration_outcome_stops_after_repeated_blocks() -> None:
+    """Two unproductive duplicate-block iterations force stuck."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.iteration_had_duplicate_block = True
+    policy.mark_iteration_outcome(state)
+    assert state.stuck is False
+    state.iteration_had_duplicate_block = True
+    policy.mark_iteration_outcome(state)
+    assert state.stuck is True
+
+
 def test_enrich_tool_output_adds_email_recovery_hints() -> None:
     policy = _load_loop_policy()
     output = policy.enrich_tool_output(

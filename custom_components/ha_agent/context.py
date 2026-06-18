@@ -260,6 +260,13 @@ def build_tool_context(
     if skill_hints.strip():
         context_parts.append(skill_hints.strip())
 
+    if route in {"email", "news"} and skill_hints.strip():
+        context_parts.append(
+            "When ACTIVE SKILLS include tool_steps for this route, execute those "
+            "steps first. Use the route playbook only for gaps the skill does "
+            "not cover."
+        )
+
     if exposed:
         context_parts.append(
             "EXPOSED ENTITIES:\n" + format_exposed_entities(exposed)

@@ -31,6 +31,14 @@ class LoopState:
     verification_notes: list[str] = field(default_factory=list)
     stuck: bool = False
     stuck_message: str = ""
+    unproductive_iterations: int = 0
+    iteration_had_successful_tool: bool = False
+    iteration_had_duplicate_block: bool = False
+
+
+_MAX_REASONING_CHARS = 8000
+_REASONING_REPEAT_MARKER = 60
+_MAX_UNPRODUCTIVE_ITERATIONS = 2
 
 
 def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -40,6 +48,31 @@ def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
     except TypeError:
         args_blob = str(arguments)
     return f"{tool_name}:{args_blob}"
+
+
+def normalize_tool_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Normalize tool args so equivalent calls share one signature."""
+    normalized: dict[str, Any] = {}
+    for key, value in sorted(arguments.items()):
+        if value is None:
+            continue
+        if isinstance(value, str):
+            normalized[key] = value.strip()
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def reasoning_stream_stuck(buffer: str) -> bool:
+    """Return True when streamed reasoning is repeating or too long."""
+    if len(buffer) > _MAX_REASONING_CHARS:
+        return True
+    if len(buffer) < 240:
+        return False
+    marker = buffer[-_REASONING_REPEAT_MARKER:]
+    if len(marker.strip()) < 20:
+        return False
+    return buffer.count(marker) >= 4
 
 
 def check_stuck(
@@ -53,7 +86,10 @@ def check_stuck(
     another loop iteration to replan. A second duplicate of the same signature
     ends the turn as stuck.
     """
-    signature = tool_call_signature(tool_name, arguments)
+    signature = tool_call_signature(
+        tool_name,
+        normalize_tool_arguments(arguments),
+    )
     if signature not in loop_state.tool_signatures:
         loop_state.tool_signatures.append(signature)
         return None
@@ -75,9 +111,31 @@ def check_stuck(
     return (
         f"Blocked repeated identical call to {tool_name}. "
         "You already used this tool with the same arguments. "
-        "Review the previous tool result, answer from it if sufficient, "
-        "or try a different tool or different arguments."
+        "STOP retrying this call this turn. Review the previous tool result, "
+        "answer from it if sufficient, or use a different tool (for example "
+        "get_message with a message_id from search results)."
     )
+
+
+def reset_iteration_flags(loop_state: LoopState) -> None:
+    """Clear per-iteration progress markers."""
+    loop_state.iteration_had_successful_tool = False
+    loop_state.iteration_had_duplicate_block = False
+
+
+def mark_iteration_outcome(loop_state: LoopState) -> None:
+    """Track iterations that repeat blocked calls without progress."""
+    if loop_state.iteration_had_successful_tool:
+        loop_state.unproductive_iterations = 0
+        return
+    if loop_state.iteration_had_duplicate_block:
+        loop_state.unproductive_iterations += 1
+        if loop_state.unproductive_iterations >= _MAX_UNPRODUCTIVE_ITERATIONS:
+            loop_state.stuck = True
+            loop_state.stuck_message = (
+                "I kept retrying the same approach without making progress. "
+                "Please narrow the request or tell me what to do differently."
+            )
 
 
 _EMAIL_LARGE_INBOX = re.compile(

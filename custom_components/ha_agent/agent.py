@@ -24,7 +24,15 @@ from .embedded_tools import (
     strip_embedded_tool_markup,
 )
 from .llm_client import LlmClient, StreamChatSession, ToolCall, stream_text_delta
-from .loop_policy import LoopState, TurnOutcome, check_stuck, finalize_output
+from .loop_policy import (
+    LoopState,
+    TurnOutcome,
+    check_stuck,
+    finalize_output,
+    mark_iteration_outcome,
+    reasoning_stream_stuck,
+    reset_iteration_flags,
+)
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
 from .router import TaskRoute, backend_for_route, classify_route, route_playbook
@@ -155,6 +163,7 @@ async def _yield_streamed_assistant_text(
     yielded_len = 0
     reasoning_buffer = ""
     reasoning_yielded_len = 0
+    reasoning_truncated = False
 
     async for chunk in llm.chat_stream(
         messages,
@@ -162,12 +171,22 @@ async def _yield_streamed_assistant_text(
         tools=tools,
         session=session,
     ):
-        if show_reasoning and chunk.reasoning_content:
+        if show_reasoning and chunk.reasoning_content and not reasoning_truncated:
             reasoning_buffer, _ = stream_text_delta(
                 reasoning_buffer,
                 chunk.reasoning_content,
             )
-            if len(reasoning_buffer) > reasoning_yielded_len:
+            if reasoning_stream_stuck(reasoning_buffer):
+                reasoning_truncated = True
+                if reasoning_yielded_len < len(reasoning_buffer):
+                    yield (
+                        AgentDelta(
+                            thinking="\n…(reasoning truncated — continuing)",
+                        ),
+                        session,
+                    )
+                    reasoning_yielded_len = len(reasoning_buffer)
+            elif len(reasoning_buffer) > reasoning_yielded_len:
                 text = reasoning_buffer[reasoning_yielded_len:]
                 reasoning_yielded_len = len(reasoning_buffer)
                 if text:
@@ -239,6 +258,7 @@ async def _process_tool_calls(
     for call in calls:
         tool_name, arguments = _tool_call_payload(call)
         if stuck_msg := check_stuck(loop_state, tool_name, arguments):
+            loop_state.iteration_had_duplicate_block = True
             yield AgentDelta(tool=_tool_event(call, "error", detail=stuck_msg[:200]))
             messages.append(
                 tool_result_message(call, f"Tool error: {stuck_msg}")
@@ -263,6 +283,8 @@ async def _process_tool_calls(
             loop_state=loop_state,
         )
         phase = "error" if output.startswith("Tool error:") else "done"
+        if phase == "done":
+            loop_state.iteration_had_successful_tool = True
         yield AgentDelta(
             tool=_tool_event(
                 call,
@@ -477,9 +499,10 @@ async def run_agent(
             hass,
             entry_id,
             user_text,
+            history=history,
             max_inject=skills_config.max_inject,
         )
-        skill_hints = build_skill_hints(matched_skills)
+        skill_hints = build_skill_hints(matched_skills, route=route.value)
         update_agent_status(
             hass,
             entry_id,
@@ -544,6 +567,7 @@ async def run_agent(
 
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
+        reset_iteration_flags(loop_state)
         active_backend = (
             backend
             if use_chat_backend
@@ -600,6 +624,7 @@ async def run_agent(
                     trace=trace,
                 ):
                     yield delta
+                mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
                     yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
                     append_turn(
@@ -629,6 +654,7 @@ async def run_agent(
                     trace=trace,
                 ):
                     yield delta
+                mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
                     yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
                     append_turn(
@@ -665,6 +691,7 @@ async def run_agent(
                     trace=trace,
                 ):
                     yield delta
+                mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
                     yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
                     append_turn(
@@ -694,6 +721,7 @@ async def run_agent(
                     trace=trace,
                 ):
                     yield delta
+                mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
                     yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
                     append_turn(
