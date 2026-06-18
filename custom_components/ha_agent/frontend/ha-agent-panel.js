@@ -270,6 +270,15 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  _appendStreamText(buffer, piece) {
+    if (!piece) return buffer || "";
+    const current = buffer || "";
+    if (!current) return piece;
+    if (piece.startsWith(current)) return piece;
+    if (current.endsWith(piece)) return current;
+    return current + piece;
+  }
+
   _handleDelta(data) {
     if (data.entry_id && data.entry_id !== this._entryId) return;
     if (data.conversation_id !== this._conversationId) return;
@@ -278,11 +287,14 @@ class HaAgentPanel extends HTMLElement {
       msg = { role: "assistant", content: "", thinking: "", tools: [] };
       this._messages.push(msg);
     }
+    if (data.thinking_clear) {
+      msg.thinking = "";
+    }
     if (data.thinking) {
-      msg.thinking += data.thinking;
+      msg.thinking = this._appendStreamText(msg.thinking, data.thinking);
     }
     if (data.content) {
-      msg.content += data.content;
+      msg.content = this._appendStreamText(msg.content, data.content);
     }
     if (data.tool) {
       this._applyToolDelta(msg, data.tool);

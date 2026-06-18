@@ -115,7 +115,12 @@ def start_chat(
                     user_text=text,
                     exposed_entities=exposed,
                 ):
-                    if not delta.content and not delta.thinking and not delta.tool:
+                    if (
+                        not delta.content
+                        and not delta.thinking
+                        and not delta.tool
+                        and not delta.thinking_clear
+                    ):
                         continue
                     hass.bus.async_fire(
                         "ha_agent_chat_delta",
@@ -123,6 +128,7 @@ def start_chat(
                             **payload_base,
                             "content": delta.content or None,
                             "thinking": delta.thinking or None,
+                            "thinking_clear": delta.thinking_clear or None,
                             "tool": delta.tool,
                         },
                     )

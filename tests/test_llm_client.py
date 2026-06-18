@@ -236,6 +236,80 @@ def test_parse_sse_reasoning_content() -> None:
     asyncio.run(_run())
 
 
+def test_stream_text_delta_incremental() -> None:
+    """Incremental stream pieces append normally."""
+    buffer, delta = llm_client.stream_text_delta("", "Hello")
+    assert buffer == "Hello"
+    assert delta == "Hello"
+    buffer, delta = llm_client.stream_text_delta(buffer, " world")
+    assert buffer == "Hello world"
+    assert delta == " world"
+
+
+def test_stream_text_delta_cumulative() -> None:
+    """Cumulative stream pieces emit only the new suffix."""
+    buffer, delta = llm_client.stream_text_delta("", "The user wants")
+    assert buffer == "The user wants"
+    assert delta == "The user wants"
+    buffer, delta = llm_client.stream_text_delta(
+        buffer,
+        "The user wants to check email",
+    )
+    assert buffer == "The user wants to check email"
+    assert delta == " to check email"
+    buffer, delta = llm_client.stream_text_delta(
+        buffer,
+        "The user wants to check email",
+    )
+    assert buffer == "The user wants to check email"
+    assert delta == ""
+
+
+def test_parse_sse_cumulative_reasoning_content() -> None:
+    """Streaming parser deduplicates cumulative reasoning_content deltas."""
+
+    async def _run() -> None:
+        client = llm_client.LlmClient(MagicMock())
+        session = llm_client.StreamChatSession()
+
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.content = self
+
+            async def iter_any(self):
+                for reasoning in (
+                    "The user wants",
+                    "The user wants to check email",
+                    "The user wants to check email",
+                ):
+                    payload = {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "reasoning_content": reasoning,
+                                }
+                            }
+                        ]
+                    }
+                    yield f"data: {json.dumps(payload)}\n\n".encode()
+
+        response = FakeResponse()
+        chunks: list[llm_client.StreamChunk] = []
+        async for chunk in client._iter_sse_deltas(response, session):
+            if chunk.reasoning_content:
+                chunks.append(chunk)
+
+        assert [chunk.reasoning_content for chunk in chunks] == [
+            "The user wants",
+            " to check email",
+        ]
+        assert session.reasoning_content == "The user wants to check email"
+
+    import asyncio
+
+    asyncio.run(_run())
+
+
 def test_payload_includes_thinking_for_medium() -> None:
     """Chat payloads include reasoning parameters when thinking is enabled."""
     backend = config_helpers.LlmBackend(

@@ -23,7 +23,7 @@ from .embedded_tools import (
     safe_stream_display_text,
     strip_embedded_tool_markup,
 )
-from .llm_client import LlmClient, StreamChatSession, ToolCall
+from .llm_client import LlmClient, StreamChatSession, ToolCall, stream_text_delta
 from .loop_policy import LoopState, TurnOutcome, check_stuck, finalize_output
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
@@ -63,6 +63,7 @@ class AgentDelta:
     content: str = ""
     thinking: str = ""
     tool: dict[str, Any] | None = None
+    thinking_clear: bool = False
 
 
 def _tool_call_payload(call: ToolCall) -> tuple[str, dict[str, Any]]:
@@ -151,6 +152,8 @@ async def _yield_streamed_assistant_text(
     session = StreamChatSession()
     raw_buffer = ""
     yielded_len = 0
+    reasoning_buffer = ""
+    reasoning_yielded_len = 0
 
     async for chunk in llm.chat_stream(
         messages,
@@ -159,7 +162,15 @@ async def _yield_streamed_assistant_text(
         session=session,
     ):
         if show_reasoning and chunk.reasoning_content:
-            yield AgentDelta(thinking=chunk.reasoning_content), session
+            reasoning_buffer, _ = stream_text_delta(
+                reasoning_buffer,
+                chunk.reasoning_content,
+            )
+            if len(reasoning_buffer) > reasoning_yielded_len:
+                text = reasoning_buffer[reasoning_yielded_len:]
+                reasoning_yielded_len = len(reasoning_buffer)
+                if text:
+                    yield AgentDelta(thinking=text), session
         if not chunk.content:
             continue
         raw_buffer += chunk.content
@@ -535,6 +546,9 @@ async def run_agent(
             )
         )
 
+        if iteration > 0 and agent_config.show_reasoning_in_chat:
+            yield AgentDelta(thinking_clear=True)
+
         if agent_config.enable_streaming:
             session = StreamChatSession()
             async for delta, active_session in _yield_streamed_assistant_text(
@@ -545,7 +559,7 @@ async def run_agent(
                 show_reasoning=agent_config.show_reasoning_in_chat,
             ):
                 session = active_session
-                if delta.content or delta.thinking:
+                if delta.content or delta.thinking or delta.thinking_clear:
                     yield delta
 
             raw_buffer = session.content

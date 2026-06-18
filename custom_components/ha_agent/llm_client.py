@@ -15,6 +15,22 @@ from .const import LOGGER
 from .embedded_tools import parse_embedded_tool_calls, strip_embedded_tool_markup
 from .thinking import apply_thinking_to_payload
 
+
+def stream_text_delta(buffer: str, piece: str) -> tuple[str, str]:
+    """Append a streamed text fragment, handling cumulative providers.
+
+    Some LLM servers send the full text-so-far in each SSE delta instead of
+    only the new suffix. Returns ``(new_buffer, delta_to_emit)``.
+    """
+    if not piece:
+        return buffer, ""
+    if buffer and piece.startswith(buffer):
+        return piece, piece[len(buffer) :]
+    if buffer and buffer.endswith(piece):
+        return buffer, ""
+    return buffer + piece, piece
+
+
 MCP_CALL_TOOL_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -277,11 +293,15 @@ class LlmClient:
                     content_part = ""
                     reasoning_part = ""
                     if reasoning:
-                        session.reasoning_content += reasoning
-                        reasoning_part = reasoning
+                        session.reasoning_content, reasoning_part = stream_text_delta(
+                            session.reasoning_content,
+                            reasoning,
+                        )
                     if content:
-                        session.content += content
-                        content_part = content
+                        session.content, content_part = stream_text_delta(
+                            session.content,
+                            content,
+                        )
                     if content_part or reasoning_part:
                         yield StreamChunk(
                             content=content_part,

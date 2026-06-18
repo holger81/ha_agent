@@ -526,6 +526,65 @@ async def test_run_agent_streams_reasoning_separately() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_agent_deduplicates_cumulative_reasoning() -> None:
+    """Cumulative reasoning chunks are not repeated in thinking deltas."""
+    async def _stream(*_args, **_kwargs):
+        yield llm_client.StreamChunk(reasoning_content="Step one")
+        yield llm_client.StreamChunk(reasoning_content="Step one and two")
+        yield llm_client.StreamChunk(content="Done.")
+
+    mock_llm = MagicMock()
+    mock_llm.chat_stream = _stream
+    mock_mcp = MagicMock()
+    mock_mcp.get_session_prompt = AsyncMock(return_value="")
+    mock_mcp.get_llm_tools = AsyncMock(return_value=[])
+
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        thinking_level="medium",
+    )
+    agent_config = config_helpers.AgentConfig(
+        system_prompt="Test agent",
+        tool_instructions="Use tools",
+        max_iterations=4,
+        history_turns=2,
+        enable_streaming=True,
+        show_reasoning_in_chat=True,
+    )
+
+    hass = _mock_hass()
+    deltas = [
+        delta
+        async for delta in agent_mod.run_agent(
+            hass,
+            llm=mock_llm,
+            mcp_client=mock_mcp,
+            backend=backend,
+            agent_config=agent_config,
+            router_config=config_helpers.RouterConfig(
+                action_enabled=False,
+                action_backend=None,
+            ),
+            skills_config=DEFAULT_SKILLS_CONFIG,
+            entry_id="test-entry",
+            conversation_id="test-conv",
+            user_text="hi",
+            exposed_entities=[],
+        )
+    ]
+
+    assert "".join(delta.thinking for delta in deltas if delta.thinking) == (
+        "Step one and two"
+    )
+    assert "".join(_agent_content(deltas)) == "Done."
+
+
+@pytest.mark.asyncio
 async def test_run_agent_shows_tool_progress_in_chat() -> None:
     """Tool calls emit start and completion lines in the thinking panel."""
     tool_call = llm_client.ToolCall(
