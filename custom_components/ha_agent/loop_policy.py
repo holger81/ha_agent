@@ -66,8 +66,9 @@ _ROUTE_NEXT_HINTS: dict[str, str] = {
     ),
     "news": "Run news_curate (or equivalent), then summarize headlines.",
     "ha_action": (
-        "Call ha_call_service with a verified entity_id, confirm state, "
-        "then report to the user."
+        "Prefer exposed-entity shortcuts when they match; otherwise discover "
+        "entities in domain smart-home, then call ha_call_service with domain, "
+        "service, and entity_id."
     ),
     "general": "Use tools to gather evidence, then answer from results.",
 }

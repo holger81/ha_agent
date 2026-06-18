@@ -27,12 +27,21 @@ _DEVICE_ACTION = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_CAMERA_ACTION = re.compile(
+    r"\b("
+    r"snapshot|"
+    r"take\s+(?:a\s+)?(?:photo|picture|pic|snapshot)|"
+    r"capture\s+(?:an?\s+)?(?:image|photo|picture|snapshot)"
+    r")\b|"
+    r"\b(?:snap|take)\b.{0,40}\bcam(?:era)?\b",
+    re.IGNORECASE,
+)
 _FOLLOW_UP_REF = re.compile(
     r"\b(them|those|these|it|that|again|back)\b",
     re.IGNORECASE,
 )
 _ENTITY_ID = re.compile(
-    r"\b(?:light|switch|cover|fan|lock|climate|media_player)\.[a-z0-9_]+\b",
+    r"\b(?:light|switch|cover|fan|lock|climate|media_player|camera)\.[a-z0-9_]+\b",
     re.IGNORECASE,
 )
 _EMAIL_QUERY = re.compile(
@@ -42,6 +51,16 @@ _EMAIL_QUERY = re.compile(
 _CAPABILITY_QUERY = re.compile(
     r"\b(what tools?|which tools?|what can you|what do you have access|capabilities)\b",
     re.IGNORECASE,
+)
+_EXPOSED_ENTITIES_HEADER = (
+    "EXPOSED ENTITIES (Assist shortcuts — not a complete list):\n"
+    "These are pre-matched entities for faster routing. The home may have "
+    "many more devices. When no shortcut fits, or the task needs a different "
+    "entity, discover in domain smart-home with searchToolsForDomain, then callTool."
+)
+_DEVICE_DISCOVERY_FALLBACK = (
+    "Discover in domain smart-home with searchToolsForDomain, then callTool. "
+    "For homeassistant service calls always pass domain, service, and entity_id."
 )
 
 
@@ -91,8 +110,13 @@ def is_news_query(query: str) -> bool:
 
 
 def is_device_action_query(query: str) -> bool:
-    """Return True when the user asks for a device action."""
-    return bool(_DEVICE_ACTION.search(query))
+    """Return True when the user asks for a homeassistant service action."""
+    return bool(_DEVICE_ACTION.search(query) or _CAMERA_ACTION.search(query))
+
+
+def is_camera_action_query(query: str) -> bool:
+    """Return True when the user asks for a camera snapshot or photo."""
+    return bool(_CAMERA_ACTION.search(query))
 
 
 def is_email_query(query: str) -> bool:
@@ -118,6 +142,8 @@ def entity_matches_query(entity: dict[str, Any], query: str) -> bool:
 
 def _service_hint_for_query(query: str) -> str:
     """Return a homeassistant service hint for common device actions."""
+    if is_camera_action_query(query):
+        return "snapshot"
     lowered = query.lower()
     if _TURN_OFF.search(query) or "switch off" in lowered:
         return "turn_off"
@@ -134,6 +160,47 @@ def _service_hint_for_query(query: str) -> str:
     if "unlock" in lowered:
         return "unlock"
     return "turn_on"
+
+
+def _ha_service_domain_for_query(query: str) -> str:
+    """Return the homeassistant domain most likely needed for this query."""
+    if is_camera_action_query(query):
+        return "camera"
+    lowered = query.lower()
+    if any(word in lowered for word in ("cover", "blind", "shade", "garage")):
+        return "cover"
+    if "lock" in lowered:
+        return "lock"
+    return "light"
+
+
+def _ha_call_service_example(
+    *,
+    domain: str,
+    service: str,
+    entity_id: str,
+) -> str:
+    payload = {
+        "toolName": "home_assistant__ha_call_service",
+        "arguments": {
+            "domain": domain,
+            "service": service,
+            "entity_id": entity_id,
+        },
+    }
+    return json.dumps(payload, ensure_ascii=True)
+
+
+def _entity_discovery_hint(query: str) -> str:
+    """Return discovery guidance when no exposed-entity shortcut matches."""
+    if is_camera_action_query(query):
+        return (
+            "Find the camera with home_assistant__ha_search_entities using words "
+            "from the user request (e.g. 'front door camera'), then call "
+            "home_assistant__ha_call_service with domain camera, service snapshot, "
+            "and the matching camera entity_id."
+        )
+    return _DEVICE_DISCOVERY_FALLBACK
 
 
 def _history_entity_ids(history: list[dict[str, str]]) -> list[str]:
@@ -154,16 +221,29 @@ def _device_action_hint(
 
     prior_turns = history or []
     matches = [entity for entity in exposed if entity_matches_query(entity, query)]
+    if is_camera_action_query(query):
+        camera_matches = [
+            entity
+            for entity in matches
+            if str(entity.get("entity_id", "")).startswith("camera.")
+        ]
+        if camera_matches:
+            matches = camera_matches
     service = _service_hint_for_query(query)
-    call_example = (
-        '{"toolName":"home_assistant__ha_call_service","arguments":'
-        '{"domain":"light","service":"turn_on","entity_id":"light.example"}}'
+    domain = _ha_service_domain_for_query(query)
+    entity_id = f"{domain}.example"
+    call_example = _ha_call_service_example(
+        domain=domain,
+        service=service,
+        entity_id=entity_id,
     )
 
     if matches:
         lines = [
-            "DEVICE ACTION: a matching exposed entity was found. Call callTool with "
-            f"home_assistant__ha_call_service. Always include domain, service, and "
+            "DEVICE ACTION: a matching exposed-entity shortcut was found — use it "
+            "first. If the shortcut is wrong or insufficient, discover other "
+            "entities in domain smart-home before calling "
+            "home_assistant__ha_call_service. Always include domain, service, and "
             f"entity_id in arguments. Derive domain from the entity_id prefix "
             f"(light.* -> light). Suggested service: {service}. "
             f"Example: {call_example}",
@@ -193,9 +273,8 @@ def _device_action_hint(
         return "\n".join(lines)
 
     return (
-        "DEVICE ACTION: no exposed entity clearly matches. Discover in domain "
-        "smart-home with searchToolsForDomain, then callTool. For homeassistant "
-        "service calls always pass domain, service, and entity_id. "
+        "DEVICE ACTION: no exposed-entity shortcut clearly matches. "
+        f"{_entity_discovery_hint(query)} "
         f"Example: {call_example}"
     )
 
@@ -208,7 +287,11 @@ def _entity_ids_from_text(text: str) -> list[str]:
 def _recent_device_context(history: list[dict[str, str]]) -> bool:
     """Return True when recent turns mention device actions or entity ids."""
     combined = " ".join(message.get("content", "") for message in history[-6:])
-    return bool(_DEVICE_ACTION.search(combined) or _entity_ids_from_text(combined))
+    return bool(
+        _DEVICE_ACTION.search(combined)
+        or _CAMERA_ACTION.search(combined)
+        or _entity_ids_from_text(combined)
+    )
 
 
 def _recent_news_context(history: list[dict[str, str]]) -> bool:
@@ -269,7 +352,7 @@ def build_tool_context(
 
     if exposed:
         context_parts.append(
-            "EXPOSED ENTITIES:\n" + format_exposed_entities(exposed)
+            _EXPOSED_ENTITIES_HEADER + "\n" + format_exposed_entities(exposed)
         )
 
     if device_hint := _device_action_hint(query, exposed, history=prior_turns):

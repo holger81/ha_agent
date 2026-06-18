@@ -100,6 +100,16 @@ def test_classify_route_uses_email_for_mail_queries() -> None:
     assert route == router.TaskRoute.EMAIL
 
 
+def test_classify_route_uses_action_for_camera_snapshot() -> None:
+    """Camera snapshot requests route to the action backend when enabled."""
+    route = router.classify_route(
+        "take a snapshot from my front door cam",
+        [],
+        _router_config(enabled=True),
+    )
+    assert route == router.TaskRoute.HA_ACTION
+
+
 def test_classify_route_disabled_always_chat() -> None:
     """Routing falls back to chat when action routing is disabled."""
     route = router.classify_route(

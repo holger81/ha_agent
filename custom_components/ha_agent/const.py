@@ -69,7 +69,9 @@ DEFAULT_TOOL_INSTRUCTIONS = (
     "Follow MCP SERVER INSTRUCTIONS and use the provided session tools. "
     "For homeassistant device actions, call callTool with toolName "
     "home_assistant__ha_call_service and arguments containing domain, service, "
-    "and entity_id."
+    "and entity_id. Exposed entity shortcuts may appear in context; they are "
+    "not exhaustive — discover other entities with searchToolsForDomain in "
+    "domain smart-home when needed."
 )
 
 # Saved during setup before MCP-compliant defaults; reset on upgrade.

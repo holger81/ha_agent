@@ -70,15 +70,20 @@ def route_playbook(route: TaskRoute) -> str:
     if route == TaskRoute.HA_ACTION:
         return (
             "DEVICE PLAYBOOK:\n"
-            "1. Match an exposed entity_id before calling ha_call_service.\n"
-            "2. Always pass domain, service, and entity_id.\n"
-            "3. Read VERIFICATION lines in tool results before telling the user "
+            "1. Prefer an exposed-entity shortcut when one clearly matches.\n"
+            "2. If no shortcut fits, discover entities in domain smart-home "
+            "with searchToolsForDomain, then callTool.\n"
+            "3. Call ha_call_service with domain, service, and entity_id "
+            "(e.g. camera.snapshot for photos).\n"
+            "4. Read VERIFICATION lines in tool results before telling the user "
             "the action succeeded."
         )
     return (
         "GENERAL PLAYBOOK:\n"
         "Gather evidence with tools before answering. Cite tool results. "
-        "If a tool fails, change strategy using RECOVERY HINTS."
+        "Exposed entities in context are shortcuts only; discover more in domain "
+        "smart-home when needed. If a tool fails, change strategy using "
+        "RECOVERY HINTS."
     )
 
 

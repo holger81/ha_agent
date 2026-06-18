@@ -22,6 +22,14 @@ def _load_module(name: str):
         package.__path__ = [str(COMPONENT)]  # type: ignore[attr-defined]
         sys.modules["ha_agent"] = package
 
+    if name == "config_helpers":
+        conv = types.ModuleType("homeassistant.components.conversation")
+        sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
+        sys.modules["homeassistant.components"] = types.ModuleType(
+            "homeassistant.components"
+        )
+        sys.modules["homeassistant.components.conversation"] = conv
+
     if name == "context":
         conv = types.ModuleType("homeassistant.components.conversation")
         sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
@@ -29,6 +37,10 @@ def _load_module(name: str):
             "homeassistant.components"
         )
         sys.modules["homeassistant.components.conversation"] = conv
+
+    if name == "router":
+        _load_module("config_helpers")
+        _load_module("context")
 
     path = COMPONENT / f"{name}.py"
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -74,6 +86,42 @@ def test_build_tool_context_adds_device_search_hint() -> None:
     assert "smart-home" in tool_context
     assert "searchToolsForDomain" in tool_context
     assert "ha_call_service" in tool_context
+
+
+def test_build_tool_context_exposed_entities_are_shortcuts() -> None:
+    """Exposed entities are labeled as shortcuts, not the full entity list."""
+    tool_context = context.build_tool_context(
+        "what is the kitchen temperature?",
+        [{"entity_id": "sensor.kitchen_temp", "name": "Kitchen temperature"}],
+    )
+    assert "shortcuts" in tool_context.lower()
+    assert "not a complete list" in tool_context.lower()
+    assert "searchToolsForDomain" in tool_context
+    assert "sensor.kitchen_temp" in tool_context
+
+
+def test_build_tool_context_matched_device_allows_discovery() -> None:
+    """Matched shortcuts still mention discovery when they may be insufficient."""
+    tool_context = context.build_tool_context(
+        "turn on the dining room lights",
+        [
+            {
+                "entity_id": "light.dining_room_ceiling",
+                "name": "Dining Room Ceiling Lights",
+                "area_name": "Dining room",
+            }
+        ],
+    )
+    assert "shortcut" in tool_context.lower()
+    assert "searchToolsForDomain" in tool_context
+
+
+def test_route_playbook_device_mentions_discovery() -> None:
+    """Device playbook prefers shortcuts but allows entity discovery."""
+    router = _load_module("router")
+    playbook = router.route_playbook(router.TaskRoute.HA_ACTION)
+    assert "shortcut" in playbook.lower()
+    assert "searchToolsForDomain" in playbook
 
 
 def test_build_tool_context_adds_explicit_service_hint_for_match() -> None:
@@ -146,6 +194,50 @@ def test_is_email_query() -> None:
     """Email intent detection works."""
     assert context.is_email_query("do I have new emails")
     assert not context.is_email_query("turn off the lights")
+
+
+def test_is_device_action_query_matches_camera_snapshot() -> None:
+    """Camera snapshot requests count as homeassistant service actions."""
+    assert context.is_device_action_query(
+        "take a snapshot from my front door cam"
+    )
+    assert context.is_camera_action_query(
+        "take a snapshot from my front door cam"
+    )
+
+
+def test_build_tool_context_camera_snapshot_suggests_entity_search() -> None:
+    """Camera requests without a shortcut get search_entities + snapshot guidance."""
+    tool_context = context.build_tool_context(
+        "take a snapshot from my front door cam",
+        [],
+    )
+    assert "ha_search_entities" in tool_context
+    assert "camera" in tool_context
+    assert "snapshot" in tool_context
+    assert "front door" in tool_context.lower()
+
+
+def test_build_tool_context_camera_match_uses_camera_entity() -> None:
+    """Matched camera shortcuts get camera.snapshot guidance."""
+    tool_context = context.build_tool_context(
+        "take a snapshot from the front door cam",
+        [
+            {
+                "entity_id": "camera.front_door",
+                "name": "Front door cam",
+                "area_name": "Front door",
+            },
+            {
+                "entity_id": "light.porch",
+                "name": "Porch light",
+                "area_name": "Front door",
+            },
+        ],
+    )
+    assert "camera.front_door" in tool_context
+    assert "service snapshot" in tool_context
+    assert "domain camera" in tool_context
 
 
 def test_is_device_action_query_matches_turn_them_back_off() -> None:

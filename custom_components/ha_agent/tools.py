@@ -96,6 +96,10 @@ def _normalize_service_name(service: Any) -> Any:
         "close cover": "close_cover",
         "open": "open_cover",
         "close": "close_cover",
+        "snapshot": "snapshot",
+        "take snapshot": "snapshot",
+        "take photo": "snapshot",
+        "take picture": "snapshot",
     }
     if key in aliases:
         return aliases[key]
