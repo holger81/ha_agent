@@ -49,6 +49,16 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  connectedCallback() {
+    if (this._hass) {
+      void this._ensureEventSubscription().then(() => {
+        if (this._streaming || this._findOpenStreamMessage()) {
+          this._scheduleChatRender();
+        }
+      });
+    }
+  }
+
   disconnectedCallback() {
     this._clearTurnTimeout();
     this._clearThreadSearchTimer();
@@ -60,6 +70,7 @@ class HaAgentPanel extends HTMLElement {
       void this._unsubEvents();
       this._unsubEvents = null;
     }
+    this._eventsReady = null;
   }
 
   _clearTurnTimeout() {
@@ -73,6 +84,42 @@ class HaAgentPanel extends HTMLElement {
     const llmTimeout = Number(this._config?.llm_timeout) || 120;
     const maxIterations = Number(this._config?.max_iterations) || 8;
     return (llmTimeout * maxIterations + 180) * 1000;
+  }
+
+  _armTurnTimeout() {
+    this._clearTurnTimeout();
+    this._turnTimeout = setTimeout(
+      () => void this._recoverStuckTurn(),
+      this._turnTimeoutMs()
+    );
+  }
+
+  _newStreamMessage() {
+    return {
+      role: "assistant",
+      content: "",
+      thinking: "",
+      tools: [],
+      _streamOpen: true,
+    };
+  }
+
+  _findOpenStreamMessage() {
+    for (let index = this._messages.length - 1; index >= 0; index -= 1) {
+      const msg = this._messages[index];
+      if (msg.role === "assistant" && msg._streamOpen) {
+        return msg;
+      }
+    }
+    return null;
+  }
+
+  _closeOpenStreamMessages() {
+    for (const msg of this._messages) {
+      if (msg.role === "assistant" && msg._streamOpen) {
+        msg._streamOpen = false;
+      }
+    }
   }
 
   async _recoverStuckTurn() {
@@ -94,6 +141,7 @@ class HaAgentPanel extends HTMLElement {
         thinking: "",
       });
     }
+    this._closeOpenStreamMessages();
     this._streaming = false;
     this._render();
     await this._loadPendingDraft();
@@ -282,9 +330,18 @@ class HaAgentPanel extends HTMLElement {
   _handleDelta(data) {
     if (data.entry_id && data.entry_id !== this._entryId) return;
     if (data.conversation_id !== this._conversationId) return;
-    let msg = this._messages[this._messages.length - 1];
-    if (!msg || msg.role !== "assistant" || !this._streaming) {
-      msg = { role: "assistant", content: "", thinking: "", tools: [] };
+    if (!data.thinking && !data.content && !data.tool && !data.thinking_clear) {
+      return;
+    }
+
+    if (!this._streaming) {
+      this._streaming = true;
+      this._armTurnTimeout();
+    }
+
+    let msg = this._findOpenStreamMessage();
+    if (!msg) {
+      msg = this._newStreamMessage();
       this._messages.push(msg);
     }
     if (data.thinking_clear) {
@@ -459,6 +516,7 @@ class HaAgentPanel extends HTMLElement {
     if (data.entry_id && data.entry_id !== this._entryId) return;
     if (data.conversation_id !== this._conversationId) return;
     this._clearTurnTimeout();
+    this._closeOpenStreamMessages();
     this._streaming = false;
     if (data.error) {
       this._messages.push({
@@ -477,13 +535,10 @@ class HaAgentPanel extends HTMLElement {
     await this._ensureEventSubscription();
     const turnId = this._conversationId;
     this._messages.push({ role: "user", content: text.trim(), thinking: "" });
+    this._messages.push(this._newStreamMessage());
     this._streaming = true;
     this._stickToBottom = true;
-    this._clearTurnTimeout();
-    this._turnTimeout = setTimeout(
-      () => void this._recoverStuckTurn(),
-      this._turnTimeoutMs()
-    );
+    this._armTurnTimeout();
     this._render();
     try {
       const result = await this._call("ha_agent/chat/send", {
@@ -493,6 +548,7 @@ class HaAgentPanel extends HTMLElement {
       });
       if (result?.history) {
         this._clearTurnTimeout();
+        this._closeOpenStreamMessages();
         this._streaming = false;
         this._applyHistory(result.history);
         await Promise.all([this._loadThreads(), this._loadPendingDraft()]);
@@ -500,12 +556,14 @@ class HaAgentPanel extends HTMLElement {
         this._render();
       } else if (!result?.started) {
         this._clearTurnTimeout();
+        this._closeOpenStreamMessages();
         this._streaming = false;
         await this._loadHistory();
         this._render();
       }
     } catch (err) {
       this._clearTurnTimeout();
+      this._closeOpenStreamMessages();
       this._streaming = false;
       this._messages.push({
         role: "assistant",
@@ -1266,6 +1324,9 @@ class HaAgentPanel extends HTMLElement {
         if (this._tab === "activity") await this._loadActivity();
         if (this._tab === "skills") await this._loadSkills();
         this._render();
+        if (this._tab === "chat" && (this._streaming || this._findOpenStreamMessage())) {
+          this._scheduleChatRender();
+        }
       };
     });
 
