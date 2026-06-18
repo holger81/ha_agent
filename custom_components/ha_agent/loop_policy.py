@@ -34,6 +34,8 @@ class LoopState:
     unproductive_iterations: int = 0
     iteration_had_successful_tool: bool = False
     iteration_had_duplicate_block: bool = False
+    iteration_failures: list[str] = field(default_factory=list)
+    pending_failure_summary: str | None = None
 
 
 _MAX_REASONING_CHARS = 8000
@@ -121,6 +123,75 @@ def reset_iteration_flags(loop_state: LoopState) -> None:
     """Clear per-iteration progress markers."""
     loop_state.iteration_had_successful_tool = False
     loop_state.iteration_had_duplicate_block = False
+    loop_state.iteration_failures = []
+
+
+def _compact_tool_detail(detail: str, *, limit: int = 200) -> str:
+    text = detail.removeprefix("Tool error:").strip()
+    if len(text) > limit:
+        return f"{text[: limit - 3]}..."
+    return text
+
+
+def _compact_arguments(arguments: dict[str, Any], *, limit: int = 120) -> str:
+    try:
+        preview = json.dumps(
+            normalize_tool_arguments(arguments),
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+    except TypeError:
+        preview = str(arguments)
+    if len(preview) > limit:
+        return f"{preview[: limit - 3]}..."
+    return preview
+
+
+def record_iteration_failure(
+    loop_state: LoopState,
+    tool_name: str,
+    arguments: dict[str, Any],
+    detail: str,
+) -> None:
+    """Remember a failed or blocked tool call for the next loop iteration."""
+    line = (
+        f"- {tool_name}({_compact_arguments(arguments)}): "
+        f"{_compact_tool_detail(detail)}"
+    )
+    loop_state.iteration_failures.append(line)
+
+
+def build_pending_failure_summary(loop_state: LoopState) -> None:
+    """Compile this iteration's failures for injection before the next step."""
+    if not loop_state.iteration_failures:
+        loop_state.pending_failure_summary = None
+        return
+    unique = list(dict.fromkeys(loop_state.iteration_failures))
+    body = "\n".join(unique)
+    loop_state.pending_failure_summary = (
+        "TURN PROGRESS SUMMARY (internal — not from the user):\n"
+        "The previous step failed or was blocked. Do not retry these "
+        "approaches unchanged.\n"
+        f"{body}\n"
+        "Use prior successful results, different arguments, or a different tool."
+    )
+    loop_state.iteration_failures = []
+
+
+def inject_pending_failure_summary(
+    messages: list[dict[str, Any]],
+    loop_state: LoopState,
+) -> None:
+    """Insert the compiled failure summary into the next agent loop step."""
+    if not loop_state.pending_failure_summary:
+        return
+    messages.append(
+        {
+            "role": "user",
+            "content": loop_state.pending_failure_summary,
+        }
+    )
+    loop_state.pending_failure_summary = None
 
 
 def mark_iteration_outcome(loop_state: LoopState) -> None:

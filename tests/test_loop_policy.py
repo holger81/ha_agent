@@ -79,6 +79,40 @@ def test_mark_iteration_outcome_stops_after_repeated_blocks() -> None:
     assert state.stuck is True
 
 
+def test_build_pending_failure_summary_for_next_iteration() -> None:
+    """Failures compile into an injectable summary for the next loop step."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.record_iteration_failure(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        "Tool error: missing field mailbox",
+    )
+
+    policy.build_pending_failure_summary(state)
+
+    assert state.pending_failure_summary is not None
+    assert "Do not retry these approaches unchanged" in state.pending_failure_summary
+    assert "missing field mailbox" in state.pending_failure_summary
+    assert state.iteration_failures == []
+
+
+def test_inject_pending_failure_summary_appends_user_message() -> None:
+    """The next loop step receives the compiled failure summary."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.pending_failure_summary = "TURN PROGRESS SUMMARY\n- failed"
+    messages: list[dict[str, str]] = []
+
+    policy.inject_pending_failure_summary(messages, state)
+
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert "TURN PROGRESS SUMMARY" in messages[0]["content"]
+    assert state.pending_failure_summary is None
+
+
 def test_enrich_tool_output_adds_email_recovery_hints() -> None:
     policy = _load_loop_policy()
     output = policy.enrich_tool_output(

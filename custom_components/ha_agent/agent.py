@@ -27,10 +27,13 @@ from .llm_client import LlmClient, StreamChatSession, ToolCall, stream_text_delt
 from .loop_policy import (
     LoopState,
     TurnOutcome,
+    build_pending_failure_summary,
     check_stuck,
     finalize_output,
+    inject_pending_failure_summary,
     mark_iteration_outcome,
     reasoning_stream_stuck,
+    record_iteration_failure,
     reset_iteration_flags,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
@@ -242,6 +245,11 @@ def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
     return loop_state.stuck_message
 
 
+def _prepare_next_loop_iteration(loop_state: LoopState) -> None:
+    """Capture failures from the current iteration for the next LLM step."""
+    build_pending_failure_summary(loop_state)
+
+
 async def _process_tool_calls(
     agent_config: AgentConfig,
     calls: list[ToolCall],
@@ -259,6 +267,12 @@ async def _process_tool_calls(
         tool_name, arguments = _tool_call_payload(call)
         if stuck_msg := check_stuck(loop_state, tool_name, arguments):
             loop_state.iteration_had_duplicate_block = True
+            record_iteration_failure(
+                loop_state,
+                tool_name,
+                arguments,
+                stuck_msg,
+            )
             yield AgentDelta(tool=_tool_event(call, "error", detail=stuck_msg[:200]))
             messages.append(
                 tool_result_message(call, f"Tool error: {stuck_msg}")
@@ -285,6 +299,18 @@ async def _process_tool_calls(
         phase = "error" if output.startswith("Tool error:") else "done"
         if phase == "done":
             loop_state.iteration_had_successful_tool = True
+            if "VERIFICATION FAILED" in output:
+                for line in output.splitlines():
+                    if "VERIFICATION FAILED" in line:
+                        record_iteration_failure(
+                            loop_state,
+                            tool_name,
+                            arguments,
+                            line.strip(),
+                        )
+                        break
+        else:
+            record_iteration_failure(loop_state, tool_name, arguments, output)
         yield AgentDelta(
             tool=_tool_event(
                 call,
@@ -568,6 +594,8 @@ async def run_agent(
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
+        if iteration > 0:
+            inject_pending_failure_summary(messages, loop_state)
         active_backend = (
             backend
             if use_chat_backend
@@ -637,6 +665,7 @@ async def run_agent(
                     )
                     record_turn(hass, entry_id, trace)
                     return
+                _prepare_next_loop_iteration(loop_state)
                 use_chat_backend = True
                 continue
 
@@ -669,6 +698,7 @@ async def run_agent(
                     return
                 embedded_ran = True
             if embedded_ran:
+                _prepare_next_loop_iteration(loop_state)
                 use_chat_backend = True
                 continue
 
@@ -704,6 +734,7 @@ async def run_agent(
                     )
                     record_turn(hass, entry_id, trace)
                     return
+                _prepare_next_loop_iteration(loop_state)
                 use_chat_backend = True
                 continue
 
@@ -736,6 +767,7 @@ async def run_agent(
                     return
                 embedded_ran = True
             if embedded_ran:
+                _prepare_next_loop_iteration(loop_state)
                 use_chat_backend = True
                 continue
 
