@@ -34,9 +34,12 @@ def classify_route(
     if is_news_query(user_text):
         return TaskRoute.NEWS
 
-    if router_config.action_enabled and router_config.action_backend:
-        if is_device_action_query(user_text):
-            return TaskRoute.HA_ACTION
+    if (
+        router_config.action_enabled
+        and router_config.action_backend
+        and is_device_action_query(user_text)
+    ):
+        return TaskRoute.HA_ACTION
 
     return TaskRoute.CHAT
 

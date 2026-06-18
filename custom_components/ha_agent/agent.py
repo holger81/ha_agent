@@ -722,7 +722,11 @@ async def run_agent(
         trace.assistant_text = assistant_text
         trace.controlled_entity_ids = list(controlled_entity_ids)
         trace.verification_notes = list(loop_state.verification_notes)
-        if any(note.startswith("VERIFICATION FAILED") for note in trace.verification_notes):
+        failed_verification = any(
+            note.startswith("VERIFICATION FAILED")
+            for note in trace.verification_notes
+        )
+        if failed_verification:
             trace.outcome = TurnOutcome.PARTIAL
         elif trace.tool_errors and not assistant_text:
             trace.outcome = TurnOutcome.FAILED

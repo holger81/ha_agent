@@ -11,8 +11,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-    from .llm_client import ToolCall
-
 
 class TurnOutcome(StrEnum):
     """Terminal status for one agent turn."""
@@ -43,7 +41,11 @@ def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
     return f"{tool_name}:{args_blob}"
 
 
-def check_stuck(loop_state: LoopState, tool_name: str, arguments: dict[str, Any]) -> str | None:
+def check_stuck(
+    loop_state: LoopState,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str | None:
     """Return an escalation message when the same tool call repeats."""
     signature = tool_call_signature(tool_name, arguments)
     if signature in loop_state.tool_signatures:
