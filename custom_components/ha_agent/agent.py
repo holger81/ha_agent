@@ -30,10 +30,12 @@ from .loop_policy import (
     build_pending_failure_summary,
     check_stuck,
     finalize_output,
-    inject_pending_failure_summary,
+    initialize_loop_plan,
+    inject_loop_context,
     mark_iteration_outcome,
     reasoning_stream_stuck,
     record_iteration_failure,
+    record_plan_tool_result,
     reset_iteration_flags,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
@@ -267,6 +269,12 @@ async def _process_tool_calls(
         tool_name, arguments = _tool_call_payload(call)
         if stuck_msg := check_stuck(loop_state, tool_name, arguments):
             loop_state.iteration_had_duplicate_block = True
+            record_plan_tool_result(
+                loop_state,
+                tool_name,
+                arguments,
+                succeeded=False,
+            )
             record_iteration_failure(
                 loop_state,
                 tool_name,
@@ -297,9 +305,11 @@ async def _process_tool_calls(
             loop_state=loop_state,
         )
         phase = "error" if output.startswith("Tool error:") else "done"
+        verification_failed = False
         if phase == "done":
             loop_state.iteration_had_successful_tool = True
             if "VERIFICATION FAILED" in output:
+                verification_failed = True
                 for line in output.splitlines():
                     if "VERIFICATION FAILED" in line:
                         record_iteration_failure(
@@ -311,6 +321,13 @@ async def _process_tool_calls(
                         break
         else:
             record_iteration_failure(loop_state, tool_name, arguments, output)
+        record_plan_tool_result(
+            loop_state,
+            tool_name,
+            arguments,
+            succeeded=phase == "done",
+            verification_failed=verification_failed,
+        )
         yield AgentDelta(
             tool=_tool_event(
                 call,
@@ -590,12 +607,19 @@ async def run_agent(
     use_chat_backend = route != TaskRoute.HA_ACTION
     controlled_entity_ids: list[str] = []
     loop_state = LoopState()
+    initialize_loop_plan(
+        loop_state,
+        goal=user_text,
+        route=route.value,
+        tool_steps=matched_skills[0].tool_steps if matched_skills else None,
+        skill_title=matched_skills[0].title if matched_skills else "",
+    )
 
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
         if iteration > 0:
-            inject_pending_failure_summary(messages, loop_state)
+            inject_loop_context(messages, loop_state)
         active_backend = (
             backend
             if use_chat_backend

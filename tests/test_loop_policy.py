@@ -105,11 +105,84 @@ def test_inject_pending_failure_summary_appends_user_message() -> None:
     state.pending_failure_summary = "TURN PROGRESS SUMMARY\n- failed"
     messages: list[dict[str, str]] = []
 
-    policy.inject_pending_failure_summary(messages, state)
+    policy.inject_loop_context(messages, state)
 
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert "TURN PROGRESS SUMMARY" in messages[0]["content"]
+    assert state.pending_failure_summary is None
+
+
+def test_initialize_loop_plan_tracks_skill_steps() -> None:
+    """Skill tool_steps seed the per-turn plan and focus pointer."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    steps = [
+        {"toolName": "mail_mcp__imap_search_messages"},
+        {"toolName": "mail_mcp__imap_get_message"},
+    ]
+
+    policy.initialize_loop_plan(
+        state,
+        goal="read the latest email",
+        route="email",
+        tool_steps=steps,
+        skill_title="Read inbox email",
+    )
+
+    assert state.plan_current_step_index == 0
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX"},
+        succeeded=True,
+    )
+
+    assert state.plan_step_statuses == ["done", "pending"]
+    assert state.plan_current_step_index == 1
+
+
+def test_build_plan_progress_summary_marks_needs_work() -> None:
+    """Failed tools mark the current step and inject a focus reminder."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="read email",
+        route="email",
+    )
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {},
+        succeeded=False,
+    )
+
+    summary = policy.build_plan_progress_summary(state)
+
+    assert summary is not None
+    assert "AGENT PLAN PROGRESS" in summary
+    assert "[!]" in summary
+    assert "still needs work" in summary
+    assert "Fix step" in summary
+
+
+def test_inject_loop_context_includes_plan_and_failures() -> None:
+    """Plan progress and failure summary are combined for the next step."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(state, goal="news briefing", route="news")
+    state.pending_failure_summary = (
+        "TURN PROGRESS SUMMARY\n- news_curate failed"
+    )
+    messages: list[dict[str, str]] = []
+
+    policy.inject_loop_context(messages, state)
+
+    assert len(messages) == 1
+    content = messages[0]["content"]
+    assert "AGENT PLAN PROGRESS" in content
+    assert "TURN PROGRESS SUMMARY" in content
     assert state.pending_failure_summary is None
 
 

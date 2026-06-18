@@ -36,9 +36,41 @@ class LoopState:
     iteration_had_duplicate_block: bool = False
     iteration_failures: list[str] = field(default_factory=list)
     pending_failure_summary: str | None = None
+    plan_goal: str = ""
+    plan_route: str = ""
+    plan_skill_title: str = ""
+    plan_steps: list[dict[str, Any]] = field(default_factory=list)
+    plan_step_statuses: list[str] = field(default_factory=list)
+    plan_current_step_index: int | None = None
+    plan_completed_tools: list[str] = field(default_factory=list)
 
 
 _MAX_REASONING_CHARS = 8000
+_ROUTE_PLAN_STEPS: dict[str, list[dict[str, Any]]] = {
+    "email": [
+        {"toolName": "mailbox_status"},
+        {"toolName": "search_messages"},
+        {"toolName": "get_message"},
+    ],
+    "news": [
+        {"toolName": "news_curate"},
+    ],
+    "ha_action": [
+        {"toolName": "ha_call_service"},
+    ],
+}
+_ROUTE_NEXT_HINTS: dict[str, str] = {
+    "email": (
+        "Complete the email workflow: check mailbox, search messages, "
+        "fetch bodies if needed, then answer."
+    ),
+    "news": "Run news_curate (or equivalent), then summarize headlines.",
+    "ha_action": (
+        "Call ha_call_service with a verified entity_id, confirm state, "
+        "then report to the user."
+    ),
+    "general": "Use tools to gather evidence, then answer from results.",
+}
 _REASONING_REPEAT_MARKER = 60
 _MAX_UNPRODUCTIVE_ITERATIONS = 2
 
@@ -183,15 +215,183 @@ def inject_pending_failure_summary(
     loop_state: LoopState,
 ) -> None:
     """Insert the compiled failure summary into the next agent loop step."""
-    if not loop_state.pending_failure_summary:
+    inject_loop_context(messages, loop_state)
+
+
+def _tool_names_match(plan_tool: str, actual_tool: str) -> bool:
+    if plan_tool == actual_tool:
+        return True
+    plan_tail = plan_tool.split("__")[-1]
+    actual_tail = actual_tool.split("__")[-1]
+    return plan_tail == actual_tail or actual_tool.endswith(plan_tool)
+
+
+def _next_incomplete_plan_step(loop_state: LoopState) -> int | None:
+    for index, status in enumerate(loop_state.plan_step_statuses):
+        if status != "done":
+            return index
+    return None
+
+
+def _match_plan_step_index(loop_state: LoopState, tool_name: str) -> int | None:
+    for index, step in enumerate(loop_state.plan_steps):
+        plan_tool = str(step.get("toolName", ""))
+        if not plan_tool:
+            continue
+        if not _tool_names_match(plan_tool, tool_name):
+            continue
+        status = loop_state.plan_step_statuses[index]
+        if status in {"pending", "needs_work"}:
+            return index
+    for index, step in enumerate(loop_state.plan_steps):
+        plan_tool = str(step.get("toolName", ""))
+        if plan_tool and _tool_names_match(plan_tool, tool_name):
+            return index
+    return None
+
+
+def initialize_loop_plan(
+    loop_state: LoopState,
+    *,
+    goal: str,
+    route: str,
+    tool_steps: list[dict[str, Any]] | None = None,
+    skill_title: str = "",
+) -> None:
+    """Seed per-turn plan state from the user goal, route, and optional skill."""
+    loop_state.plan_goal = goal.strip()
+    loop_state.plan_route = route
+    loop_state.plan_skill_title = skill_title
+    steps = list(tool_steps or _ROUTE_PLAN_STEPS.get(route, []))
+    loop_state.plan_steps = steps
+    loop_state.plan_step_statuses = ["pending"] * len(steps)
+    loop_state.plan_current_step_index = 0 if steps else None
+    loop_state.plan_completed_tools = []
+
+
+def record_plan_tool_result(
+    loop_state: LoopState,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    succeeded: bool,
+    verification_failed: bool = False,
+) -> None:
+    """Update plan step progress after a tool call attempt."""
+    if not loop_state.plan_goal:
         return
-    messages.append(
-        {
-            "role": "user",
-            "content": loop_state.pending_failure_summary,
-        }
+
+    if (
+        succeeded
+        and not verification_failed
+        and tool_name not in loop_state.plan_completed_tools
+    ):
+        loop_state.plan_completed_tools.append(tool_name)
+
+    step_index = _match_plan_step_index(loop_state, tool_name)
+    if step_index is None:
+        return
+
+    if succeeded and not verification_failed:
+        loop_state.plan_step_statuses[step_index] = "done"
+        loop_state.plan_current_step_index = _next_incomplete_plan_step(loop_state)
+        return
+
+    loop_state.plan_step_statuses[step_index] = "needs_work"
+    loop_state.plan_current_step_index = step_index
+
+
+def describe_plan_next_action(loop_state: LoopState) -> str:
+    """Return a short directive for what the model should do next."""
+    if loop_state.plan_steps and loop_state.plan_current_step_index is not None:
+        index = loop_state.plan_current_step_index
+        if index < len(loop_state.plan_steps):
+            step = loop_state.plan_steps[index]
+            name = str(step.get("toolName", "tool"))
+            status = loop_state.plan_step_statuses[index]
+            if status == "needs_work":
+                return (
+                    f"Fix step {index + 1} ({name}) — use different arguments "
+                    "or prior tool output."
+                )
+            if status == "pending":
+                return f"Execute step {index + 1}: {name}"
+    if (
+        loop_state.plan_steps
+        and loop_state.plan_step_statuses
+        and all(status == "done" for status in loop_state.plan_step_statuses)
+    ):
+        return "All planned steps are done — answer the user from tool results."
+
+    hint = _ROUTE_NEXT_HINTS.get(
+        loop_state.plan_route,
+        _ROUTE_NEXT_HINTS["general"],
     )
-    loop_state.pending_failure_summary = None
+    if loop_state.plan_completed_tools:
+        return f"{hint} Do not repeat tools that already succeeded."
+    return hint
+
+
+def build_plan_progress_summary(loop_state: LoopState) -> str | None:
+    """Compile plan progress for injection at the start of a loop step."""
+    if not loop_state.plan_goal:
+        return None
+
+    lines = [
+        "AGENT PLAN PROGRESS (internal — not from the user):",
+        f"Goal: {loop_state.plan_goal}",
+    ]
+    if loop_state.plan_skill_title:
+        lines.append(f"Workflow skill: {loop_state.plan_skill_title}")
+
+    if loop_state.plan_steps:
+        lines.append("Plan steps:")
+        for index, step in enumerate(loop_state.plan_steps):
+            name = str(step.get("toolName", "step"))
+            status = (
+                loop_state.plan_step_statuses[index]
+                if index < len(loop_state.plan_step_statuses)
+                else "pending"
+            )
+            marker = {"pending": "[ ]", "done": "[x]", "needs_work": "[!]"}[status]
+            focus = ""
+            if loop_state.plan_current_step_index == index and status != "done":
+                focus = "  <-- focus here"
+            lines.append(f"{index + 1}. {marker} {name}{focus}")
+    elif loop_state.plan_completed_tools:
+        lines.append("Tools completed this turn:")
+        for name in loop_state.plan_completed_tools[-6:]:
+            lines.append(f"- {name}")
+
+    lines.append(f"Next action: {describe_plan_next_action(loop_state)}")
+
+    if (
+        loop_state.plan_current_step_index is not None
+        and loop_state.plan_step_statuses
+        and loop_state.plan_current_step_index < len(loop_state.plan_step_statuses)
+        and loop_state.plan_step_statuses[loop_state.plan_current_step_index]
+        == "needs_work"
+    ):
+        lines.append("The current plan step still needs work before advancing.")
+
+    return "\n".join(lines)
+
+
+def inject_loop_context(
+    messages: list[dict[str, Any]],
+    loop_state: LoopState,
+) -> None:
+    """Insert plan progress and failure summary at the start of a loop step."""
+    parts: list[str] = []
+    plan = build_plan_progress_summary(loop_state)
+    if plan:
+        parts.append(plan)
+    if loop_state.pending_failure_summary:
+        parts.append(loop_state.pending_failure_summary)
+        loop_state.pending_failure_summary = None
+    if not parts:
+        return
+    messages.append({"role": "user", "content": "\n\n".join(parts)})
 
 
 def mark_iteration_outcome(loop_state: LoopState) -> None:
