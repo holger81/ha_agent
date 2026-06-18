@@ -32,7 +32,8 @@ def _load_loop_policy():
     return module
 
 
-def test_check_stuck_blocks_repeated_identical_call() -> None:
+def test_check_stuck_soft_blocks_first_duplicate() -> None:
+    """First duplicate blocks execution but allows the loop to replan."""
     policy = _load_loop_policy()
     state = policy.LoopState()
 
@@ -40,8 +41,22 @@ def test_check_stuck_blocks_repeated_identical_call() -> None:
     blocked = policy.check_stuck(state, "mail_search", {"unread_only": True})
 
     assert blocked is not None
+    assert state.stuck is False
+    assert "Review the previous tool result" in blocked
+
+
+def test_check_stuck_hard_blocks_second_duplicate() -> None:
+    """Second duplicate of the same call ends the turn as stuck."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+
+    assert policy.check_stuck(state, "mail_search", {"unread_only": True}) is None
+    assert policy.check_stuck(state, "mail_search", {"unread_only": True}) is not None
+    blocked = policy.check_stuck(state, "mail_search", {"unread_only": True})
+
+    assert blocked is not None
     assert state.stuck is True
-    assert "Blocked repeated identical call" in blocked
+    assert "ask the user for help" in blocked
 
 
 def test_enrich_tool_output_adds_email_recovery_hints() -> None:

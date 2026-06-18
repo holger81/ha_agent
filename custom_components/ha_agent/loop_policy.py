@@ -27,6 +27,7 @@ class LoopState:
     """Mutable per-turn loop state."""
 
     tool_signatures: list[str] = field(default_factory=list)
+    duplicate_blocks: dict[str, int] = field(default_factory=dict)
     verification_notes: list[str] = field(default_factory=list)
     stuck: bool = False
     stuck_message: str = ""
@@ -46,9 +47,21 @@ def check_stuck(
     tool_name: str,
     arguments: dict[str, Any],
 ) -> str | None:
-    """Return an escalation message when the same tool call repeats."""
+    """Return a block message when the same tool call repeats.
+
+    The first duplicate is a soft block: the model gets the error in context and
+    another loop iteration to replan. A second duplicate of the same signature
+    ends the turn as stuck.
+    """
     signature = tool_call_signature(tool_name, arguments)
-    if signature in loop_state.tool_signatures:
+    if signature not in loop_state.tool_signatures:
+        loop_state.tool_signatures.append(signature)
+        return None
+
+    blocks = loop_state.duplicate_blocks.get(signature, 0) + 1
+    loop_state.duplicate_blocks[signature] = blocks
+
+    if blocks >= 2:
         loop_state.stuck = True
         loop_state.stuck_message = (
             "I tried the same tool with the same arguments twice without progress. "
@@ -58,8 +71,13 @@ def check_stuck(
             f"Blocked repeated identical call to {tool_name}. "
             "Use a different tool, different arguments, or ask the user for help."
         )
-    loop_state.tool_signatures.append(signature)
-    return None
+
+    return (
+        f"Blocked repeated identical call to {tool_name}. "
+        "You already used this tool with the same arguments. "
+        "Review the previous tool result, answer from it if sufficient, "
+        "or try a different tool or different arguments."
+    )
 
 
 _EMAIL_LARGE_INBOX = re.compile(
