@@ -38,6 +38,7 @@ from .skills.commands import (
 from .skills.creator import create_skill_from_trace
 from .skills.discovery import build_skill_hints, discover_skills
 from .skills.evaluator import evaluate_skill_use
+from .skills.learning_gate import assess_skill_worth_learning
 from .skills.models import TurnTrace
 from .skills.runtime import should_offer_skill_creation
 from .skills.store import get_skill_store
@@ -362,12 +363,19 @@ async def _post_turn_skills(
         hass.async_create_task(_evaluate())
 
     manual_save = bool(_MANUAL_SAVE.search(trace.user_text))
-    offer = should_offer_skill_creation(
-        trace,
-        learning_enabled=skills_config.learning_enabled,
-    )
-    if not offer and not manual_save:
-        return suffix
+    if not manual_save:
+        if not should_offer_skill_creation(
+            trace,
+            learning_enabled=skills_config.learning_enabled,
+        ):
+            return suffix
+        if not await assess_skill_worth_learning(
+            llm,
+            backend,
+            trace=trace,
+            history=history,
+        ):
+            return suffix
 
     if manual_save or skills_config.auto_save:
 

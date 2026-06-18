@@ -74,7 +74,7 @@ def should_offer_skill_creation(
     *,
     learning_enabled: bool,
 ) -> bool:
-    """Return True when a successful multi-step turn qualifies for learning."""
+    """Return True when a turn passes local heuristics for skill learning."""
     if not learning_enabled:
         return False
     if trace.fallback or trace.tool_errors > 0:
@@ -83,7 +83,7 @@ def should_offer_skill_creation(
         return False
     if trace.matched_skill_ids:
         return False
-    multi_step = len(trace.tool_calls) >= 2 or (
-        trace.history_len >= 2 and len(trace.tool_calls) >= 1
-    )
+    if not trace.assistant_text.strip():
+        return False
+    multi_step = len(trace.tool_calls) >= 2 or trace.iterations >= 2
     return multi_step

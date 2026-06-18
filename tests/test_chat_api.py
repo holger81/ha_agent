@@ -18,10 +18,17 @@ COMPONENT = (
 
 async def _fake_run_agent(*_args, **_kwargs):
     class Delta:
-        def __init__(self, content=None, thinking=None, tool=None):
+        def __init__(
+            self,
+            content=None,
+            thinking=None,
+            tool=None,
+            thinking_clear=False,
+        ):
             self.content = content
             self.thinking = thinking
             self.tool = tool
+            self.thinking_clear = thinking_clear
 
     yield Delta(content="Hello")
     yield Delta(
