@@ -177,3 +177,47 @@ async def test_select_skills_with_llm_returns_catalog_matches() -> None:
 
     assert len(selected) == 1
     assert selected[0].slug == "check-unread-emails"
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_llm_for_single_fts_match() -> None:
+    """A single FTS match is trusted without an extra LLM selection call."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    def _skill(slug: str) -> object:
+        return Skill(
+            id=slug,
+            slug=slug,
+            title=slug,
+            description="",
+            triggers=[],
+            body="",
+            tool_steps=[],
+        )
+
+    enabled = [_skill("a"), _skill("b")]
+    fts = [_skill("a")]
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    selection.get_skill_store = MagicMock(return_value=MagicMock())
+    selection._load_skill_candidates = MagicMock(return_value=(enabled, fts))
+
+    llm = MagicMock()
+    llm.chat = AsyncMock()
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        MagicMock(),
+        "anything",
+    )
+
+    assert [skill.slug for skill in result] == ["a"]
+    llm.chat.assert_not_called()

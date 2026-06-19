@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -184,6 +185,85 @@ def test_inject_loop_context_includes_plan_and_failures() -> None:
     assert "AGENT PLAN PROGRESS" in content
     assert "TURN PROGRESS SUMMARY" in content
     assert state.pending_failure_summary is None
+
+
+def test_describe_plan_next_action_stops_when_all_done() -> None:
+    """A completed plan instructs the model to answer instead of calling tools."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(state, goal="news briefing", route="news")
+    policy.record_plan_tool_result(state, "news_curate", {}, succeeded=True)
+
+    directive = policy.describe_plan_next_action(state)
+
+    assert "STOP calling tools" in directive
+    assert "final" in directive
+
+
+def test_should_retry_empty_response_caps_attempts() -> None:
+    """Empty replies retry a bounded number of times before giving up."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+
+    assert policy.should_retry_empty_response(state, 0, 10) is True
+    assert policy.should_retry_empty_response(state, 1, 10) is True
+    assert policy.should_retry_empty_response(state, 2, 10) is False
+    # Never retry on the final iteration.
+    fresh = policy.LoopState()
+    assert policy.should_retry_empty_response(fresh, 9, 10) is False
+
+
+def test_build_empty_response_nudge_includes_next_action() -> None:
+    """The empty-response nudge embeds the plan's next directive."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(state, goal="news briefing", route="news")
+
+    nudge = policy.build_empty_response_nudge(state)
+
+    assert "previous reply was empty" in nudge
+    assert "news_curate" in nudge
+
+
+def test_extract_mcp_guidance_pulls_server_context() -> None:
+    """serverLlmContext is surfaced from discovery tool output."""
+    policy = _load_loop_policy()
+    output = json.dumps(
+        [
+            {"toolName": "a", "serverLlmContext": "Pass mailbox INBOX."},
+            {"toolName": "b", "serverLlmContext": "Pass mailbox INBOX."},
+            {"toolName": "c"},
+        ]
+    )
+
+    hints = policy.extract_mcp_guidance("searchToolsForDomain", output)
+
+    assert hints == ["Pass mailbox INBOX."]
+
+
+def test_extract_mcp_guidance_ignores_non_discovery() -> None:
+    """Non-discovery tools and errors yield no guidance."""
+    policy = _load_loop_policy()
+    payload = json.dumps([{"serverLlmContext": "x"}])
+    assert policy.extract_mcp_guidance("ha_call_service", payload) == []
+    assert policy.extract_mcp_guidance("searchTool", "Tool error: boom") == []
+
+
+def test_record_and_inject_mcp_guidance() -> None:
+    """Recorded guidance injects once then clears."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps([{"serverLlmContext": "Use domain smart-home."}])
+
+    policy.record_mcp_guidance(state, "searchTool", output)
+    assert state.mcp_guidance == ["Use domain smart-home."]
+
+    messages: list[dict[str, str]] = []
+    policy.inject_loop_context(messages, state)
+
+    assert "MCP SERVER GUIDANCE" in messages[0]["content"]
+    assert "Use domain smart-home." in messages[0]["content"]
+    assert state.mcp_guidance == []
 
 
 def test_enrich_tool_output_adds_email_recovery_hints() -> None:

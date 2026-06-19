@@ -27,6 +27,7 @@ from .llm_client import LlmClient, StreamChatSession, ToolCall, stream_text_delt
 from .loop_policy import (
     LoopState,
     TurnOutcome,
+    build_empty_response_nudge,
     build_pending_failure_summary,
     check_stuck,
     finalize_output,
@@ -35,8 +36,10 @@ from .loop_policy import (
     mark_iteration_outcome,
     reasoning_stream_stuck,
     record_iteration_failure,
+    record_mcp_guidance,
     record_plan_tool_result,
     reset_iteration_flags,
+    should_retry_empty_response,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
@@ -330,6 +333,7 @@ async def _process_tool_calls(
             succeeded=phase == "done",
             verification_failed=verification_failed,
         )
+        record_mcp_guidance(loop_state, tool_name, output)
         yield AgentDelta(
             tool=_tool_event(
                 call,
@@ -816,6 +820,20 @@ async def run_agent(
                 yield AgentDelta(content=assistant_text)
             elif assistant_text:
                 assistant_text = ""
+
+        if not assistant_text and should_retry_empty_response(
+            loop_state, iteration, agent_config.max_iterations
+        ):
+            messages.append(
+                {"role": "user", "content": build_empty_response_nudge(loop_state)}
+            )
+            _prepare_next_loop_iteration(loop_state)
+            use_chat_backend = True
+            continue
+
+        if not assistant_text:
+            assistant_text = FALLBACK_MESSAGE
+            yield AgentDelta(content=assistant_text)
 
         trace.assistant_text = assistant_text
         trace.controlled_entity_ids = list(controlled_entity_ids)

@@ -184,6 +184,10 @@ async def resolve_skills_for_turn(
     if len(enabled) == 1:
         return enabled[:max_inject]
 
+    # FTS already pinned a single skill — trust it and skip the extra LLM call.
+    if len(fts_matches) == 1:
+        return fts_matches[:max_inject]
+
     catalog = _merge_catalog(fts_matches, enabled)
     selected = await select_skills_with_llm(
         llm,

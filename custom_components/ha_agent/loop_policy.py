@@ -43,9 +43,13 @@ class LoopState:
     plan_step_statuses: list[str] = field(default_factory=list)
     plan_current_step_index: int | None = None
     plan_completed_tools: list[str] = field(default_factory=list)
+    empty_responses: int = 0
+    mcp_guidance: list[str] = field(default_factory=list)
 
 
 _MAX_REASONING_CHARS = 8000
+_MAX_EMPTY_RESPONSES = 2
+_MAX_MCP_GUIDANCE_CHARS = 600
 _ROUTE_PLAN_STEPS: dict[str, list[dict[str, Any]]] = {
     "email": [
         {"toolName": "mailbox_status"},
@@ -322,7 +326,10 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
         and loop_state.plan_step_statuses
         and all(status == "done" for status in loop_state.plan_step_statuses)
     ):
-        return "All planned steps are done — answer the user from tool results."
+        return (
+            "All planned steps are done. STOP calling tools and write the final "
+            "answer to the user now using the tool results above."
+        )
 
     hint = _ROUTE_NEXT_HINTS.get(
         loop_state.plan_route,
@@ -382,17 +389,87 @@ def inject_loop_context(
     messages: list[dict[str, Any]],
     loop_state: LoopState,
 ) -> None:
-    """Insert plan progress and failure summary at the start of a loop step."""
+    """Insert plan progress, MCP guidance, and failures before a loop step."""
     parts: list[str] = []
     plan = build_plan_progress_summary(loop_state)
     if plan:
         parts.append(plan)
+    if loop_state.mcp_guidance:
+        guidance = "\n".join(f"- {hint}" for hint in loop_state.mcp_guidance)
+        parts.append(
+            "MCP SERVER GUIDANCE (from tool discovery — follow it):\n" + guidance
+        )
+        loop_state.mcp_guidance = []
     if loop_state.pending_failure_summary:
         parts.append(loop_state.pending_failure_summary)
         loop_state.pending_failure_summary = None
     if not parts:
         return
     messages.append({"role": "user", "content": "\n\n".join(parts)})
+
+
+def extract_mcp_guidance(tool_name: str, output: str) -> list[str]:
+    """Pull serverLlmContext guidance from a discovery tool result."""
+    if output.startswith("Tool error:"):
+        return []
+    if "searchtool" not in tool_name.lower():
+        return []
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    entries: list[dict[str, Any]] = []
+    if isinstance(data, list):
+        entries = [item for item in data if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        for key in ("tools", "results", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
+                entries = [item for item in value if isinstance(item, dict)]
+                break
+        if not entries:
+            entries = [data]
+
+    guidance: list[str] = []
+    for entry in entries:
+        context = entry.get("serverLlmContext")
+        if isinstance(context, str) and context.strip():
+            guidance.append(context.strip()[:_MAX_MCP_GUIDANCE_CHARS])
+    return list(dict.fromkeys(guidance))
+
+
+def record_mcp_guidance(
+    loop_state: LoopState,
+    tool_name: str,
+    output: str,
+) -> None:
+    """Stash discovery guidance for injection into the next loop step."""
+    for hint in extract_mcp_guidance(tool_name, output):
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.append(hint)
+
+
+def build_empty_response_nudge(loop_state: LoopState) -> str:
+    """Return a directive when the model produced no answer and no tool call."""
+    return (
+        "SYSTEM (internal — not from the user): Your previous reply was empty. "
+        "Either call exactly one tool to make progress, or write the final "
+        "answer to the user in plain text now. Do not send an empty message "
+        f"again. {describe_plan_next_action(loop_state)}"
+    )
+
+
+def should_retry_empty_response(
+    loop_state: LoopState,
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Return True when an empty model reply should trigger a guided retry."""
+    if iteration >= max_iterations - 1:
+        return False
+    loop_state.empty_responses += 1
+    return loop_state.empty_responses <= _MAX_EMPTY_RESPONSES
 
 
 def mark_iteration_outcome(loop_state: LoopState) -> None:
