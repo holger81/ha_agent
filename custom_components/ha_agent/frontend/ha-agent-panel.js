@@ -25,6 +25,7 @@ class HaAgentPanel extends HTMLElement {
     this._threadSearch = "";
     this._threadSearchTimer = null;
     this._messagesScrollEl = null;
+    this._messagesInteractEl = null;
     this._historyLoadSeq = 0;
     this._skillSaveNotice = null;
     this._editingSkill = null;
@@ -96,12 +97,59 @@ class HaAgentPanel extends HTMLElement {
 
   _newStreamMessage() {
     return {
+      id: this._msgId++,
       role: "assistant",
       content: "",
       thinking: "",
       tools: [],
+      thinkingCollapsed: false,
+      thinkingUserToggled: false,
       _streamOpen: true,
     };
+  }
+
+  _findMessageById(messageId) {
+    const id = Number(messageId);
+    if (!Number.isFinite(id)) return null;
+    return this._messages.find((msg) => msg.id === id) || null;
+  }
+
+  _thinkingPreview(text) {
+    const line = String(text || "")
+      .split("\n")
+      .find((part) => part.trim());
+    const trimmed = (line || text || "").trim();
+    if (trimmed.length <= 72) return trimmed;
+    return `${trimmed.slice(0, 69)}…`;
+  }
+
+  _renderThinkingPanel(msg) {
+    const thinking = String(msg.thinking || "").trim();
+    if (!thinking) return "";
+    const collapsed = Boolean(msg.thinkingCollapsed);
+    const chevron = collapsed ? "▸" : "▾";
+    const live =
+      msg._streamOpen && !String(msg.content || "").trim() ? " (live)" : "";
+    const preview = collapsed ? this._thinkingPreview(thinking) : "";
+    return `
+      <div class="thinking-panel ${collapsed ? "collapsed" : "expanded"}">
+        <button
+          type="button"
+          class="thinking-toggle"
+          data-thinking-toggle
+          data-msg-id="${msg.id}"
+          aria-expanded="${collapsed ? "false" : "true"}"
+        >
+          <span class="thinking-toggle-icon">${chevron}</span>
+          <span class="thinking-toggle-label">Reasoning${live}</span>
+          ${
+            preview
+              ? `<span class="thinking-preview">${this._escape(preview)}</span>`
+              : ""
+          }
+        </button>
+        <div class="thinking-body">${this._escape(thinking)}</div>
+      </div>`;
   }
 
   _findOpenStreamMessage() {
@@ -118,6 +166,9 @@ class HaAgentPanel extends HTMLElement {
     for (const msg of this._messages) {
       if (msg.role === "assistant" && msg._streamOpen) {
         msg._streamOpen = false;
+        if (String(msg.thinking || "").trim() && !msg.thinkingUserToggled) {
+          msg.thinkingCollapsed = true;
+        }
       }
     }
   }
@@ -351,7 +402,15 @@ class HaAgentPanel extends HTMLElement {
       msg.thinking = this._appendStreamText(msg.thinking, data.thinking);
     }
     if (data.content) {
+      const hadContent = Boolean(String(msg.content || "").trim());
       msg.content = this._appendStreamText(msg.content, data.content);
+      if (
+        !hadContent &&
+        String(msg.content || "").trim() &&
+        !msg.thinkingUserToggled
+      ) {
+        msg.thinkingCollapsed = true;
+      }
     }
     if (data.tool) {
       this._applyToolDelta(msg, data.tool);
@@ -430,17 +489,21 @@ class HaAgentPanel extends HTMLElement {
     const messages = this._messages
       .filter((m) => this._hasRenderableMessage(m))
       .map((m) => {
-        const thinking = m.thinking
-          ? `<div class="thinking">${this._escape(m.thinking)}</div>`
-          : "";
+        if (m.role === "user") {
+          return `<div class="bubble user">${this._escape(m.content)}</div>`;
+        }
+
+        const thinking = this._renderThinkingPanel(m);
         const tools = (m.tools || [])
           .map((tool) => this._renderToolCall(tool))
           .join("");
-        const body =
-          m.role === "assistant"
-            ? this._renderAssistantBody(m.content)
-            : this._escape(m.content);
-        return `<div class="bubble ${m.role}">${thinking}${tools}${body}</div>`;
+        const body = this._renderAssistantBody(m.content);
+        const bubbleParts = `${tools}${body}`.trim();
+        const bubble = bubbleParts
+          ? `<div class="bubble assistant">${bubbleParts}</div>`
+          : "";
+
+        return `<div class="assistant-turn">${thinking}${bubble}</div>`;
       })
       .join("");
 
@@ -465,7 +528,23 @@ class HaAgentPanel extends HTMLElement {
     }
     const saved = this._captureMessagesScroll();
     messagesEl.innerHTML = this._renderMessageListHtml();
+    this._bindMessagesScroll(messagesEl);
+    this._bindMessagesInteractions(messagesEl);
     this._restoreMessagesScroll(saved);
+  }
+
+  _bindMessagesInteractions(el) {
+    if (this._messagesInteractEl === el) return;
+    this._messagesInteractEl = el;
+    el.addEventListener("click", (ev) => {
+      const toggle = ev.target.closest("[data-thinking-toggle]");
+      if (!toggle) return;
+      const msg = this._findMessageById(toggle.getAttribute("data-msg-id"));
+      if (!msg) return;
+      msg.thinkingCollapsed = !msg.thinkingCollapsed;
+      msg.thinkingUserToggled = true;
+      this._updateChatMessages();
+    });
   }
 
   _captureMessagesScroll() {
@@ -710,7 +789,14 @@ class HaAgentPanel extends HTMLElement {
       }
       .bubble { padding: 10px 12px; border-radius: 12px; max-width: 90%; word-break: break-word; }
       .bubble.user { align-self: flex-end; background: var(--primary-color); color: var(--text-primary-color, #fff); white-space: pre-wrap; }
-      .bubble.assistant { align-self: flex-start; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
+      .assistant-turn {
+        align-self: flex-start;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-width: 90%;
+      }
+      .bubble.assistant { align-self: stretch; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
       .bubble.assistant .md p { margin: 0.45em 0; }
       .bubble.assistant .md p:first-child { margin-top: 0; }
       .bubble.assistant .md p:last-child { margin-bottom: 0; }
@@ -740,7 +826,67 @@ class HaAgentPanel extends HTMLElement {
         line-height: 1.5;
         padding: 24px 12px;
       }
-      .thinking { opacity: 0.75; font-size: 0.9em; margin-bottom: 6px; border-left: 3px solid var(--primary-color); padding-left: 8px; white-space: pre-wrap; }
+      .thinking-panel {
+        border: 1px solid var(--divider-color, #444);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 5%, transparent);
+        overflow: hidden;
+      }
+      .thinking-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 10px;
+        border: 0;
+        background: transparent;
+        color: var(--primary-text-color, #e0e0e0);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .thinking-toggle:hover {
+        background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+      }
+      .thinking-toggle-icon {
+        color: var(--primary-color);
+        font-size: 0.85em;
+        flex: 0 0 auto;
+      }
+      .thinking-toggle-label {
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.85;
+        flex: 0 0 auto;
+      }
+      .thinking-preview {
+        opacity: 0.65;
+        font-size: 0.85em;
+        font-style: italic;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .thinking-body {
+        padding: 0 10px 10px 28px;
+        opacity: 0.78;
+        font-size: 0.88em;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        border-top: 1px solid color-mix(in srgb, var(--divider-color, #444) 70%, transparent);
+      }
+      .thinking-panel.collapsed .thinking-body {
+        display: none;
+      }
+      .thinking-panel.collapsed .thinking-toggle {
+        border-bottom: 0;
+      }
+      .thinking-panel.expanded .thinking-toggle {
+        border-bottom: 1px solid color-mix(in srgb, var(--divider-color, #444) 70%, transparent);
+      }
       .tool-call {
         margin: 8px 0;
         padding: 8px 10px;
@@ -1316,6 +1462,13 @@ class HaAgentPanel extends HTMLElement {
 
     if (savedScroll) {
       this._restoreMessagesScroll(savedScroll);
+    }
+    if (this._tab === "chat") {
+      const messagesEl = this.shadowRoot?.querySelector(".messages");
+      if (messagesEl) {
+        this._bindMessagesScroll(messagesEl);
+        this._bindMessagesInteractions(messagesEl);
+      }
     }
 
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((el) => {
