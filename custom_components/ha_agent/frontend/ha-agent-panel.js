@@ -16,6 +16,7 @@ class HaAgentPanel extends HTMLElement {
     this._pendingDraft = null;
     this._streaming = false;
     this._msgId = 1;
+    this._toolId = 1;
     this._unsubEvents = null;
     this._eventsReady = null;
     this._bootstrapError = null;
@@ -104,8 +105,31 @@ class HaAgentPanel extends HTMLElement {
       tools: [],
       thinkingCollapsed: false,
       thinkingUserToggled: false,
+      activeSkill: null,
       _streamOpen: true,
     };
+  }
+
+  _findToolById(toolId) {
+    const id = String(toolId);
+    for (const msg of this._messages) {
+      for (const tool of msg.tools || []) {
+        if (String(tool.id) === id) {
+          return tool;
+        }
+      }
+    }
+    return null;
+  }
+
+  _toolPreview(tool) {
+    if (tool.detail) {
+      return this._thinkingPreview(tool.detail);
+    }
+    if (tool.arguments && Object.keys(tool.arguments).length) {
+      return this._thinkingPreview(JSON.stringify(tool.arguments));
+    }
+    return "";
   }
 
   _findMessageById(messageId) {
@@ -168,6 +192,11 @@ class HaAgentPanel extends HTMLElement {
         msg._streamOpen = false;
         if (String(msg.thinking || "").trim() && !msg.thinkingUserToggled) {
           msg.thinkingCollapsed = true;
+        }
+        for (const tool of msg.tools || []) {
+          if (!tool.userToggled && tool.phase !== "start") {
+            tool.collapsed = true;
+          }
         }
       }
     }
@@ -381,7 +410,13 @@ class HaAgentPanel extends HTMLElement {
   _handleDelta(data) {
     if (data.entry_id && data.entry_id !== this._entryId) return;
     if (data.conversation_id !== this._conversationId) return;
-    if (!data.thinking && !data.content && !data.tool && !data.thinking_clear) {
+    if (
+      !data.thinking &&
+      !data.content &&
+      !data.tool &&
+      !data.thinking_clear &&
+      !data.skill
+    ) {
       return;
     }
 
@@ -397,6 +432,9 @@ class HaAgentPanel extends HTMLElement {
     }
     if (data.thinking_clear) {
       msg.thinking = "";
+    }
+    if (data.skill) {
+      msg.activeSkill = data.skill;
     }
     if (data.thinking) {
       msg.thinking = this._appendStreamText(msg.thinking, data.thinking);
@@ -427,10 +465,19 @@ class HaAgentPanel extends HTMLElement {
       last.phase === "start" &&
       last.name === tool.name
     ) {
-      msg.tools[msg.tools.length - 1] = { ...last, ...tool };
+      const merged = { ...last, ...tool };
+      if (merged.phase !== "start" && !merged.userToggled) {
+        merged.collapsed = true;
+      }
+      msg.tools[msg.tools.length - 1] = merged;
       return;
     }
-    msg.tools.push({ ...tool });
+    msg.tools.push({
+      ...tool,
+      id: this._toolId++,
+      collapsed: tool.phase !== "start",
+      userToggled: false,
+    });
   }
 
   _renderToolCall(tool) {
@@ -438,6 +485,9 @@ class HaAgentPanel extends HTMLElement {
     const labels = { start: "Running", done: "Done", error: "Failed" };
     const label = labels[phase] || phase;
     const name = tool.name || tool.call_name || "tool";
+    const collapsed = Boolean(tool.collapsed);
+    const chevron = collapsed ? "▸" : "▾";
+    const preview = collapsed ? this._toolPreview(tool) : "";
     const args =
       tool.arguments && Object.keys(tool.arguments).length
         ? `<pre class="tool-args">${this._escape(
@@ -448,13 +498,29 @@ class HaAgentPanel extends HTMLElement {
       ? `<div class="tool-detail">${this._escape(tool.detail)}</div>`
       : "";
     return `
-      <div class="tool-call tool-call--${phase}">
-        <div class="tool-call-header">
+      <div class="tool-call tool-call--${phase} ${
+        collapsed ? "collapsed" : "expanded"
+      }">
+        <button
+          type="button"
+          class="tool-call-toggle"
+          data-tool-toggle
+          data-tool-id="${tool.id}"
+          aria-expanded="${collapsed ? "false" : "true"}"
+        >
+          <span class="tool-call-toggle-icon">${chevron}</span>
           <span class="tool-call-label">${label}</span>
           <code class="tool-call-name">${this._escape(name)}</code>
+          ${
+            preview
+              ? `<span class="tool-call-preview">${this._escape(preview)}</span>`
+              : ""
+          }
+        </button>
+        <div class="tool-call-body">
+          ${args}
+          ${detail}
         </div>
-        ${args}
-        ${detail}
       </div>`;
   }
 
@@ -493,17 +559,24 @@ class HaAgentPanel extends HTMLElement {
           return `<div class="bubble user">${this._escape(m.content)}</div>`;
         }
 
+        const skillBadge = m.activeSkill
+          ? `<div class="skill-badge">Skill: ${this._escape(
+              m.activeSkill.title || m.activeSkill.slug || "unknown"
+            )}</div>`
+          : "";
         const thinking = this._renderThinkingPanel(m);
-        const tools = (m.tools || [])
+        const toolBlocks = (m.tools || [])
           .map((tool) => this._renderToolCall(tool))
           .join("");
+        const tools = toolBlocks
+          ? `<div class="tools-stack">${toolBlocks}</div>`
+          : "";
         const body = this._renderAssistantBody(m.content);
-        const bubbleParts = `${tools}${body}`.trim();
-        const bubble = bubbleParts
-          ? `<div class="bubble assistant">${bubbleParts}</div>`
+        const bubble = String(m.content || "").trim()
+          ? `<div class="bubble assistant">${body}</div>`
           : "";
 
-        return `<div class="assistant-turn">${thinking}${bubble}</div>`;
+        return `<div class="assistant-turn">${skillBadge}${thinking}${tools}${bubble}</div>`;
       })
       .join("");
 
@@ -537,6 +610,16 @@ class HaAgentPanel extends HTMLElement {
     if (this._messagesInteractEl === el) return;
     this._messagesInteractEl = el;
     el.addEventListener("click", (ev) => {
+      const toolToggle = ev.target.closest("[data-tool-toggle]");
+      if (toolToggle) {
+        const tool = this._findToolById(toolToggle.getAttribute("data-tool-id"));
+        if (tool) {
+          tool.collapsed = !tool.collapsed;
+          tool.userToggled = true;
+          this._updateChatMessages();
+        }
+        return;
+      }
       const toggle = ev.target.closest("[data-thinking-toggle]");
       if (!toggle) return;
       const msg = this._findMessageById(toggle.getAttribute("data-msg-id"));
@@ -597,6 +680,19 @@ class HaAgentPanel extends HTMLElement {
     this._clearTurnTimeout();
     this._closeOpenStreamMessages();
     this._streaming = false;
+    if (
+      data.active_skill &&
+      data.active_skill !== "none"
+    ) {
+      for (let index = this._messages.length - 1; index >= 0; index -= 1) {
+        const msg = this._messages[index];
+        if (msg.role !== "assistant") continue;
+        if (!msg.activeSkill) {
+          msg.activeSkill = { title: data.active_skill };
+        }
+        break;
+      }
+    }
     if (data.error) {
       this._messages.push({
         role: "assistant",
@@ -796,6 +892,20 @@ class HaAgentPanel extends HTMLElement {
         gap: 6px;
         max-width: 90%;
       }
+      .skill-badge {
+        align-self: flex-start;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--primary-color);
+        background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+        border: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+      }
       .bubble.assistant { align-self: stretch; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
       .bubble.assistant .md p { margin: 0.45em 0; }
       .bubble.assistant .md p:first-child { margin-top: 0; }
@@ -887,22 +997,42 @@ class HaAgentPanel extends HTMLElement {
       .thinking-panel.expanded .thinking-toggle {
         border-bottom: 1px solid color-mix(in srgb, var(--divider-color, #444) 70%, transparent);
       }
+      .tools-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
       .tool-call {
-        margin: 8px 0;
-        padding: 8px 10px;
-        border-radius: 8px;
+        border-radius: 10px;
         border: 1px solid var(--divider-color, #444);
         background: color-mix(in srgb, var(--primary-text-color, #fff) 4%, transparent);
         font-size: 0.85em;
+        overflow: hidden;
       }
       .tool-call--start { border-color: var(--primary-color); }
       .tool-call--done { border-color: #4caf50; }
       .tool-call--error { border-color: var(--error-color, #cf6679); }
-      .tool-call-header {
+      .tool-call-toggle {
         display: flex;
-        gap: 8px;
         align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 10px;
+        border: 0;
+        background: transparent;
+        color: var(--primary-text-color, #e0e0e0);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
         flex-wrap: wrap;
+      }
+      .tool-call-toggle:hover {
+        background: color-mix(in srgb, var(--primary-color) 8%, transparent);
+      }
+      .tool-call-toggle-icon {
+        color: var(--primary-color);
+        font-size: 0.85em;
+        flex: 0 0 auto;
       }
       .tool-call-label {
         font-size: 0.72rem;
@@ -910,6 +1040,7 @@ class HaAgentPanel extends HTMLElement {
         letter-spacing: 0.04em;
         text-transform: uppercase;
         opacity: 0.8;
+        flex: 0 0 auto;
       }
       .tool-call--start .tool-call-label { color: var(--primary-color); }
       .tool-call--done .tool-call-label { color: #4caf50; }
@@ -918,6 +1049,26 @@ class HaAgentPanel extends HTMLElement {
         font-family: var(--code-font-family, monospace);
         font-size: 0.92em;
         word-break: break-all;
+      }
+      .tool-call-preview {
+        opacity: 0.65;
+        font-size: 0.85em;
+        font-style: italic;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+        flex: 1 1 120px;
+      }
+      .tool-call-body {
+        padding: 0 10px 10px;
+        border-top: 1px solid color-mix(in srgb, var(--divider-color, #444) 70%, transparent);
+      }
+      .tool-call.collapsed .tool-call-body {
+        display: none;
+      }
+      .tool-call.expanded .tool-call-toggle {
+        border-bottom: 1px solid color-mix(in srgb, var(--divider-color, #444) 70%, transparent);
       }
       .tool-args {
         margin: 6px 0 0;

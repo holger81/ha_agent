@@ -24,11 +24,13 @@ async def _fake_run_agent(*_args, **_kwargs):
             thinking=None,
             tool=None,
             thinking_clear=False,
+            skill=None,
         ):
             self.content = content
             self.thinking = thinking
             self.tool = tool
             self.thinking_clear = thinking_clear
+            self.skill = skill
 
     yield Delta(content="Hello")
     yield Delta(

@@ -20,7 +20,7 @@ def format_skills_for_context(
 
     if route in _ROUTE_SKILL_PRIORITY:
         header = (
-            "ACTIVE SKILLS (PRIORITY): A matching skill applies to this turn. "
+            "ACTIVE SKILLS (PRIORITY — selected for this turn): "
             "Follow its tool_steps in order before improvising other tools. "
             "Reuse toolName values and arguments exactly unless a step failed "
             "with recovery hints. Do not repeat identical tool calls already "

@@ -70,7 +70,8 @@ def test_format_skills_for_context_email_route_priority() -> None:
     )
     block = format_skills_for_context([skill], route="email")
 
-    assert "ACTIVE SKILLS (PRIORITY)" in block
+    assert "ACTIVE SKILLS (PRIORITY" in block
+    assert "selected for this turn" in block
     assert "tool_steps in order" in block
 
 

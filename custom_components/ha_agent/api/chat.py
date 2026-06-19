@@ -120,6 +120,7 @@ def start_chat(
                         and not delta.thinking
                         and not delta.tool
                         and not delta.thinking_clear
+                        and not delta.skill
                     ):
                         continue
                     hass.bus.async_fire(
@@ -130,6 +131,7 @@ def start_chat(
                             "thinking": delta.thinking or None,
                             "thinking_clear": delta.thinking_clear or None,
                             "tool": delta.tool,
+                            "skill": delta.skill,
                         },
                     )
             status = get_agent_status(hass, entry_id)

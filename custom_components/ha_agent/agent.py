@@ -49,11 +49,12 @@ from .skills.commands import (
     try_handle_skill_command,
 )
 from .skills.creator import create_skill_from_trace
-from .skills.discovery import build_skill_hints, discover_skills
+from .skills.discovery import build_skill_hints
 from .skills.evaluator import evaluate_skill_use
 from .skills.learning_gate import assess_skill_worth_learning
 from .skills.models import TurnTrace
 from .skills.runtime import should_offer_skill_creation
+from .skills.selection import resolve_skills_for_turn
 from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
 from .tools import (
@@ -78,6 +79,7 @@ class AgentDelta:
     thinking: str = ""
     tool: dict[str, Any] | None = None
     thinking_clear: bool = False
+    skill: dict[str, Any] | None = None
 
 
 def _tool_call_payload(call: ToolCall) -> tuple[str, dict[str, Any]]:
@@ -538,11 +540,14 @@ async def run_agent(
     matched_skills = []
     skill_hints = ""
     if skills_config.use_enabled:
-        matched_skills = await discover_skills(
+        matched_skills = await resolve_skills_for_turn(
             hass,
             entry_id,
+            llm,
+            backend,
             user_text,
             history=history,
+            route=route.value,
             max_inject=skills_config.max_inject,
         )
         skill_hints = build_skill_hints(matched_skills, route=route.value)
@@ -551,6 +556,15 @@ async def run_agent(
             entry_id,
             active_skill=matched_skills[0].title if matched_skills else "none",
         )
+        if matched_skills:
+            primary = matched_skills[0]
+            yield AgentDelta(
+                skill={
+                    "id": primary.id,
+                    "slug": primary.slug,
+                    "title": primary.title,
+                }
+            )
     else:
         update_agent_status(hass, entry_id, active_skill="none")
 

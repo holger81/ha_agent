@@ -263,6 +263,15 @@ class SkillStore:
         ).fetchall()
         return [_row_to_skill(row) for row in rows]
 
+    def list_enabled(self, *, limit: int = 50) -> list[Skill]:
+        """Return enabled skills ordered by recent use."""
+        rows = self._connection().execute(
+            "SELECT * FROM skills WHERE enabled = 1 ORDER BY "
+            "COALESCE(last_used_at, created_at) DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [_row_to_skill(row) for row in rows]
+
     def search(
         self,
         query: str,
