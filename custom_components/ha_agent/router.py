@@ -63,7 +63,8 @@ def route_playbook(route: TaskRoute) -> str:
     if route == TaskRoute.NEWS:
         return (
             "NEWS PLAYBOOK:\n"
-            "1. Call mcp_news__news_curate with {\"limit\": 5}.\n"
+            "1. Call mcp_news__news_curate with no arguments ({}) for "
+            "today's briefing.\n"
             "2. Summarize headlines from that result only.\n"
             "3. Use searchToolsForDomain only if news_curate fails."
         )

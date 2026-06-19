@@ -373,7 +373,7 @@ def build_tool_context(
         context_parts.append(
             "NEWS: call callTool with toolName mcp_news__news_curate. "
             "Use that exact toolName (underscores only, no extra server prefix). "
-            "Optional arguments: {\"limit\": 5}. "
+            "Call it with no arguments ({}) for today's briefing. "
             "Only use searchToolsForDomain if that call fails."
         )
 

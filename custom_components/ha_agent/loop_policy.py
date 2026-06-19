@@ -47,6 +47,15 @@ class LoopState:
     mcp_guidance: list[str] = field(default_factory=list)
 
 
+# Role used for internal/system-injected guidance (plan progress, failure
+# summaries, MCP guidance, empty-response nudges). These are NOT user input.
+# The backend is OpenAI-compatible (llama.cpp / local servers) and forwards
+# messages verbatim, so a mid-conversation ``system`` message is accepted and
+# rendered as instruction content by standard chat templates. ``system`` is
+# more widely supported than the newer ``developer`` role and is the role models
+# most reliably treat as instructions rather than user input.
+INTERNAL_GUIDANCE_ROLE = "system"
+
 _MAX_REASONING_CHARS = 8000
 _MAX_EMPTY_RESPONSES = 2
 _MAX_MCP_GUIDANCE_CHARS = 600
@@ -405,7 +414,9 @@ def inject_loop_context(
         loop_state.pending_failure_summary = None
     if not parts:
         return
-    messages.append({"role": "user", "content": "\n\n".join(parts)})
+    messages.append(
+        {"role": INTERNAL_GUIDANCE_ROLE, "content": "\n\n".join(parts)}
+    )
 
 
 def extract_mcp_guidance(tool_name: str, output: str) -> list[str]:
@@ -523,8 +534,8 @@ def enrich_tool_output(
 
     if "news" in name_lower and "curate" not in name_lower:
         hints.append(
-            "For headlines, call mcp_news__news_curate directly with "
-            '{"limit": 5} before trying other news tools.'
+            "For headlines, call mcp_news__news_curate directly with no "
+            "arguments ({}) before trying other news tools."
         )
 
     if _MCP_DOWN.search(lowered):

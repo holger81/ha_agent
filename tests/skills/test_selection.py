@@ -180,7 +180,7 @@ async def test_select_skills_with_llm_returns_catalog_matches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_skips_llm_for_single_fts_match() -> None:
+async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
     """A single FTS match is trusted without an extra LLM selection call."""
     selection = _load("skills.selection")
     models = _load("skills.models")
@@ -205,8 +205,12 @@ async def test_resolve_skips_llm_for_single_fts_match() -> None:
 
     hass = MagicMock()
     hass.async_add_executor_job = AsyncMock(side_effect=_executor)
-    selection.get_skill_store = MagicMock(return_value=MagicMock())
-    selection._load_skill_candidates = MagicMock(return_value=(enabled, fts))
+    monkeypatch.setattr(
+        selection, "get_skill_store", MagicMock(return_value=MagicMock())
+    )
+    monkeypatch.setattr(
+        selection, "_load_skill_candidates", MagicMock(return_value=(enabled, fts))
+    )
 
     llm = MagicMock()
     llm.chat = AsyncMock()
@@ -220,4 +224,51 @@ async def test_resolve_skips_llm_for_single_fts_match() -> None:
     )
 
     assert [skill.slug for skill in result] == ["a"]
+    llm.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_news_route_does_not_select_email_only_skill(monkeypatch) -> None:
+    """A news-routed query must not pick an email-only skill."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    email_skill = Skill(
+        id="email-1",
+        slug="check-unread-emails",
+        title="Check and Read Unread Emails",
+        description="Check the inbox and read unread email messages",
+        triggers=["email", "inbox", "unread"],
+        body="",
+        tool_steps=[],
+    )
+
+    # The store has only an email skill; neither the news query nor the news
+    # route hint matches it, so FTS returns nothing for both searches.
+    store = MagicMock()
+    store.list_enabled.return_value = [email_skill]
+    store.search.return_value = []
+    store.load_skills_by_ids.return_value = []
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+
+    llm = MagicMock()
+    llm.chat = AsyncMock()
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        MagicMock(),
+        "what are todays news",
+        route="news",
+    )
+
+    assert result == []
     llm.chat.assert_not_called()

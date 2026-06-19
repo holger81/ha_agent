@@ -109,9 +109,26 @@ def test_inject_pending_failure_summary_appends_user_message() -> None:
     policy.inject_loop_context(messages, state)
 
     assert len(messages) == 1
-    assert messages[0]["role"] == "user"
+    assert messages[0]["role"] == policy.INTERNAL_GUIDANCE_ROLE
+    assert messages[0]["role"] != "user"
     assert "TURN PROGRESS SUMMARY" in messages[0]["content"]
     assert state.pending_failure_summary is None
+
+
+def test_inject_loop_context_uses_system_role_not_user() -> None:
+    """Internal guidance is injected as system, never as a user turn."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(state, goal="news briefing", route="news")
+    messages: list[dict[str, str]] = []
+
+    policy.inject_loop_context(messages, state)
+
+    assert len(messages) == 1
+    assert policy.INTERNAL_GUIDANCE_ROLE == "system"
+    assert messages[0]["role"] == "system"
+    assert messages[0]["role"] != "user"
+    assert "AGENT PLAN PROGRESS" in messages[0]["content"]
 
 
 def test_initialize_loop_plan_tracks_skill_steps() -> None:

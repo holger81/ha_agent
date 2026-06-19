@@ -131,7 +131,13 @@ def _load_skill_candidates(
     route: str | None,
     max_inject: int,
 ) -> tuple[list[Skill], list[Skill]]:
-    """Load enabled skills and FTS matches for selection."""
+    """Load candidate skills and FTS matches for selection.
+
+    For a specialized route (e.g. ``news``/``email``) candidates are restricted
+    to skills relevant to that route so an off-route skill (such as an email
+    workflow) is never offered for a clearly news-routed query. For unrouted
+    turns the full enabled catalog is offered so generic discovery still works.
+    """
     enabled = store.list_enabled(limit=_CATALOG_LIMIT)
     if not enabled:
         return [], []
@@ -142,13 +148,24 @@ def _load_skill_candidates(
         limit=max(max_inject * 4, 8),
         enabled_only=True,
     )
-    if not fts_rows and route:
-        hint = _ROUTE_SEARCH_HINTS.get(route)
-        if hint:
-            fts_rows = store.search(hint, limit=max_inject * 2, enabled_only=True)
-
     fts_skills = store.load_skills_by_ids([row.id for row in fts_rows])
-    return enabled, fts_skills
+
+    route_hint = _ROUTE_SEARCH_HINTS.get(route or "")
+    if route_hint is None:
+        # Unrouted turn: offer the whole enabled catalog for discovery.
+        return enabled, fts_skills
+
+    # Routed turn: keep only skills relevant to this route. A skill is relevant
+    # when it matches the route hint or directly matched the user's query.
+    hint_rows = store.search(
+        route_hint,
+        limit=max(max_inject * 4, 8),
+        enabled_only=True,
+    )
+    relevant_ids = {row.id for row in hint_rows}
+    relevant_ids.update(skill.id for skill in fts_skills)
+    candidates = [skill for skill in enabled if skill.id in relevant_ids]
+    return candidates, fts_skills
 
 
 async def resolve_skills_for_turn(
@@ -177,18 +194,18 @@ async def resolve_skills_for_turn(
             max_inject=max_inject,
         )
 
-    enabled, fts_matches = await hass.async_add_executor_job(_load)
-    if not enabled:
+    candidates, fts_matches = await hass.async_add_executor_job(_load)
+    if not candidates:
         return []
 
-    if len(enabled) == 1:
-        return enabled[:max_inject]
+    if len(candidates) == 1:
+        return candidates[:max_inject]
 
     # FTS already pinned a single skill — trust it and skip the extra LLM call.
     if len(fts_matches) == 1:
         return fts_matches[:max_inject]
 
-    catalog = _merge_catalog(fts_matches, enabled)
+    catalog = _merge_catalog(fts_matches, candidates)
     selected = await select_skills_with_llm(
         llm,
         backend,

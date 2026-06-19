@@ -25,6 +25,7 @@ from .embedded_tools import (
 )
 from .llm_client import LlmClient, StreamChatSession, ToolCall, stream_text_delta
 from .loop_policy import (
+    INTERNAL_GUIDANCE_ROLE,
     LoopState,
     TurnOutcome,
     build_empty_response_nudge,
@@ -825,7 +826,10 @@ async def run_agent(
             loop_state, iteration, agent_config.max_iterations
         ):
             messages.append(
-                {"role": "user", "content": build_empty_response_nudge(loop_state)}
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_empty_response_nudge(loop_state),
+                }
             )
             _prepare_next_loop_iteration(loop_state)
             use_chat_backend = True

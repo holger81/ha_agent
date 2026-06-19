@@ -369,12 +369,18 @@ class HaAgentPanel extends HTMLElement {
 
   _applyHistory(history) {
     if (this._streaming) return;
-    this._messages = (history || []).map((item) => ({
-      role: item.role,
-      content: item.content,
-      thinking: "",
-      tools: [],
-    }));
+    this._messages = (history || []).map((item) => {
+      const thinking = String(item.thinking || "");
+      return {
+        id: this._msgId++,
+        role: item.role,
+        content: item.content,
+        thinking,
+        tools: item.tools || [],
+        thinkingCollapsed: Boolean(thinking.trim()),
+        thinkingUserToggled: false,
+      };
+    });
   }
 
   async _loadHistory() {
