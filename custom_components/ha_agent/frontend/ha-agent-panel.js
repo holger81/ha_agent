@@ -2006,7 +2006,8 @@ class HaAgentPanel extends HTMLElement {
       <div class="settings-grid">
         <p class="activity-hint">${this._escape(this._evalNotice || "")}</p>
         <p>Status: <strong>${this._escape(running)}</strong> ${progress.phase ? `(${this._escape(progress.phase)}${progress.model ? ` · ${this._escape(progress.model)}` : ""})` : ""}</p>
-        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx ?? "—"))}</p>
+        ${run.error ? `<p class="banner">${this._escape(run.error)}</p>` : ""}
+        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Loaded: ${this._escape(String(summary.loaded_model_count ?? caps.loaded_models?.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? summary.max_instances ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx && summary.n_ctx > 0 ? summary.n_ctx : "—"))}</p>
         <div class="row">
           <button data-action="eval-probe">Probe server</button>
           <button data-action="eval-start">Run eval suite</button>
@@ -2019,7 +2020,7 @@ class HaAgentPanel extends HTMLElement {
           <thead><tr><th>Task</th><th>Model</th><th>Score</th><th>Passed</th><th>Latency ms</th></tr></thead>
           <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
         </table>
-        <p class="activity-hint">Phase 2 will apply llama.cpp settings automatically. Phase 3 will search, download, and trial new models.</p>
+        <p class="activity-hint">Eval benchmarks loaded models by default (3 on a router server). Pass explicit models via API to include unloaded catalog entries.</p>
       </div>`;
   }
 

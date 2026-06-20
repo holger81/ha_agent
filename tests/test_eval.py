@@ -178,6 +178,19 @@ def test_build_settings_recommendation_merges_benchmarks() -> None:
     assert recommendation.recommendations[0]["setting"] == "parallel"
 
 
+def test_eval_candidate_models_prefers_loaded() -> None:
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        models=["a", "b", "c"],
+        loaded_models=["a"],
+    )
+    selected = llm_server.eval_candidate_models(
+        caps,
+        configured_models=["b"],
+    )
+    assert selected == ["b", "a"]
+
+
 def test_eval_store_persists_runs_and_download_history() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "eval.db"

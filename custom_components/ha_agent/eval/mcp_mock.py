@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..mcp_session import FALLBACK_MCP_TOOLS
+from ..mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 
 
 class EvalMcpClient:
@@ -24,7 +24,7 @@ class EvalMcpClient:
         return self._session_prompt
 
     async def get_llm_tools(self) -> list[dict[str, Any]]:
-        return list(FALLBACK_MCP_TOOLS)
+        return mcp_tools_to_openai_schemas(FALLBACK_MCP_TOOLS)
 
     async def call_tool(self, _tool_name: str, _tool_args: dict[str, Any]) -> str:
         if self._call_index >= len(self._responses):

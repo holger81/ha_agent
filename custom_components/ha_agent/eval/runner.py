@@ -14,17 +14,19 @@ from ..config_helpers import (
     LlmBackend,
     RouterConfig,
     SkillsConfig,
+    get_action_backend,
     get_agent_config,
+    get_classifier_backend,
     get_llm_backend,
     get_router_config,
 )
 from ..const import DATA_KEY, LOGGER
 from ..llm_client import LlmClient
-from ..llm_server import probe_server
+from ..llm_server import eval_candidate_models, probe_server
 from ..skills.models import TurnTrace
 from .cases import list_eval_cases
 from .mcp_mock import EvalMcpClient
-from .models import EVAL_TASKS, EvalRun, EvalRunState
+from .models import EVAL_TASKS, EvalCaseScore, EvalRun, EvalRunState
 from .recommender import recommend_settings, settings_recommendation_to_dict
 from .scorer import aggregate_task_scores, score_case
 from .store import get_eval_store
@@ -125,6 +127,14 @@ async def run_eval_suite(
     chat_backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
     agent_config = get_agent_config(hass.config_entries.async_get_entry(entry_id))
     router_config = get_router_config(hass.config_entries.async_get_entry(entry_id))
+    entry = hass.config_entries.async_get_entry(entry_id)
+    configured_models = [chat_backend.model]
+    action_backend = get_action_backend(entry)
+    classifier_backend = get_classifier_backend(entry)
+    if action_backend:
+        configured_models.append(action_backend.model)
+    if classifier_backend:
+        configured_models.append(classifier_backend.model)
     skills_config = SkillsConfig(
         learning_enabled=False,
         auto_save=False,
@@ -147,12 +157,22 @@ async def run_eval_suite(
             capabilities = await probe_server(session, chat_backend)
             run.server_capabilities = capabilities.to_dict()
 
-            candidate_models = list(
-                models or capabilities.models or [chat_backend.model]
+            include_unloaded = bool(models)
+            candidate_models = eval_candidate_models(
+                capabilities,
+                configured_models=configured_models,
+                explicit_models=models,
+                include_unloaded=include_unloaded,
             )
-            if chat_backend.model not in candidate_models:
-                candidate_models.insert(0, chat_backend.model)
-            candidate_models = list(dict.fromkeys(candidate_models))
+            if not include_unloaded and len(capabilities.models) > len(
+                candidate_models
+            ):
+                LOGGER.info(
+                    "Eval limiting to %d loaded/configured models "
+                    "(pass models=[...] to benchmark all %d catalog entries)",
+                    len(candidate_models),
+                    len(capabilities.models),
+                )
 
             selected_tasks = list(tasks or EVAL_TASKS)
             cases = list_eval_cases(tasks=selected_tasks)
@@ -191,20 +211,42 @@ async def run_eval_suite(
                     )
                     conversation_id = f"eval-{run.id}-{case.id}-{model}"
                     started = time.perf_counter()
-                    async for _delta in run_agent(
-                        hass,
-                        llm=llm,
-                        mcp_client=mcp,
-                        backend=model_backend,
-                        agent_config=eval_agent_config,
-                        router_config=_router_config_for_case(case.task, router_config),
-                        skills_config=skills_config,
-                        entry_id=entry_id,
-                        conversation_id=conversation_id,
-                        user_text=case.user_text,
-                        exposed_entities=list(case.exposed_entities),
-                    ):
-                        pass
+                    try:
+                        async for _delta in run_agent(
+                            hass,
+                            llm=llm,
+                            mcp_client=mcp,
+                            backend=model_backend,
+                            agent_config=eval_agent_config,
+                            router_config=_router_config_for_case(
+                                case.task, router_config
+                            ),
+                            skills_config=skills_config,
+                            entry_id=entry_id,
+                            conversation_id=conversation_id,
+                            user_text=case.user_text,
+                            exposed_entities=list(case.exposed_entities),
+                        ):
+                            pass
+                    except Exception as err:
+                        LOGGER.warning(
+                            "Eval case %s failed for model %s: %s",
+                            case.id,
+                            model,
+                            err,
+                        )
+                        run.case_scores.append(
+                            EvalCaseScore(
+                                case_id=case.id,
+                                task=case.task,
+                                model=model,
+                                score=0.0,
+                                passed=False,
+                                latency_ms=(time.perf_counter() - started) * 1000,
+                                details=[str(err)],
+                            )
+                        )
+                        continue
                     latency_ms = (time.perf_counter() - started) * 1000
                     turns, _total = list_turns(hass, entry_id, limit=1)
                     trace = _trace_from_activity(turns[0]) if turns else TurnTrace(

@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import aiohttp
 
@@ -66,11 +66,25 @@ class ServerMetrics:
 
 
 @dataclass(slots=True)
+class ModelInfo:
+    """One model entry from GET /v1/models."""
+
+    model_id: str
+    status: str = "unknown"
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class ServerCapabilities:
     """Aggregated llama.cpp server probe for eval and tuning."""
 
     server_root: str
     models: list[str] = field(default_factory=list)
+    loaded_models: list[str] = field(default_factory=list)
+    model_details: list[ModelInfo] = field(default_factory=list)
+    router_role: str | None = None
+    max_instances: int | None = None
+    models_autoload: bool | None = None
     health: ServerHealth | None = None
     props: ServerProps | None = None
     slots: list[ServerSlot] = field(default_factory=list)
@@ -83,6 +97,14 @@ class ServerCapabilities:
         return {
             "server_root": self.server_root,
             "models": list(self.models),
+            "loaded_models": list(self.loaded_models),
+            "model_details": [
+                {"model_id": item.model_id, "status": item.status}
+                for item in self.model_details
+            ],
+            "router_role": self.router_role,
+            "max_instances": self.max_instances,
+            "models_autoload": self.models_autoload,
             "health": self.health.raw if self.health else None,
             "props": self.props.raw if self.props else None,
             "slots": [slot.raw for slot in self.slots],
@@ -98,7 +120,12 @@ class ServerCapabilities:
         health = self.health
         return {
             "model_count": len(self.models),
+            "loaded_model_count": len(self.loaded_models),
             "models": self.models[:20],
+            "loaded_models": self.loaded_models[:20],
+            "router_role": self.router_role,
+            "max_instances": self.max_instances,
+            "models_autoload": self.models_autoload,
             "total_slots": props.total_slots if props else None,
             "n_ctx": props.n_ctx if props else None,
             "model_path": props.model_path if props else None,
@@ -161,17 +188,17 @@ class LlmServerProbe:
         timeout = aiohttp.ClientTimeout(total=15)
 
         if not caps.models:
-            caps.models = await self._fetch_models(backend, headers, timeout, caps)
+            await self._fetch_models(backend, headers, timeout, caps)
 
         for path, handler in (
             ("/health", self._parse_health),
             ("/v1/health", self._parse_health),
             ("/props", self._parse_props),
-            ("/slots", self._parse_slots),
             ("/metrics", self._parse_metrics),
         ):
             await self._try_endpoint(root, path, headers, timeout, caps, handler)
 
+        await self._enrich_router_model_details(root, headers, timeout, caps)
         return caps
 
     async def _fetch_models(
@@ -180,7 +207,7 @@ class LlmServerProbe:
         headers: dict[str, str],
         timeout: aiohttp.ClientTimeout,
         caps: ServerCapabilities,
-    ) -> list[str]:
+    ) -> None:
         url = f"{backend.base_url.rstrip('/')}/models"
         try:
             async with self._session.get(
@@ -189,17 +216,58 @@ class LlmServerProbe:
                 body = await response.text()
                 if response.status != 200:
                     caps.errors.append(f"/models HTTP {response.status}")
-                    return []
+                    return
                 data = json.loads(body)
         except (TimeoutError, aiohttp.ClientError, json.JSONDecodeError) as err:
             caps.errors.append(f"/models failed: {err}")
-            return []
+            return
 
         models: list[str] = []
+        loaded: list[str] = []
+        details: list[ModelInfo] = []
         for item in data.get("data", []):
-            if isinstance(item, dict) and isinstance(item.get("id"), str):
-                models.append(item["id"])
-        return sorted(models)
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            status = _model_status(item)
+            models.append(model_id)
+            details.append(ModelInfo(model_id=model_id, status=status, raw=item))
+            if status == "loaded":
+                loaded.append(model_id)
+        caps.models = sorted(models)
+        caps.loaded_models = sorted(loaded)
+        caps.model_details = details
+
+    async def _enrich_router_model_details(
+        self,
+        root: str,
+        headers: dict[str, str],
+        timeout: aiohttp.ClientTimeout,
+        caps: ServerCapabilities,
+    ) -> None:
+        """Fetch per-model props/slots when running in llama.cpp router mode."""
+        sample_model = caps.loaded_models[0] if caps.loaded_models else None
+        if not sample_model:
+            return
+        query = f"?model={quote(sample_model, safe='')}"
+        await self._try_endpoint(
+            root,
+            f"/props{query}",
+            headers,
+            timeout,
+            caps,
+            self._parse_props,
+        )
+        await self._try_endpoint(
+            root,
+            f"/slots{query}",
+            headers,
+            timeout,
+            caps,
+            self._parse_slots,
+        )
 
     async def _try_endpoint(
         self,
@@ -252,10 +320,20 @@ class LlmServerProbe:
             return
         if not isinstance(data, dict):
             return
+        caps.router_role = str(data["role"]) if data.get("role") else caps.router_role
+        caps.max_instances = (
+            _optional_int(data.get("max_instances")) or caps.max_instances
+        )
+        if "models_autoload" in data:
+            caps.models_autoload = bool(data.get("models_autoload"))
         default = data.get("default_generation_settings") or {}
         n_ctx = default.get("n_ctx") if isinstance(default, dict) else None
+        if not n_ctx and isinstance(default, dict):
+            params = default.get("params")
+            if isinstance(params, dict):
+                n_ctx = params.get("n_ctx")
         caps.props = ServerProps(
-            total_slots=_optional_int(data.get("total_slots")),
+            total_slots=_optional_int(data.get("total_slots")) or caps.max_instances,
             model_path=data.get("model_path"),
             n_ctx=_optional_int(n_ctx),
             build_info=data.get("build_info"),
@@ -299,6 +377,42 @@ class LlmServerProbe:
     @staticmethod
     def _parse_metrics(caps: ServerCapabilities, body: str) -> None:
         caps.metrics = ServerMetrics(raw_text=body, parsed=_parse_prometheus(body))
+
+
+def _model_status(item: dict[str, Any]) -> str:
+    status = item.get("status")
+    if isinstance(status, dict):
+        value = status.get("value")
+        if isinstance(value, str) and value:
+            return value
+    if isinstance(status, str) and status:
+        return status
+    return "unknown"
+
+
+def eval_candidate_models(
+    capabilities: ServerCapabilities,
+    *,
+    configured_models: list[str],
+    explicit_models: list[str] | None = None,
+    include_unloaded: bool = False,
+) -> list[str]:
+    """Return models to benchmark, preferring loaded and configured ones."""
+    if explicit_models:
+        return list(dict.fromkeys(explicit_models))
+
+    candidates: list[str] = []
+    for model in configured_models:
+        if model:
+            candidates.append(model)
+    if include_unloaded:
+        candidates.extend(capabilities.models)
+    else:
+        candidates.extend(capabilities.loaded_models)
+    deduped = list(dict.fromkeys(candidates))
+    if deduped:
+        return deduped
+    return configured_models[:1] if configured_models else capabilities.models[:1]
 
 
 def _optional_int(value: Any) -> int | None:
