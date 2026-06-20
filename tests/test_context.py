@@ -196,6 +196,24 @@ def test_is_email_query() -> None:
     assert not context.is_email_query("turn off the lights")
 
 
+def test_is_email_query_keyword_override() -> None:
+    """A keyword override replaces the default email matcher."""
+    assert context.is_email_query("any postbox updates?", ["postbox"])
+    assert not context.is_email_query("do I have new emails", ["postbox"])
+
+
+def test_is_news_query_keyword_override() -> None:
+    """A keyword override replaces the default news matcher."""
+    assert context.is_news_query("what's the scoop?", ["scoop"])
+    assert not context.is_news_query("what's the news?", ["scoop"])
+
+
+def test_is_device_action_query_keyword_override() -> None:
+    """A keyword override replaces the default device/camera matchers."""
+    assert context.is_device_action_query("dim the lounge", ["dim"])
+    assert not context.is_device_action_query("open the door", ["dim"])
+
+
 def test_is_device_action_query_matches_camera_snapshot() -> None:
     """Camera snapshot requests count as homeassistant service actions."""
     assert context.is_device_action_query(

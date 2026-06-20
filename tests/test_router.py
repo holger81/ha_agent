@@ -120,6 +120,28 @@ def test_classify_route_disabled_always_chat() -> None:
     assert route == router.TaskRoute.CHAT
 
 
+def test_classify_route_uses_keyword_override() -> None:
+    """A custom email keyword routes to email; defaults no longer apply."""
+    route = router.classify_route(
+        "any postbox updates?",
+        [],
+        _router_config(enabled=True),
+        route_keywords={"email": ["postbox"]},
+    )
+    assert route == router.TaskRoute.EMAIL
+
+
+def test_classify_route_override_does_not_match_default_keyword() -> None:
+    """When overridden, the default keyword set is replaced, not merged."""
+    route = router.classify_route(
+        "do I have new emails?",
+        [],
+        _router_config(enabled=True),
+        route_keywords={"email": ["postbox"]},
+    )
+    assert route == router.TaskRoute.CHAT
+
+
 def test_backend_for_route_returns_action_backend() -> None:
     """Action route resolves to the configured action backend."""
     chat = config_helpers.LlmBackend(

@@ -295,6 +295,40 @@ def test_enrich_tool_output_adds_email_recovery_hints() -> None:
     assert "unread_only" in output
 
 
+def test_enrich_tool_output_uses_supplied_rules() -> None:
+    """Supplied rule objects replace the shipped hardcoded hint logic."""
+    policy = _load_loop_policy()
+    rule = types.SimpleNamespace(
+        enabled=True,
+        tool_substring="calendar",
+        error_pattern="invalid date",
+        body="Retry with an ISO date range.",
+    )
+
+    output = policy.enrich_tool_output(
+        "calendar_mcp__create_event",
+        {},
+        "Tool error: invalid date format",
+        rules=[rule],
+    )
+
+    assert "RECOVERY HINTS" in output
+    assert "ISO date range" in output
+
+
+def test_enrich_tool_output_empty_rules_yield_no_hints() -> None:
+    """Supplying an empty rule list suppresses the hardcoded defaults."""
+    policy = _load_loop_policy()
+    output = policy.enrich_tool_output(
+        "mail_mcp_imap_search_messages",
+        {},
+        "Tool error: inbox too large to list",
+        rules=[],
+    )
+
+    assert "RECOVERY HINTS" not in output
+
+
 def test_verify_ha_service_reports_failed_state() -> None:
     policy = _load_loop_policy()
     hass = MagicMock()

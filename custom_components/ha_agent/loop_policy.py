@@ -508,17 +508,8 @@ _MCP_DOWN = re.compile(
 )
 
 
-def enrich_tool_output(
-    tool_name: str,
-    arguments: dict[str, Any],
-    output: str,
-) -> str:
-    """Append recovery hints to failed tool output."""
-    if not output.startswith("Tool error:"):
-        return output
-
-    lowered = output.lower()
-    name_lower = tool_name.lower()
+def _default_recovery_hints(name_lower: str, lowered: str) -> list[str]:
+    """Return the shipped, hardcoded recovery hints for a failed tool result."""
     hints: list[str] = []
 
     if "mail" in name_lower or "imap" in name_lower or "email" in lowered:
@@ -549,6 +540,65 @@ def enrich_tool_output(
             "Include domain, service, and entity_id in ha_call_service arguments. "
             "Derive domain from the entity_id prefix (light.example -> light)."
         )
+
+    return hints
+
+
+def _rule_recovery_hints(
+    rules: list[Any],
+    name_lower: str,
+    lowered: str,
+) -> list[str]:
+    """Return hint bodies from editable rules that match a failed result.
+
+    A rule matches when its (optional) tool-name substring is contained in the
+    tool name and its (optional) error pattern is found in the error text. An
+    empty substring/pattern is treated as a wildcard. Rules are duck-typed and
+    expose ``enabled``, ``tool_substring``, ``error_pattern``, and ``body``.
+    """
+    hints: list[str] = []
+    for rule in rules:
+        if not getattr(rule, "enabled", True):
+            continue
+        substring = (getattr(rule, "tool_substring", "") or "").strip().lower()
+        if substring and substring not in name_lower:
+            continue
+        pattern = (getattr(rule, "error_pattern", "") or "").strip()
+        if pattern:
+            try:
+                if not re.search(pattern, lowered, re.IGNORECASE):
+                    continue
+            except re.error:
+                if pattern.lower() not in lowered:
+                    continue
+        body = (getattr(rule, "body", "") or "").strip()
+        if body:
+            hints.append(body)
+    return hints
+
+
+def enrich_tool_output(
+    tool_name: str,
+    arguments: dict[str, Any],
+    output: str,
+    *,
+    rules: list[Any] | None = None,
+) -> str:
+    """Append recovery hints to failed tool output.
+
+    When ``rules`` is supplied (UI-editable recovery hints), they replace the
+    shipped hardcoded logic. When ``rules`` is ``None`` (store unavailable),
+    the deterministic shipped defaults are used.
+    """
+    if not output.startswith("Tool error:"):
+        return output
+
+    lowered = output.lower()
+    name_lower = tool_name.lower()
+    if rules is None:
+        hints = _default_recovery_hints(name_lower, lowered)
+    else:
+        hints = _rule_recovery_hints(rules, name_lower, lowered)
 
     if not hints:
         return output
@@ -614,9 +664,10 @@ def finalize_output(
     *,
     hass: HomeAssistant | None = None,
     loop_state: LoopState | None = None,
+    hint_rules: list[Any] | None = None,
 ) -> str:
     """Apply error enrichment and optional HA verification to tool output."""
-    enriched = enrich_tool_output(tool_name, arguments, output)
+    enriched = enrich_tool_output(tool_name, arguments, output, rules=hint_rules)
     if hass is None:
         return enriched
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -74,6 +75,9 @@ class ChatResult:
     reasoning_content: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
     assistant_message: dict[str, Any] = field(default_factory=dict)
+    latency_ms: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -195,6 +199,7 @@ class LlmClient:
         url = f"{backend.base_url}/chat/completions"
         payload = self._payload(messages, backend, tools, stream=False)
         timeout = aiohttp.ClientTimeout(total=backend.timeout)
+        started = time.perf_counter()
 
         try:
             async with self._session.post(
@@ -216,7 +221,13 @@ class LlmClient:
         except json.JSONDecodeError as err:
             raise HomeAssistantError("LLM returned invalid JSON") from err
 
-        return self._parse_completion(data)
+        result = self._parse_completion(data)
+        result.latency_ms = (time.perf_counter() - started) * 1000
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        if usage:
+            result.prompt_tokens = _optional_int(usage.get("prompt_tokens"))
+            result.completion_tokens = _optional_int(usage.get("completion_tokens"))
+        return result
 
     async def chat_stream(
         self,
@@ -405,3 +416,12 @@ class LlmClient:
             tool_calls=tool_calls,
             assistant_message=assistant_message,
         )
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
