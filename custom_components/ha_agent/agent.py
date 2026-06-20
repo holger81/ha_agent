@@ -35,7 +35,6 @@ from .loop_policy import (
     initialize_loop_plan,
     inject_loop_context,
     mark_iteration_outcome,
-    reasoning_stream_stuck,
     record_iteration_failure,
     record_mcp_guidance,
     record_plan_tool_result,
@@ -177,7 +176,6 @@ async def _yield_streamed_assistant_text(
     yielded_len = 0
     reasoning_buffer = ""
     reasoning_yielded_len = 0
-    reasoning_truncated = False
 
     async for chunk in llm.chat_stream(
         messages,
@@ -185,22 +183,12 @@ async def _yield_streamed_assistant_text(
         tools=tools,
         session=session,
     ):
-        if show_reasoning and chunk.reasoning_content and not reasoning_truncated:
+        if show_reasoning and chunk.reasoning_content:
             reasoning_buffer, _ = stream_text_delta(
                 reasoning_buffer,
                 chunk.reasoning_content,
             )
-            if reasoning_stream_stuck(reasoning_buffer):
-                reasoning_truncated = True
-                if reasoning_yielded_len < len(reasoning_buffer):
-                    yield (
-                        AgentDelta(
-                            thinking="\n…(reasoning truncated — continuing)",
-                        ),
-                        session,
-                    )
-                    reasoning_yielded_len = len(reasoning_buffer)
-            elif len(reasoning_buffer) > reasoning_yielded_len:
+            if len(reasoning_buffer) > reasoning_yielded_len:
                 text = reasoning_buffer[reasoning_yielded_len:]
                 reasoning_yielded_len = len(reasoning_buffer)
                 if text:
