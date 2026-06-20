@@ -49,7 +49,9 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_skills_export)
     websocket_api.async_register_command(hass, ws_skills_import)
     websocket_api.async_register_command(hass, ws_playbooks_list)
+    websocket_api.async_register_command(hass, ws_playbooks_create)
     websocket_api.async_register_command(hass, ws_playbooks_update)
+    websocket_api.async_register_command(hass, ws_playbooks_delete)
     websocket_api.async_register_command(hass, ws_playbooks_set_enabled)
     websocket_api.async_register_command(hass, ws_playbooks_reset)
     websocket_api.async_register_command(hass, ws_config_get)
@@ -402,6 +404,42 @@ async def ws_playbooks_list(hass: HomeAssistant, connection, msg: dict) -> None:
     playbooks = await playbooks_api.list_playbooks(hass, msg["entry_id"])
     connection.send_message(
         websocket_api.result_message(msg["id"], {"playbooks": playbooks})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/playbooks/create",
+        vol.Required("entry_id"): str,
+        vol.Required("playbook"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_playbooks_create(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    playbook = await playbooks_api.create_playbook(
+        hass,
+        msg["entry_id"],
+        msg["playbook"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"playbook": playbook})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/playbooks/delete",
+        vol.Required("entry_id"): str,
+        vol.Required("route"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_playbooks_delete(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    await playbooks_api.delete_playbook(hass, msg["entry_id"], msg["route"])
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"success": True})
     )
 
 

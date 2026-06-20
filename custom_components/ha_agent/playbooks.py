@@ -9,14 +9,22 @@ UI and persisted per config entry in SQLite.
 
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
 
 from .const import DATA_KEY, LOGGER
+
+if TYPE_CHECKING:
+    from .config_helpers import LlmBackend
+    from .llm_client import LlmClient
 
 PLAYBOOKS_STORE_KEY = "playbook_stores"
 
@@ -27,6 +35,7 @@ PLAYBOOK_ROUTES = ("email", "news", "action", "general")
 DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
     "email": {
         "title": "Email",
+        "match": "The user asks about email, mail, inbox, or unread messages.",
         "body": (
             "EMAIL PLAYBOOK:\n"
             "1. Discover tools in domain email if needed.\n"
@@ -38,6 +47,7 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
     },
     "news": {
         "title": "News",
+        "match": "The user asks for news, headlines, or a briefing.",
         "body": (
             "NEWS PLAYBOOK:\n"
             "1. Call mcp_news__news_curate with no arguments ({}) for "
@@ -48,6 +58,10 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
     },
     "action": {
         "title": "Device action",
+        "match": (
+            "The user asks to control or check a device, such as lights, "
+            "switches, covers, locks, climate, or a camera snapshot."
+        ),
         "body": (
             "DEVICE PLAYBOOK:\n"
             "1. Prefer an exposed-entity shortcut when one clearly matches.\n"
@@ -61,6 +75,7 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
     },
     "general": {
         "title": "General",
+        "match": "Fallback for general requests that still need tools or evidence.",
         "body": (
             "GENERAL PLAYBOOK:\n"
             "Gather evidence with tools before answering. Cite tool results. "
@@ -84,14 +99,24 @@ CREATE TABLE IF NOT EXISTS playbooks (
     title TEXT NOT NULL,
     body TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    match_text TEXT NOT NULL DEFAULT '',
+    is_builtin INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 0
 );
 """
+
+# Columns added after the initial release; applied via ALTER on existing DBs.
+_ADDED_COLUMNS = {
+    "match_text": "TEXT NOT NULL DEFAULT ''",
+    "is_builtin": "INTEGER NOT NULL DEFAULT 1",
+    "priority": "INTEGER NOT NULL DEFAULT 0",
+}
 
 
 @dataclass(slots=True)
 class Playbook:
-    """A route-pinned, editable workflow recipe."""
+    """An editable workflow recipe (built-in route or custom rule)."""
 
     route: str
     title: str
@@ -99,6 +124,9 @@ class Playbook:
     enabled: bool = True
     updated_at: float = 0.0
     is_default: bool = True
+    match_text: str = ""
+    is_builtin: bool = True
+    priority: int = 0
 
 
 def playbook_key_for_route(route_value: str) -> str:
@@ -118,13 +146,18 @@ def _is_default(route: str, body: str) -> bool:
 
 
 def _row_to_playbook(row: sqlite3.Row) -> Playbook:
+    keys = row.keys()
+    is_builtin = bool(row["is_builtin"]) if "is_builtin" in keys else True
     return Playbook(
         route=row["route"],
         title=row["title"],
         body=row["body"],
         enabled=bool(row["enabled"]),
         updated_at=float(row["updated_at"]),
-        is_default=_is_default(row["route"], row["body"]),
+        is_default=is_builtin and _is_default(row["route"], row["body"]),
+        match_text=row["match_text"] if "match_text" in keys else "",
+        is_builtin=is_builtin,
+        priority=int(row["priority"]) if "priority" in keys else 0,
     )
 
 
@@ -146,8 +179,20 @@ class PlaybookStore:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._seed_defaults()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        conn = self._conn
+        assert conn is not None
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(playbooks)").fetchall()
+        }
+        for column, ddl in _ADDED_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE playbooks ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         """Close the database connection."""
@@ -165,24 +210,54 @@ class PlaybookStore:
         conn = self._conn
         assert conn is not None
         now = time.time()
-        for route in PLAYBOOK_ROUTES:
+        for index, route in enumerate(PLAYBOOK_ROUTES):
             default = DEFAULT_PLAYBOOKS[route]
             conn.execute(
                 "INSERT OR IGNORE INTO playbooks "
-                "(route, title, body, enabled, updated_at) "
-                "VALUES (?, ?, ?, 1, ?)",
-                (route, default["title"], default["body"], now),
+                "(route, title, body, enabled, updated_at, match_text, "
+                "is_builtin, priority) "
+                "VALUES (?, ?, ?, 1, ?, ?, 1, ?)",
+                (
+                    route,
+                    default["title"],
+                    default["body"],
+                    now,
+                    default["match"],
+                    index,
+                ),
+            )
+            # Backfill match_text for rows migrated from the pre-match schema.
+            conn.execute(
+                "UPDATE playbooks SET match_text = ? "
+                "WHERE route = ? AND (match_text IS NULL OR match_text = '')",
+                (default["match"], route),
             )
 
     def list_playbooks(self) -> list[Playbook]:
-        """Return all playbooks in canonical route order."""
+        """Return built-in playbooks (canonical order) then custom rules."""
         rows = self._connection().execute(
             "SELECT * FROM playbooks",
         ).fetchall()
         by_route = {row["route"]: _row_to_playbook(row) for row in rows}
         ordered = [by_route[route] for route in PLAYBOOK_ROUTES if route in by_route]
-        extra = [pb for route, pb in by_route.items() if route not in PLAYBOOK_ROUTES]
+        extra = [
+            pb
+            for route, pb in by_route.items()
+            if route not in PLAYBOOK_ROUTES
+        ]
+        extra.sort(key=lambda pb: (pb.priority, pb.updated_at))
         return ordered + extra
+
+    def list_enabled(self) -> list[Playbook]:
+        """Return all enabled playbooks for runtime selection."""
+        return [pb for pb in self.list_playbooks() if pb.enabled]
+
+    def custom_count(self) -> int:
+        """Return the number of user-added custom playbook rules."""
+        row = self._connection().execute(
+            "SELECT COUNT(*) AS c FROM playbooks WHERE is_builtin = 0",
+        ).fetchone()
+        return int(row["c"]) if row else 0
 
     def get_playbook(self, route: str) -> Playbook | None:
         """Return one playbook by route key."""
@@ -192,12 +267,63 @@ class PlaybookStore:
         ).fetchone()
         return _row_to_playbook(row) if row else None
 
+    def create_playbook(
+        self,
+        *,
+        title: str,
+        body: str,
+        match_text: str = "",
+        enabled: bool = True,
+    ) -> Playbook:
+        """Create a custom (non-built-in) playbook rule."""
+        now = time.time()
+        playbook = Playbook(
+            route=f"custom-{uuid.uuid4().hex[:12]}",
+            title=title.strip() or "Custom playbook",
+            body=body.strip(),
+            enabled=enabled,
+            updated_at=now,
+            is_default=False,
+            match_text=match_text.strip(),
+            is_builtin=False,
+            priority=1000,
+        )
+        conn = self._connection()
+        conn.execute(
+            "INSERT INTO playbooks "
+            "(route, title, body, enabled, updated_at, match_text, "
+            "is_builtin, priority) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+            (
+                playbook.route,
+                playbook.title,
+                playbook.body,
+                int(playbook.enabled),
+                playbook.updated_at,
+                playbook.match_text,
+                playbook.priority,
+            ),
+        )
+        conn.commit()
+        return playbook
+
+    def delete_playbook(self, route: str) -> bool:
+        """Delete a custom playbook rule. Built-ins cannot be deleted."""
+        playbook = self.get_playbook(route)
+        if playbook is None or playbook.is_builtin:
+            return False
+        conn = self._connection()
+        conn.execute("DELETE FROM playbooks WHERE route = ?", (route,))
+        conn.commit()
+        return True
+
     def update_playbook(
         self,
         route: str,
         *,
         title: str | None = None,
         body: str | None = None,
+        match_text: str | None = None,
         enabled: bool | None = None,
     ) -> Playbook | None:
         """Update an existing playbook's editable fields."""
@@ -208,27 +334,32 @@ class PlaybookStore:
             playbook.title = title.strip() or playbook.title
         if body is not None:
             playbook.body = body.strip()
+        if match_text is not None:
+            playbook.match_text = match_text.strip()
         if enabled is not None:
             playbook.enabled = enabled
         playbook.updated_at = time.time()
         conn = self._connection()
         conn.execute(
-            "UPDATE playbooks SET title = ?, body = ?, enabled = ?, "
-            "updated_at = ? WHERE route = ?",
+            "UPDATE playbooks SET title = ?, body = ?, match_text = ?, "
+            "enabled = ?, updated_at = ? WHERE route = ?",
             (
                 playbook.title,
                 playbook.body,
+                playbook.match_text,
                 int(playbook.enabled),
                 playbook.updated_at,
                 playbook.route,
             ),
         )
         conn.commit()
-        playbook.is_default = _is_default(playbook.route, playbook.body)
+        playbook.is_default = playbook.is_builtin and _is_default(
+            playbook.route, playbook.body
+        )
         return playbook
 
     def reset_playbook(self, route: str) -> Playbook | None:
-        """Restore a playbook to its shipped default and enable it."""
+        """Restore a built-in playbook to its shipped default and enable it."""
         default = DEFAULT_PLAYBOOKS.get(route)
         if default is None:
             return None
@@ -236,6 +367,7 @@ class PlaybookStore:
             route,
             title=default["title"],
             body=default["body"],
+            match_text=default["match"],
             enabled=True,
         )
 
@@ -266,6 +398,129 @@ async def async_route_playbook(
     except Exception as err:
         LOGGER.debug("Falling back to default playbook for %s: %s", key, err)
         return default_playbook_body(key)
+
+
+_SELECT_PROMPT = (
+    "You pick which playbook (if any) best fits the user's latest request.\n"
+    'Return ONLY valid JSON: {{"route": "exact-route"}} or {{"route": null}}.\n'
+    "Rules:\n"
+    "- Choose at most one route from AVAILABLE PLAYBOOKS.\n"
+    "- Use the 'when_to_apply' text to decide.\n"
+    "- Return null only when none reasonably fit; prefer 'general' as a "
+    "catch-all when it is listed."
+)
+
+
+def parse_playbook_selection(content: str, valid_routes: set[str]) -> str | None:
+    """Parse the selected route from an LLM selection response."""
+    text = (content or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    route = data.get("route")
+    if isinstance(route, str) and route.strip() in valid_routes:
+        return route.strip()
+    return None
+
+
+async def select_playbook_with_llm(
+    llm: LlmClient,
+    backend: LlmBackend,
+    *,
+    user_text: str,
+    history: list[dict[str, str]] | None,
+    catalog: list[Playbook],
+) -> Playbook | None:
+    """Ask the chat model which enabled playbook applies to this turn."""
+    if not catalog:
+        return None
+    entries = [
+        {"route": pb.route, "title": pb.title, "when_to_apply": pb.match_text}
+        for pb in catalog
+    ]
+    recent = [
+        turn.get("content", "")
+        for turn in (history or [])[-4:]
+        if turn.get("role") == "user"
+    ]
+    messages = [
+        {"role": "system", "content": _SELECT_PROMPT},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "user_text": user_text,
+                    "recent_user_turns": recent,
+                    "available_playbooks": entries,
+                },
+                ensure_ascii=True,
+            ),
+        },
+    ]
+    try:
+        result = await llm.chat(messages, backend, tools=[])
+    except Exception as err:
+        LOGGER.warning("Playbook selection LLM call failed: %s", err)
+        return None
+    valid = {pb.route for pb in catalog}
+    route = parse_playbook_selection(result.content or "", valid)
+    if route is None:
+        return None
+    return next((pb for pb in catalog if pb.route == route), None)
+
+
+async def async_select_playbook(
+    hass: HomeAssistant,
+    entry_id: str,
+    llm: LlmClient,
+    backend: LlmBackend,
+    *,
+    user_text: str,
+    route_value: str,
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    """Return the playbook body to inject for this turn.
+
+    When the user has added custom rules, an LLM classifier chooses among all
+    enabled playbooks; otherwise (and on any failure) the keyword route's
+    built-in playbook is used.
+    """
+    key = playbook_key_for_route(route_value)
+    try:
+        store = get_playbook_store(hass, entry_id)
+        catalog, custom = await hass.async_add_executor_job(
+            _selection_inputs, store
+        )
+    except Exception as err:
+        LOGGER.debug("Playbook store unavailable, using default: %s", err)
+        return default_playbook_body(key)
+
+    if custom == 0:
+        # No user rules: keep the deterministic, zero-cost route mapping.
+        return await hass.async_add_executor_job(store.active_body, key)
+
+    selected = await select_playbook_with_llm(
+        llm,
+        backend,
+        user_text=user_text,
+        history=history,
+        catalog=catalog,
+    )
+    if selected is not None:
+        return selected.body
+    return await hass.async_add_executor_job(store.active_body, key)
+
+
+def _selection_inputs(store: PlaybookStore) -> tuple[list[Playbook], int]:
+    return store.list_enabled(), store.custom_count()
 
 
 def get_playbook_store(hass: HomeAssistant, entry_id: str) -> PlaybookStore:

@@ -118,3 +118,54 @@ def test_reset_restores_default(tmp_path) -> None:
         assert reset.body == pb.default_playbook_body("general")
     finally:
         store.close()
+
+
+def test_create_and_delete_custom_playbook(tmp_path) -> None:
+    """Custom rules can be added and removed; built-ins cannot be deleted."""
+    _pb, store = _store(tmp_path)
+    try:
+        created = store.create_playbook(
+            title="Vacuum",
+            body="Start the robot vacuum.",
+            match_text="The user wants to vacuum or clean the floors.",
+        )
+        assert created.is_builtin is False
+        assert created.route.startswith("custom-")
+        assert store.custom_count() == 1
+
+        routes = [p.route for p in store.list_playbooks()]
+        assert created.route in routes
+
+        assert store.delete_playbook("news") is False  # built-in protected
+        assert store.delete_playbook(created.route) is True
+        assert store.custom_count() == 0
+    finally:
+        store.close()
+
+
+def test_update_custom_match_text(tmp_path) -> None:
+    """A custom rule's when-to-apply text persists."""
+    _pb, store = _store(tmp_path)
+    try:
+        created = store.create_playbook(
+            title="Vacuum", body="b", match_text="clean"
+        )
+        updated = store.update_playbook(created.route, match_text="vacuum the floor")
+        assert updated is not None
+        assert updated.match_text == "vacuum the floor"
+    finally:
+        store.close()
+
+
+def test_parse_playbook_selection(tmp_path) -> None:
+    """The selection parser accepts plain and fenced JSON and validates routes."""
+    pb = _load_playbooks()
+    valid = {"news", "email"}
+    assert pb.parse_playbook_selection('{"route": "news"}', valid) == "news"
+    assert (
+        pb.parse_playbook_selection('```json\n{"route":"email"}\n```', valid)
+        == "email"
+    )
+    assert pb.parse_playbook_selection('{"route": null}', valid) is None
+    assert pb.parse_playbook_selection('{"route": "unknown"}', valid) is None
+    assert pb.parse_playbook_selection("not json", valid) is None

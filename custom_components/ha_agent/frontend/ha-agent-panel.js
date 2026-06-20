@@ -1286,16 +1286,22 @@ class HaAgentPanel extends HTMLElement {
   _renderPlaybookEditor() {
     const pb = this._editingPlaybook;
     if (!pb) return "";
+    const isNew = !pb.route;
+    const isBuiltin = pb.is_builtin === true;
+    const heading = isNew
+      ? "New playbook rule"
+      : `Edit playbook · ${this._escape(pb.title || pb.route)}`;
     return `
       <div class="skill-editor">
-        <h3>Edit playbook · ${this._escape(pb.title || pb.route)}</h3>
+        <h3>${heading}</h3>
         <div class="form-grid">
           <label>Title<input id="playbook-title" value="${this._escape(pb.title || "")}" /></label>
+          <label>When to apply (the model uses this to decide if the rule fires)<textarea id="playbook-match" rows="2">${this._escape(pb.match_text || "")}</textarea></label>
           <label>Workflow text<textarea id="playbook-body" rows="10">${this._escape(pb.body || "")}</textarea></label>
-          <label><input type="checkbox" id="playbook-enabled" ${pb.enabled !== false ? "checked" : ""}/> Enabled (inject for this route)</label>
+          <label><input type="checkbox" id="playbook-enabled" ${pb.enabled !== false ? "checked" : ""}/> Enabled</label>
           <div class="actions">
             <button data-action="playbook-save">Save</button>
-            <button data-action="playbook-reset">Reset to default</button>
+            ${isNew ? "" : isBuiltin ? '<button data-action="playbook-reset">Reset to default</button>' : '<button data-action="playbook-delete">Delete</button>'}
             <button data-action="playbook-cancel">Cancel</button>
           </div>
         </div>
@@ -1311,13 +1317,13 @@ class HaAgentPanel extends HTMLElement {
         (p) => `
       <tr class="${this._editingPlaybook?.route === p.route ? "active-skill-row" : ""}">
         <td>${this._escape(p.title || p.route)}</td>
-        <td>${this._escape(p.route)}</td>
+        <td>${p.is_builtin ? this._escape(p.route) : "custom"}</td>
         <td>${p.enabled ? "Yes" : "No"}</td>
-        <td>${p.is_default ? "Default" : "Customized"}</td>
+        <td>${p.is_builtin ? (p.is_default ? "Default" : "Customized") : "Custom"}</td>
         <td class="actions">
           <button data-playbook-edit="${this._escape(p.route)}">Edit</button>
           <button data-playbook-toggle="${this._escape(p.route)}">${p.enabled ? "Disable" : "Enable"}</button>
-          <button data-playbook-reset="${this._escape(p.route)}">Reset</button>
+          ${p.is_builtin ? `<button data-playbook-reset="${this._escape(p.route)}">Reset</button>` : `<button data-playbook-delete="${this._escape(p.route)}">Delete</button>`}
         </td>
       </tr>`
       )
@@ -1325,18 +1331,32 @@ class HaAgentPanel extends HTMLElement {
 
     return `
       ${notice}
-      <p class="playbook-intro">Playbooks are per-route workflow recipes injected into the prompt on every matching turn. Edit or disable them here.</p>
+      <p class="playbook-intro">Playbooks are workflow recipes injected into the prompt. Built-in playbooks map to routes; custom rules you add fire when the model decides their "when to apply" text matches the request. The model only runs that selection when at least one custom rule exists.</p>
+      <div class="actions" style="margin-bottom:12px">
+        <button data-action="playbook-new">Add playbook</button>
+      </div>
       <table>
-        <thead><tr><th>Title</th><th>Route</th><th>Enabled</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Title</th><th>Kind</th><th>Enabled</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5">No playbooks.</td></tr>'}</tbody>
       </table>
       ${this._renderPlaybookEditor()}`;
   }
 
   _openPlaybookEditor(route) {
-    const pb = this._playbooks.find((p) => p.route === route);
-    if (!pb) return;
-    this._editingPlaybook = { ...pb };
+    if (route === null) {
+      this._editingPlaybook = {
+        route: null,
+        title: "",
+        match_text: "",
+        body: "",
+        enabled: true,
+        is_builtin: false,
+      };
+    } else {
+      const pb = this._playbooks.find((p) => p.route === route);
+      if (!pb) return;
+      this._editingPlaybook = { ...pb };
+    }
     this._tab = "playbooks";
     this._render();
   }
@@ -1912,8 +1932,26 @@ class HaAgentPanel extends HTMLElement {
         this._render();
       });
 
+    this.shadowRoot
+      .querySelector('[data-action="playbook-new"]')
+      ?.addEventListener("click", () => this._openPlaybookEditor(null));
+
     this.shadowRoot.querySelectorAll("[data-playbook-edit]").forEach((el) => {
       el.onclick = () => this._openPlaybookEditor(el.getAttribute("data-playbook-edit"));
+    });
+
+    this.shadowRoot.querySelectorAll("[data-playbook-delete]").forEach((el) => {
+      el.onclick = async () => {
+        const route = el.getAttribute("data-playbook-delete");
+        await this._call("ha_agent/playbooks/delete", {
+          entry_id: this._entryId,
+          route,
+        });
+        this._playbookNotice = "Deleted custom playbook.";
+        if (this._editingPlaybook?.route === route) this._editingPlaybook = null;
+        await this._loadPlaybooks();
+        this._render();
+      };
     });
 
     this.shadowRoot.querySelectorAll("[data-playbook-toggle]").forEach((el) => {
@@ -1950,14 +1988,41 @@ class HaAgentPanel extends HTMLElement {
       ?.addEventListener("click", async () => {
         if (!this._editingPlaybook) return;
         const title = this.shadowRoot.querySelector("#playbook-title")?.value || "";
+        const match_text = this.shadowRoot.querySelector("#playbook-match")?.value || "";
         const body = this.shadowRoot.querySelector("#playbook-body")?.value || "";
         const enabled = this.shadowRoot.querySelector("#playbook-enabled")?.checked;
-        await this._call("ha_agent/playbooks/update", {
+        try {
+          if (this._editingPlaybook.route) {
+            await this._call("ha_agent/playbooks/update", {
+              entry_id: this._entryId,
+              route: this._editingPlaybook.route,
+              playbook: { title, match_text, body, enabled },
+            });
+          } else {
+            await this._call("ha_agent/playbooks/create", {
+              entry_id: this._entryId,
+              playbook: { title, match_text, body, enabled },
+            });
+          }
+          this._playbookNotice = `Saved ${title || "playbook"}.`;
+          this._editingPlaybook = null;
+        } catch (err) {
+          this._playbookNotice = `Could not save playbook: ${err?.message || err}`;
+        }
+        await this._loadPlaybooks();
+        this._render();
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="playbook-delete"]')
+      ?.addEventListener("click", async () => {
+        if (!this._editingPlaybook?.route) return;
+        const route = this._editingPlaybook.route;
+        await this._call("ha_agent/playbooks/delete", {
           entry_id: this._entryId,
-          route: this._editingPlaybook.route,
-          playbook: { title, body, enabled },
+          route,
         });
-        this._playbookNotice = `Saved ${title || this._editingPlaybook.route} playbook.`;
+        this._playbookNotice = "Deleted custom playbook.";
         this._editingPlaybook = null;
         await this._loadPlaybooks();
         this._render();

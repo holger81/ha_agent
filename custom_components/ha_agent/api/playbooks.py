@@ -18,6 +18,44 @@ async def list_playbooks(hass: HomeAssistant, entry_id: str) -> list[dict[str, A
     return [playbook_to_dict(playbook) for playbook in playbooks]
 
 
+async def create_playbook(
+    hass: HomeAssistant,
+    entry_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a custom playbook rule."""
+    title = str(payload.get("title", "")).strip()
+    body = str(payload.get("body", "")).strip()
+    match_text = str(payload.get("match_text", "")).strip()
+    if not title or not body:
+        raise HomeAssistantError("title and body are required")
+    if not match_text:
+        raise HomeAssistantError("A 'when to apply' description is required")
+    store = get_playbook_store(hass, entry_id)
+
+    def _create() -> Playbook:
+        return store.create_playbook(
+            title=title,
+            body=body,
+            match_text=match_text,
+            enabled=bool(payload.get("enabled", True)),
+        )
+
+    playbook = await hass.async_add_executor_job(_create)
+    return playbook_to_dict(playbook)
+
+
+async def delete_playbook(hass: HomeAssistant, entry_id: str, route: str) -> bool:
+    """Delete a custom playbook rule (built-ins cannot be deleted)."""
+    store = get_playbook_store(hass, entry_id)
+    deleted = await hass.async_add_executor_job(store.delete_playbook, route)
+    if not deleted:
+        raise HomeAssistantError(
+            f"Cannot delete playbook (not found or built-in): {route}"
+        )
+    return True
+
+
 async def update_playbook(
     hass: HomeAssistant,
     entry_id: str,
@@ -28,6 +66,7 @@ async def update_playbook(
     store = get_playbook_store(hass, entry_id)
     title = payload.get("title")
     body = payload.get("body")
+    match_text = payload.get("match_text")
     enabled = payload.get("enabled")
 
     def _update() -> Playbook | None:
@@ -35,6 +74,7 @@ async def update_playbook(
             route,
             title=None if title is None else str(title),
             body=None if body is None else str(body),
+            match_text=None if match_text is None else str(match_text),
             enabled=None if enabled is None else bool(enabled),
         )
 

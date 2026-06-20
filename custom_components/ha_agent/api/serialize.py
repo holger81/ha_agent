@@ -14,9 +14,11 @@ def playbook_to_dict(playbook: Playbook) -> dict[str, Any]:
         "route": playbook.route,
         "title": playbook.title,
         "body": playbook.body,
+        "match_text": playbook.match_text,
         "enabled": playbook.enabled,
         "updated_at": playbook.updated_at,
         "is_default": playbook.is_default,
+        "is_builtin": playbook.is_builtin,
     }
 
 

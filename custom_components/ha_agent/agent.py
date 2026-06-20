@@ -44,7 +44,7 @@ from .loop_policy import (
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
-from .playbooks import async_route_playbook
+from .playbooks import async_select_playbook
 from .router import TaskRoute, backend_for_route, classify_route
 from .skills.commands import (
     _MANUAL_SAVE,
@@ -609,7 +609,15 @@ async def run_agent(
         skill_hints=skill_hints,
         route=route.value,
     )
-    playbook = await async_route_playbook(hass, entry_id, route.value)
+    playbook = await async_select_playbook(
+        hass,
+        entry_id,
+        llm,
+        backend,
+        user_text=user_text,
+        route_value=route.value,
+        history=history,
+    )
     system_message = build_system_message(
         agent_config.system_prompt,
         agent_config.tool_instructions,
