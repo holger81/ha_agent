@@ -4,7 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..playbooks import Playbook
 from ..skills.models import PendingSkillDraft, Skill, SkillIndexRow, TurnTrace
+
+
+def playbook_to_dict(playbook: Playbook) -> dict[str, Any]:
+    """Serialize an editable route playbook."""
+    return {
+        "route": playbook.route,
+        "title": playbook.title,
+        "body": playbook.body,
+        "enabled": playbook.enabled,
+        "updated_at": playbook.updated_at,
+        "is_default": playbook.is_default,
+    }
 
 
 def skill_to_dict(skill: Skill) -> dict[str, Any]:

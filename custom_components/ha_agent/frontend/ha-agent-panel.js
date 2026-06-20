@@ -32,6 +32,9 @@ class HaAgentPanel extends HTMLElement {
     this._editingSkill = null;
     this._viewingSkill = null;
     this._skillNotice = null;
+    this._playbooks = [];
+    this._editingPlaybook = null;
+    this._playbookNotice = null;
   }
 
   _newConversationId() {
@@ -309,6 +312,14 @@ class HaAgentPanel extends HTMLElement {
       limit: 50,
     });
     this._activity = data.turns || [];
+  }
+
+  async _loadPlaybooks() {
+    if (!this._entryId) return;
+    const data = await this._call("ha_agent/playbooks/list", {
+      entry_id: this._entryId,
+    });
+    this._playbooks = data.playbooks || [];
   }
 
   _clearThreadSearchTimer() {
@@ -1272,6 +1283,64 @@ class HaAgentPanel extends HTMLElement {
       ${this._renderSkillEditor()}`;
   }
 
+  _renderPlaybookEditor() {
+    const pb = this._editingPlaybook;
+    if (!pb) return "";
+    return `
+      <div class="skill-editor">
+        <h3>Edit playbook · ${this._escape(pb.title || pb.route)}</h3>
+        <div class="form-grid">
+          <label>Title<input id="playbook-title" value="${this._escape(pb.title || "")}" /></label>
+          <label>Workflow text<textarea id="playbook-body" rows="10">${this._escape(pb.body || "")}</textarea></label>
+          <label><input type="checkbox" id="playbook-enabled" ${pb.enabled !== false ? "checked" : ""}/> Enabled (inject for this route)</label>
+          <div class="actions">
+            <button data-action="playbook-save">Save</button>
+            <button data-action="playbook-reset">Reset to default</button>
+            <button data-action="playbook-cancel">Cancel</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  _renderPlaybooks() {
+    const notice = this._playbookNotice
+      ? `<div class="skill-notice">${this._escape(this._playbookNotice)}</div>`
+      : "";
+    const rows = this._playbooks
+      .map(
+        (p) => `
+      <tr class="${this._editingPlaybook?.route === p.route ? "active-skill-row" : ""}">
+        <td>${this._escape(p.title || p.route)}</td>
+        <td>${this._escape(p.route)}</td>
+        <td>${p.enabled ? "Yes" : "No"}</td>
+        <td>${p.is_default ? "Default" : "Customized"}</td>
+        <td class="actions">
+          <button data-playbook-edit="${this._escape(p.route)}">Edit</button>
+          <button data-playbook-toggle="${this._escape(p.route)}">${p.enabled ? "Disable" : "Enable"}</button>
+          <button data-playbook-reset="${this._escape(p.route)}">Reset</button>
+        </td>
+      </tr>`
+      )
+      .join("");
+
+    return `
+      ${notice}
+      <p class="playbook-intro">Playbooks are per-route workflow recipes injected into the prompt on every matching turn. Edit or disable them here.</p>
+      <table>
+        <thead><tr><th>Title</th><th>Route</th><th>Enabled</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5">No playbooks.</td></tr>'}</tbody>
+      </table>
+      ${this._renderPlaybookEditor()}`;
+  }
+
+  _openPlaybookEditor(route) {
+    const pb = this._playbooks.find((p) => p.route === route);
+    if (!pb) return;
+    this._editingPlaybook = { ...pb };
+    this._tab = "playbooks";
+    this._render();
+  }
+
   _openSkillEditor(skill = null) {
     this._viewingSkill = null;
     this._editingSkill = skill
@@ -1584,7 +1653,7 @@ class HaAgentPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
-    const tabs = ["chat", "skills", "settings", "activity"];
+    const tabs = ["chat", "skills", "playbooks", "settings", "activity"];
     const tabButtons = tabs
       .map((t) => {
         const label = `${t[0].toUpperCase()}${t.slice(1)}`;
@@ -1601,6 +1670,7 @@ class HaAgentPanel extends HTMLElement {
       body = `<div class="banner">Failed to connect: ${this._escape(this._bootstrapError)}</div>`;
     } else if (this._tab === "chat") body = this._renderChat();
     if (this._tab === "skills") body = this._renderSkills();
+    if (this._tab === "playbooks") body = this._renderPlaybooks();
     if (this._tab === "settings") body = this._renderSettings();
     if (this._tab === "activity") body = this._renderActivity();
 
@@ -1633,6 +1703,7 @@ class HaAgentPanel extends HTMLElement {
         this._tab = el.getAttribute("data-tab");
         if (this._tab === "activity") await this._loadActivity();
         if (this._tab === "skills") await this._loadSkills();
+        if (this._tab === "playbooks") await this._loadPlaybooks();
         this._render();
         if (this._tab === "chat" && (this._streaming || this._findOpenStreamMessage())) {
           this._scheduleChatRender();
@@ -1838,6 +1909,79 @@ class HaAgentPanel extends HTMLElement {
       .querySelector('[data-action="skill-cancel"]')
       ?.addEventListener("click", () => {
         this._editingSkill = null;
+        this._render();
+      });
+
+    this.shadowRoot.querySelectorAll("[data-playbook-edit]").forEach((el) => {
+      el.onclick = () => this._openPlaybookEditor(el.getAttribute("data-playbook-edit"));
+    });
+
+    this.shadowRoot.querySelectorAll("[data-playbook-toggle]").forEach((el) => {
+      el.onclick = async () => {
+        const route = el.getAttribute("data-playbook-toggle");
+        const pb = this._playbooks.find((p) => p.route === route);
+        await this._call("ha_agent/playbooks/set_enabled", {
+          entry_id: this._entryId,
+          route,
+          enabled: !pb?.enabled,
+        });
+        this._playbookNotice = `${pb?.title || route} ${pb?.enabled ? "disabled" : "enabled"}.`;
+        await this._loadPlaybooks();
+        this._render();
+      };
+    });
+
+    this.shadowRoot.querySelectorAll("[data-playbook-reset]").forEach((el) => {
+      el.onclick = async () => {
+        const route = el.getAttribute("data-playbook-reset");
+        await this._call("ha_agent/playbooks/reset", {
+          entry_id: this._entryId,
+          route,
+        });
+        this._playbookNotice = `Reset ${route} playbook to default.`;
+        if (this._editingPlaybook?.route === route) this._editingPlaybook = null;
+        await this._loadPlaybooks();
+        this._render();
+      };
+    });
+
+    this.shadowRoot
+      .querySelector('[data-action="playbook-save"]')
+      ?.addEventListener("click", async () => {
+        if (!this._editingPlaybook) return;
+        const title = this.shadowRoot.querySelector("#playbook-title")?.value || "";
+        const body = this.shadowRoot.querySelector("#playbook-body")?.value || "";
+        const enabled = this.shadowRoot.querySelector("#playbook-enabled")?.checked;
+        await this._call("ha_agent/playbooks/update", {
+          entry_id: this._entryId,
+          route: this._editingPlaybook.route,
+          playbook: { title, body, enabled },
+        });
+        this._playbookNotice = `Saved ${title || this._editingPlaybook.route} playbook.`;
+        this._editingPlaybook = null;
+        await this._loadPlaybooks();
+        this._render();
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="playbook-reset"]')
+      ?.addEventListener("click", async () => {
+        if (!this._editingPlaybook) return;
+        const route = this._editingPlaybook.route;
+        await this._call("ha_agent/playbooks/reset", {
+          entry_id: this._entryId,
+          route,
+        });
+        this._playbookNotice = `Reset ${route} playbook to default.`;
+        this._editingPlaybook = null;
+        await this._loadPlaybooks();
+        this._render();
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="playbook-cancel"]')
+      ?.addEventListener("click", () => {
+        this._editingPlaybook = null;
         this._render();
       });
 

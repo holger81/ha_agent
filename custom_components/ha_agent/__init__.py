@@ -38,6 +38,7 @@ from .const import (
 )
 from .memory import async_load_memory
 from .panel import async_register_panel
+from .playbooks import close_playbook_store, get_playbook_store
 from .skills.commands import async_setup_services
 from .skills.store import close_skill_store, get_skill_store
 from .thinking import normalize_thinking_level
@@ -140,6 +141,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         model=entry.data.get(CONF_LLM_MODEL),
     )
     get_skill_store(hass, entry.entry_id)
+    get_playbook_store(hass, entry.entry_id)
     await async_setup_services(hass)
     await async_load_memory(hass, entry.entry_id)
     await async_load_threads(hass, entry.entry_id)
@@ -151,6 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     close_skill_store(hass, entry.entry_id)
+    close_playbook_store(hass, entry.entry_id)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

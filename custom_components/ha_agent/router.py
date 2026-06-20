@@ -11,6 +11,7 @@ from .context import (
     is_email_query,
     is_news_query,
 )
+from .playbooks import default_playbook_body, playbook_key_for_route
 
 
 class TaskRoute(StrEnum):
@@ -50,42 +51,12 @@ def has_exposed_match(user_text: str, exposed_entities: list[dict]) -> bool:
 
 
 def route_playbook(route: TaskRoute) -> str:
-    """Return route-specific workflow guidance for the system prompt."""
-    if route == TaskRoute.EMAIL:
-        return (
-            "EMAIL PLAYBOOK:\n"
-            "1. Discover tools in domain email if needed.\n"
-            "2. Call mailbox_status for unseen count.\n"
-            "3. Call search_messages with unread_only=true and a small limit.\n"
-            "4. Call get_message only for messages you will cite.\n"
-            "5. Answer using tool results only; never invent subjects or counts."
-        )
-    if route == TaskRoute.NEWS:
-        return (
-            "NEWS PLAYBOOK:\n"
-            "1. Call mcp_news__news_curate with no arguments ({}) for "
-            "today's briefing.\n"
-            "2. Summarize headlines from that result only.\n"
-            "3. Use searchToolsForDomain only if news_curate fails."
-        )
-    if route == TaskRoute.HA_ACTION:
-        return (
-            "DEVICE PLAYBOOK:\n"
-            "1. Prefer an exposed-entity shortcut when one clearly matches.\n"
-            "2. If no shortcut fits, discover entities in domain smart-home "
-            "with searchToolsForDomain, then callTool.\n"
-            "3. Call ha_call_service with domain, service, and entity_id "
-            "(e.g. camera.snapshot for photos).\n"
-            "4. Read VERIFICATION lines in tool results before telling the user "
-            "the action succeeded."
-        )
-    return (
-        "GENERAL PLAYBOOK:\n"
-        "Gather evidence with tools before answering. Cite tool results. "
-        "Exposed entities in context are shortcuts only; discover more in domain "
-        "smart-home when needed. If a tool fails, change strategy using "
-        "RECOVERY HINTS."
-    )
+    """Return the default route playbook text (UI-editable overrides win).
+
+    This is the shipped fallback used when no per-entry override exists; the
+    editable copy lives in the playbook store. See ``playbooks.py``.
+    """
+    return default_playbook_body(playbook_key_for_route(route.value))
 
 
 def backend_for_route(
