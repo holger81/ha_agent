@@ -99,43 +99,18 @@ def format_exposed_entities(entities: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _keyword_regex(keywords: list[str] | None) -> re.Pattern[str] | None:
-    """Build a case-insensitive whole-word regex from editable keywords.
-
-    Returns ``None`` when no usable keywords are supplied so callers fall back
-    to the shipped default regex.
-    """
-    if not keywords:
-        return None
-    parts = [re.escape(keyword.strip()) for keyword in keywords if keyword.strip()]
-    if not parts:
-        return None
-    return re.compile(r"\b(" + "|".join(parts) + r")\b", re.IGNORECASE)
-
-
 def is_affirmative(query: str) -> bool:
     """Return True for short affirmative replies."""
     return bool(_AFFIRMATIVE.match(query.strip()))
 
 
-def is_news_query(query: str, keywords: list[str] | None = None) -> bool:
-    """Return True when the user asks for news.
-
-    When ``keywords`` is supplied (a UI override), a whole-word regex built
-    from them replaces the shipped default matcher.
-    """
-    pattern = _keyword_regex(keywords) or _NEWS_QUERY
-    return bool(pattern.search(query))
+def is_news_query(query: str) -> bool:
+    """Return True when the user asks for news."""
+    return bool(_NEWS_QUERY.search(query))
 
 
-def is_device_action_query(query: str, keywords: list[str] | None = None) -> bool:
-    """Return True when the user asks for a homeassistant service action.
-
-    When ``keywords`` is supplied (a UI override), a single whole-word regex
-    built from them replaces the shipped device + camera matchers.
-    """
-    if override := _keyword_regex(keywords):
-        return bool(override.search(query))
+def is_device_action_query(query: str) -> bool:
+    """Return True when the user asks for a homeassistant service action."""
     return bool(_DEVICE_ACTION.search(query) or _CAMERA_ACTION.search(query))
 
 
@@ -144,14 +119,9 @@ def is_camera_action_query(query: str) -> bool:
     return bool(_CAMERA_ACTION.search(query))
 
 
-def is_email_query(query: str, keywords: list[str] | None = None) -> bool:
-    """Return True when the user asks about email.
-
-    When ``keywords`` is supplied (a UI override), a whole-word regex built
-    from them replaces the shipped default matcher.
-    """
-    pattern = _keyword_regex(keywords) or _EMAIL_QUERY
-    return bool(pattern.search(query))
+def is_email_query(query: str) -> bool:
+    """Return True when the user asks about email."""
+    return bool(_EMAIL_QUERY.search(query))
 
 
 def entity_matches_query(entity: dict[str, Any], query: str) -> bool:

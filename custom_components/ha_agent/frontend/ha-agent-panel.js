@@ -35,16 +35,6 @@ class HaAgentPanel extends HTMLElement {
     this._playbooks = [];
     this._editingPlaybook = null;
     this._playbookNotice = null;
-    this._routeKeywords = [];
-    this._editingRoute = null;
-    this._routeNotice = null;
-    this._recoveryHints = [];
-    this._editingHint = null;
-    this._hintNotice = null;
-    this._evalStatus = null;
-    this._evalCapabilities = null;
-    this._evalNotice = null;
-    this._evalPollTimer = null;
   }
 
   _newConversationId() {
@@ -77,7 +67,6 @@ class HaAgentPanel extends HTMLElement {
   disconnectedCallback() {
     this._clearTurnTimeout();
     this._clearThreadSearchTimer();
-    this._clearEvalPoll();
     if (this._messagesScrollEl) {
       this._messagesScrollEl.removeEventListener("scroll", this._onMessagesScroll);
       this._messagesScrollEl = null;
@@ -331,92 +320,6 @@ class HaAgentPanel extends HTMLElement {
       entry_id: this._entryId,
     });
     this._playbooks = data.playbooks || [];
-  }
-
-  async _loadRouteKeywords() {
-    if (!this._entryId) return;
-    const data = await this._call("ha_agent/route_keywords/list", {
-      entry_id: this._entryId,
-    });
-    this._routeKeywords = data.routes || [];
-  }
-
-  async _loadRecoveryHints() {
-    if (!this._entryId) return;
-    const data = await this._call("ha_agent/recovery_hints/list", {
-      entry_id: this._entryId,
-    });
-    this._recoveryHints = data.hints || [];
-  }
-
-  async _loadEvalStatus() {
-    if (!this._entryId) return;
-    const data = await this._call("ha_agent/eval/status", {
-      entry_id: this._entryId,
-    });
-    this._evalStatus = data;
-    if (data.running) {
-      this._startEvalPoll();
-    } else {
-      this._clearEvalPoll();
-    }
-  }
-
-  _clearEvalPoll() {
-    if (this._evalPollTimer) {
-      clearInterval(this._evalPollTimer);
-      this._evalPollTimer = null;
-    }
-  }
-
-  _startEvalPoll() {
-    this._clearEvalPoll();
-    this._evalPollTimer = setInterval(async () => {
-      try {
-        await this._loadEvalStatus();
-        this._render();
-      } catch (_err) {
-        this._clearEvalPoll();
-      }
-    }, 3000);
-  }
-
-  async _probeEvalServer() {
-    if (!this._entryId) return;
-    this._evalNotice = "Probing llama.cpp server…";
-    this._render();
-    const data = await this._call("ha_agent/eval/probe", {
-      entry_id: this._entryId,
-    });
-    this._evalCapabilities = data.capabilities || null;
-    this._evalNotice = "Server probe complete.";
-    this._render();
-  }
-
-  async _startEvalRun() {
-    if (!this._entryId) return;
-    this._evalNotice = "Starting eval suite…";
-    this._render();
-    await this._call("ha_agent/eval/start", {
-      entry_id: this._entryId,
-      include_settings: true,
-    });
-    await this._loadEvalStatus();
-    this._evalNotice = "Eval running in background.";
-    this._render();
-  }
-
-  async _applyEvalRecommendations() {
-    if (!this._entryId) return;
-    if (!confirm("Apply recommended chat/action/classifier models from the latest eval?")) {
-      return;
-    }
-    const data = await this._call("ha_agent/eval/apply", {
-      entry_id: this._entryId,
-    });
-    this._config = data.config || this._config;
-    this._evalNotice = "Applied eval model recommendations.";
-    this._render();
   }
 
   _clearThreadSearchTimer() {
@@ -1458,354 +1361,6 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
-  _renderRouteEditor() {
-    const route = this._editingRoute;
-    if (!route) return "";
-    const keywords = Array.isArray(route.keywords)
-      ? route.keywords.join("\n")
-      : "";
-    return `
-      <div class="skill-editor">
-        <h3>Edit route · ${this._escape(route.title || route.route)}</h3>
-        <div class="form-grid">
-          <label>Trigger keywords (one per line; case-insensitive whole-word match)<textarea id="route-keywords" rows="8">${this._escape(keywords)}</textarea></label>
-          <label><input type="checkbox" id="route-enabled" ${route.enabled !== false ? "checked" : ""}/> Use custom keywords (when off, shipped defaults apply)</label>
-          <div class="actions">
-            <button data-action="route-save">Save</button>
-            <button data-action="route-reset">Reset to default</button>
-            <button data-action="route-cancel">Cancel</button>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  _renderRoutes() {
-    const notice = this._routeNotice
-      ? `<div class="skill-notice">${this._escape(this._routeNotice)}</div>`
-      : "";
-    const rows = this._routeKeywords
-      .map(
-        (r) => `
-      <tr class="${this._editingRoute?.route === r.route ? "active-skill-row" : ""}">
-        <td>${this._escape(r.title || r.route)}</td>
-        <td>${this._escape((r.keywords || []).join(", "))}</td>
-        <td>${r.enabled ? "Yes" : "No"}</td>
-        <td>${r.is_default ? "Default" : "Customized"}</td>
-        <td class="actions">
-          <button data-route-edit="${this._escape(r.route)}">Edit</button>
-          <button data-route-toggle="${this._escape(r.route)}">${r.enabled ? "Disable" : "Enable"}</button>
-          <button data-route-reset="${this._escape(r.route)}">Reset</button>
-        </td>
-      </tr>`
-      )
-      .join("");
-
-    return `
-      ${notice}
-      <p class="playbook-intro">Route keywords decide which built-in workflow (email, news, or device action) a request triggers. Matching is case-insensitive whole-word. When a route's custom keywords are disabled, empty, or unchanged from the default, the shipped matcher is used.</p>
-      <table>
-        <thead><tr><th>Route</th><th>Keywords</th><th>Custom enabled</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="5">No routes.</td></tr>'}</tbody>
-      </table>
-      ${this._renderRouteEditor()}`;
-  }
-
-  _openRouteEditor(route) {
-    const r = this._routeKeywords.find((item) => item.route === route);
-    if (!r) return;
-    this._editingRoute = { ...r, keywords: [...(r.keywords || [])] };
-    this._tab = "routes";
-    this._render();
-  }
-
-  _renderHintEditor() {
-    const hint = this._editingHint;
-    if (!hint) return "";
-    const isNew = !hint.rule_id;
-    const isBuiltin = hint.is_builtin === true;
-    const heading = isNew
-      ? "New recovery hint"
-      : `Edit recovery hint · ${this._escape(hint.title || hint.rule_id)}`;
-    return `
-      <div class="skill-editor">
-        <h3>${heading}</h3>
-        <div class="form-grid">
-          <label>Title<input id="hint-title" value="${this._escape(hint.title || "")}" /></label>
-          <label>Tool-name substring (optional; matches the failed tool name)<input id="hint-tool" value="${this._escape(hint.tool_substring || "")}" /></label>
-          <label>Error-text pattern (optional; regex or keyword in the error)<input id="hint-pattern" value="${this._escape(hint.error_pattern || "")}" /></label>
-          <label>Hint shown to the model<textarea id="hint-body" rows="6">${this._escape(hint.body || "")}</textarea></label>
-          <label><input type="checkbox" id="hint-enabled" ${hint.enabled !== false ? "checked" : ""}/> Enabled</label>
-          <div class="actions">
-            <button data-action="hint-save">Save</button>
-            ${isNew ? "" : isBuiltin ? '<button data-action="hint-reset">Reset to default</button>' : '<button data-action="hint-delete">Delete</button>'}
-            <button data-action="hint-cancel">Cancel</button>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  _renderRecovery() {
-    const notice = this._hintNotice
-      ? `<div class="skill-notice">${this._escape(this._hintNotice)}</div>`
-      : "";
-    const rows = this._recoveryHints
-      .map(
-        (h) => `
-      <tr class="${this._editingHint?.rule_id === h.rule_id ? "active-skill-row" : ""}">
-        <td>${this._escape(h.title || h.rule_id)}</td>
-        <td>${this._escape(h.tool_substring || "any")}</td>
-        <td>${this._escape(h.error_pattern || "any")}</td>
-        <td>${h.enabled ? "Yes" : "No"}</td>
-        <td>${h.is_builtin ? (h.is_default ? "Default" : "Customized") : "Custom"}</td>
-        <td class="actions">
-          <button data-hint-edit="${this._escape(h.rule_id)}">Edit</button>
-          <button data-hint-toggle="${this._escape(h.rule_id)}">${h.enabled ? "Disable" : "Enable"}</button>
-          ${h.is_builtin ? `<button data-hint-reset="${this._escape(h.rule_id)}">Reset</button>` : `<button data-hint-delete="${this._escape(h.rule_id)}">Delete</button>`}
-        </td>
-      </tr>`
-      )
-      .join("");
-
-    return `
-      ${notice}
-      <p class="playbook-intro">Recovery hints are appended to a failed tool result to help the model change strategy. A hint fires when its tool-name substring and error-text pattern both match (blank fields match anything).</p>
-      <div class="actions" style="margin-bottom:12px">
-        <button data-action="hint-new">Add recovery hint</button>
-      </div>
-      <table>
-        <thead><tr><th>Title</th><th>Tool</th><th>Error pattern</th><th>Enabled</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="6">No recovery hints.</td></tr>'}</tbody>
-      </table>
-      ${this._renderHintEditor()}`;
-  }
-
-  _openHintEditor(ruleId) {
-    if (ruleId === null) {
-      this._editingHint = {
-        rule_id: null,
-        title: "",
-        tool_substring: "",
-        error_pattern: "",
-        body: "",
-        enabled: true,
-        is_builtin: false,
-      };
-    } else {
-      const hint = this._recoveryHints.find((h) => h.rule_id === ruleId);
-      if (!hint) return;
-      this._editingHint = { ...hint };
-    }
-    this._tab = "recovery";
-    this._render();
-  }
-
-  _bindRouteEvents() {
-    this.shadowRoot.querySelectorAll("[data-route-edit]").forEach((el) => {
-      el.onclick = () => this._openRouteEditor(el.getAttribute("data-route-edit"));
-    });
-
-    this.shadowRoot.querySelectorAll("[data-route-toggle]").forEach((el) => {
-      el.onclick = async () => {
-        const route = el.getAttribute("data-route-toggle");
-        const r = this._routeKeywords.find((item) => item.route === route);
-        await this._call("ha_agent/route_keywords/set_enabled", {
-          entry_id: this._entryId,
-          route,
-          enabled: !r?.enabled,
-        });
-        this._routeNotice = `${r?.title || route} custom keywords ${r?.enabled ? "disabled" : "enabled"}.`;
-        await this._loadRouteKeywords();
-        this._render();
-      };
-    });
-
-    this.shadowRoot.querySelectorAll("[data-route-reset]").forEach((el) => {
-      el.onclick = async () => {
-        const route = el.getAttribute("data-route-reset");
-        await this._call("ha_agent/route_keywords/reset", {
-          entry_id: this._entryId,
-          route,
-        });
-        this._routeNotice = `Reset ${route} keywords to default.`;
-        if (this._editingRoute?.route === route) this._editingRoute = null;
-        await this._loadRouteKeywords();
-        this._render();
-      };
-    });
-
-    this.shadowRoot
-      .querySelector('[data-action="route-save"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingRoute) return;
-        const raw = this.shadowRoot.querySelector("#route-keywords")?.value || "";
-        const keywords = raw
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0);
-        const enabled = this.shadowRoot.querySelector("#route-enabled")?.checked;
-        const route = this._editingRoute.route;
-        try {
-          await this._call("ha_agent/route_keywords/update", {
-            entry_id: this._entryId,
-            route,
-            route_keywords: { keywords, enabled },
-          });
-          this._routeNotice = `Saved ${this._editingRoute.title || route} keywords.`;
-          this._editingRoute = null;
-        } catch (err) {
-          this._routeNotice = `Could not save route: ${err?.message || err}`;
-        }
-        await this._loadRouteKeywords();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="route-reset"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingRoute) return;
-        const route = this._editingRoute.route;
-        await this._call("ha_agent/route_keywords/reset", {
-          entry_id: this._entryId,
-          route,
-        });
-        this._routeNotice = `Reset ${route} keywords to default.`;
-        this._editingRoute = null;
-        await this._loadRouteKeywords();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="route-cancel"]')
-      ?.addEventListener("click", () => {
-        this._editingRoute = null;
-        this._render();
-      });
-  }
-
-  _bindRecoveryEvents() {
-    this.shadowRoot
-      .querySelector('[data-action="hint-new"]')
-      ?.addEventListener("click", () => this._openHintEditor(null));
-
-    this.shadowRoot.querySelectorAll("[data-hint-edit]").forEach((el) => {
-      el.onclick = () => this._openHintEditor(el.getAttribute("data-hint-edit"));
-    });
-
-    this.shadowRoot.querySelectorAll("[data-hint-toggle]").forEach((el) => {
-      el.onclick = async () => {
-        const ruleId = el.getAttribute("data-hint-toggle");
-        const hint = this._recoveryHints.find((h) => h.rule_id === ruleId);
-        await this._call("ha_agent/recovery_hints/set_enabled", {
-          entry_id: this._entryId,
-          rule_id: ruleId,
-          enabled: !hint?.enabled,
-        });
-        this._hintNotice = `${hint?.title || ruleId} ${hint?.enabled ? "disabled" : "enabled"}.`;
-        await this._loadRecoveryHints();
-        this._render();
-      };
-    });
-
-    this.shadowRoot.querySelectorAll("[data-hint-reset]").forEach((el) => {
-      el.onclick = async () => {
-        const ruleId = el.getAttribute("data-hint-reset");
-        await this._call("ha_agent/recovery_hints/reset", {
-          entry_id: this._entryId,
-          rule_id: ruleId,
-        });
-        this._hintNotice = `Reset ${ruleId} to default.`;
-        if (this._editingHint?.rule_id === ruleId) this._editingHint = null;
-        await this._loadRecoveryHints();
-        this._render();
-      };
-    });
-
-    this.shadowRoot.querySelectorAll("[data-hint-delete]").forEach((el) => {
-      el.onclick = async () => {
-        const ruleId = el.getAttribute("data-hint-delete");
-        await this._call("ha_agent/recovery_hints/delete", {
-          entry_id: this._entryId,
-          rule_id: ruleId,
-        });
-        this._hintNotice = "Deleted custom recovery hint.";
-        if (this._editingHint?.rule_id === ruleId) this._editingHint = null;
-        await this._loadRecoveryHints();
-        this._render();
-      };
-    });
-
-    this.shadowRoot
-      .querySelector('[data-action="hint-save"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingHint) return;
-        const title = this.shadowRoot.querySelector("#hint-title")?.value || "";
-        const tool_substring =
-          this.shadowRoot.querySelector("#hint-tool")?.value || "";
-        const error_pattern =
-          this.shadowRoot.querySelector("#hint-pattern")?.value || "";
-        const body = this.shadowRoot.querySelector("#hint-body")?.value || "";
-        const enabled = this.shadowRoot.querySelector("#hint-enabled")?.checked;
-        const payload = { title, tool_substring, error_pattern, body, enabled };
-        try {
-          if (this._editingHint.rule_id) {
-            await this._call("ha_agent/recovery_hints/update", {
-              entry_id: this._entryId,
-              rule_id: this._editingHint.rule_id,
-              hint: payload,
-            });
-          } else {
-            await this._call("ha_agent/recovery_hints/create", {
-              entry_id: this._entryId,
-              hint: payload,
-            });
-          }
-          this._hintNotice = `Saved ${title || "recovery hint"}.`;
-          this._editingHint = null;
-        } catch (err) {
-          this._hintNotice = `Could not save recovery hint: ${err?.message || err}`;
-        }
-        await this._loadRecoveryHints();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="hint-delete"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingHint?.rule_id) return;
-        const ruleId = this._editingHint.rule_id;
-        await this._call("ha_agent/recovery_hints/delete", {
-          entry_id: this._entryId,
-          rule_id: ruleId,
-        });
-        this._hintNotice = "Deleted custom recovery hint.";
-        this._editingHint = null;
-        await this._loadRecoveryHints();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="hint-reset"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingHint?.rule_id) return;
-        const ruleId = this._editingHint.rule_id;
-        await this._call("ha_agent/recovery_hints/reset", {
-          entry_id: this._entryId,
-          rule_id: ruleId,
-        });
-        this._hintNotice = `Reset ${ruleId} to default.`;
-        this._editingHint = null;
-        await this._loadRecoveryHints();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="hint-cancel"]')
-      ?.addEventListener("click", () => {
-        this._editingHint = null;
-        this._render();
-      });
-  }
-
   _openSkillEditor(skill = null) {
     this._viewingSkill = null;
     this._editingSkill = skill
@@ -1929,9 +1484,6 @@ class HaAgentPanel extends HTMLElement {
               .join("")}
           </select>
         </label>
-        <label><input type="checkbox" data-config-bool="classifier_model_enabled" ${c.classifier_model_enabled ? "checked" : ""}/> Use a dedicated playbook classifier model</label>
-        <label>Classifier model<input data-config="classifier_llm_model" value="${this._escape(c.classifier_model || "")}" placeholder="defaults to chat model" /></label>
-        <label>Classifier base URL<input data-config="classifier_llm_base_url" value="${this._escape(c.classifier_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
         <label><input type="checkbox" data-config-bool="show_reasoning_in_chat" ${c.show_reasoning_in_chat ? "checked" : ""}/> Show model reasoning in chat</label>
         <label><input type="checkbox" data-config-bool="enable_streaming" ${c.enable_streaming ? "checked" : ""}/> Enable streaming</label>
         <label><input type="checkbox" data-config-bool="skills_learning_enabled" ${c.skills_learning_enabled ? "checked" : ""}/> Skill learning</label>
@@ -1969,58 +1521,6 @@ class HaAgentPanel extends HTMLElement {
         <tbody>${rows || '<tr><td colspan="6">No activity yet.</td></tr>'}</tbody>
       </table>
       <p class="activity-hint">Hover a row to see tool names and verification notes.</p>`;
-  }
-
-  _renderEval() {
-    const run = this._evalStatus?.run || {};
-    const progress = run.progress || {};
-    const recommendation = run.settings_recommendation || {};
-    const taskScores = run.task_scores || [];
-    const caps = this._evalCapabilities || run.server_capabilities || {};
-    const summary = caps.summary || {};
-    const settings = (recommendation.recommendations || [])
-      .map(
-        (item) =>
-          `<li><strong>${this._escape(item.setting)}</strong> = ${this._escape(item.value)} — ${this._escape(item.reason || "")}</li>`,
-      )
-      .join("");
-    const assignments = Object.entries(recommendation.model_assignments || {})
-      .map(
-        ([task, item]) =>
-          `<li><strong>${this._escape(task)}</strong>: ${this._escape(item.model || "")} — ${this._escape(item.reason || "")}</li>`,
-      )
-      .join("");
-    const scoreRows = taskScores
-      .map(
-        (item) => `<tr>
-          <td>${this._escape(item.task)}</td>
-          <td>${this._escape(item.model)}</td>
-          <td>${Number(item.score || 0).toFixed(2)}</td>
-          <td>${item.passed_count || 0}/${item.case_count || 0}</td>
-          <td>${item.avg_latency_ms ? Math.round(item.avg_latency_ms) : "—"}</td>
-        </tr>`,
-      )
-      .join("");
-    const running = this._evalStatus?.running ? "Running" : run.status || "idle";
-    return `
-      <div class="settings-grid">
-        <p class="activity-hint">${this._escape(this._evalNotice || "")}</p>
-        <p>Status: <strong>${this._escape(running)}</strong> ${progress.phase ? `(${this._escape(progress.phase)}${progress.model ? ` · ${this._escape(progress.model)}` : ""})` : ""}</p>
-        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx ?? "—"))}</p>
-        <div class="row">
-          <button data-action="eval-probe">Probe server</button>
-          <button data-action="eval-start">Run eval suite</button>
-          <button data-action="eval-apply">Apply model picks</button>
-        </div>
-        ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
-        ${assignments ? `<h4>Recommended models per task</h4><ul>${assignments}</ul>` : ""}
-        ${recommendation.summary ? `<p>${this._escape(recommendation.summary)}</p>` : ""}
-        <table>
-          <thead><tr><th>Task</th><th>Model</th><th>Score</th><th>Passed</th><th>Latency ms</th></tr></thead>
-          <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
-        </table>
-        <p class="activity-hint">Phase 2 will apply llama.cpp settings automatically. Phase 3 will search, download, and trial new models.</p>
-      </div>`;
   }
 
   _escape(text) {
@@ -2173,20 +1673,10 @@ class HaAgentPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
-    const tabs = [
-      "chat",
-      "skills",
-      "playbooks",
-      "routes",
-      "recovery",
-      "settings",
-      "eval",
-      "activity",
-    ];
-    const tabLabels = { recovery: "Recovery hints" };
+    const tabs = ["chat", "skills", "playbooks", "settings", "activity"];
     const tabButtons = tabs
       .map((t) => {
-        const label = tabLabels[t] || `${t[0].toUpperCase()}${t.slice(1)}`;
+        const label = `${t[0].toUpperCase()}${t.slice(1)}`;
         const busy = this._streaming && t === "chat" ? " …" : "";
         return `<button class="tab ${this._tab === t ? "active" : ""}" data-tab="${t}">${label}${busy}</button>`;
       })
@@ -2201,10 +1691,7 @@ class HaAgentPanel extends HTMLElement {
     } else if (this._tab === "chat") body = this._renderChat();
     if (this._tab === "skills") body = this._renderSkills();
     if (this._tab === "playbooks") body = this._renderPlaybooks();
-    if (this._tab === "routes") body = this._renderRoutes();
-    if (this._tab === "recovery") body = this._renderRecovery();
     if (this._tab === "settings") body = this._renderSettings();
-    if (this._tab === "eval") body = this._renderEval();
     if (this._tab === "activity") body = this._renderActivity();
 
     const panelClass = this._tab === "chat" ? "panel chat-panel" : "panel";
@@ -2237,9 +1724,6 @@ class HaAgentPanel extends HTMLElement {
         if (this._tab === "activity") await this._loadActivity();
         if (this._tab === "skills") await this._loadSkills();
         if (this._tab === "playbooks") await this._loadPlaybooks();
-        if (this._tab === "routes") await this._loadRouteKeywords();
-        if (this._tab === "recovery") await this._loadRecoveryHints();
-        if (this._tab === "eval") await this._loadEvalStatus();
         this._render();
         if (this._tab === "chat" && (this._streaming || this._findOpenStreamMessage())) {
           this._scheduleChatRender();
@@ -2564,25 +2048,6 @@ class HaAgentPanel extends HTMLElement {
       ?.addEventListener("click", () => {
         this._editingPlaybook = null;
         this._render();
-      });
-
-    this._bindRouteEvents();
-    this._bindRecoveryEvents();
-
-    this.shadowRoot
-      .querySelector('[data-action="eval-probe"]')
-      ?.addEventListener("click", async () => {
-        await this._probeEvalServer();
-      });
-    this.shadowRoot
-      .querySelector('[data-action="eval-start"]')
-      ?.addEventListener("click", async () => {
-        await this._startEvalRun();
-      });
-    this.shadowRoot
-      .querySelector('[data-action="eval-apply"]')
-      ?.addEventListener("click", async () => {
-        await this._applyEvalRecommendations();
       });
 
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {

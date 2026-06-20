@@ -13,9 +13,6 @@ from .const import (
     CONF_ACTION_LLM_TEMPERATURE,
     CONF_ACTION_MODEL_ENABLED,
     CONF_AGENT_SYSTEM_PROMPT,
-    CONF_CLASSIFIER_LLM_BASE_URL,
-    CONF_CLASSIFIER_LLM_MODEL,
-    CONF_CLASSIFIER_MODEL_ENABLED,
     CONF_CONVERSATION_ENABLE_STREAMING,
     CONF_CONVERSATION_HISTORY_TURNS,
     CONF_CONVERSATION_SHOW_REASONING,
@@ -40,8 +37,6 @@ from .const import (
     DEFAULT_ACTION_LLM_MAX_TOKENS,
     DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
-    DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
-    DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
     DEFAULT_CONVERSATION_HISTORY_TURNS,
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MAX_TOKENS,
@@ -111,7 +106,6 @@ class RouterConfig:
 
     action_enabled: bool
     action_backend: LlmBackend | None
-    classifier_backend: LlmBackend | None = None
 
 
 def default_mcp_health_url(mcp_url: str) -> str:
@@ -175,29 +169,6 @@ def get_action_backend(entry: ConfigEntry) -> LlmBackend | None:
     )
 
 
-def get_classifier_backend(entry: ConfigEntry) -> LlmBackend | None:
-    """Return a dedicated playbook-classifier backend when configured."""
-    data = entry.data
-    if not data.get(CONF_CLASSIFIER_MODEL_ENABLED):
-        return None
-
-    model = data.get(CONF_CLASSIFIER_LLM_MODEL)
-    if not model:
-        return None
-
-    chat = get_llm_backend(entry)
-    base_url = (data.get(CONF_CLASSIFIER_LLM_BASE_URL) or chat.base_url).rstrip("/")
-    return LlmBackend(
-        base_url=base_url,
-        model=model,
-        api_key=chat.api_key,
-        max_tokens=DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
-        temperature=DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
-        timeout=chat.timeout,
-        thinking_level="off",
-    )
-
-
 def get_skills_config(entry: ConfigEntry) -> SkillsConfig:
     """Return skills settings for the config entry."""
     data = entry.data
@@ -214,7 +185,6 @@ def get_router_config(entry: ConfigEntry) -> RouterConfig:
     return RouterConfig(
         action_enabled=bool(entry.data.get(CONF_ACTION_MODEL_ENABLED)),
         action_backend=get_action_backend(entry),
-        classifier_backend=get_classifier_backend(entry),
     )
 
 

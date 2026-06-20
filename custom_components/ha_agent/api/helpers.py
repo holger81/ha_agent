@@ -60,11 +60,6 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "action_model": (
             router.action_backend.model if router.action_backend else None
         ),
-        "classifier_model_enabled": router.classifier_backend is not None,
-        "classifier_model": (
-            router.classifier_backend.model if router.classifier_backend else None
-        ),
-        "classifier_llm_base_url": data.get("classifier_llm_base_url", ""),
         "max_iterations": agent.max_iterations,
         "history_turns": agent.history_turns,
         "enable_streaming": agent.enable_streaming,

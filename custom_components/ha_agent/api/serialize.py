@@ -5,8 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from ..playbooks import Playbook
-from ..recovery_hints import RecoveryHint
-from ..route_keywords import RouteKeywords
 from ..skills.models import PendingSkillDraft, Skill, SkillIndexRow, TurnTrace
 
 
@@ -21,34 +19,6 @@ def playbook_to_dict(playbook: Playbook) -> dict[str, Any]:
         "updated_at": playbook.updated_at,
         "is_default": playbook.is_default,
         "is_builtin": playbook.is_builtin,
-    }
-
-
-def route_keywords_to_dict(item: RouteKeywords) -> dict[str, Any]:
-    """Serialize an editable route keyword list."""
-    return {
-        "route": item.route,
-        "title": item.title,
-        "keywords": list(item.keywords),
-        "enabled": item.enabled,
-        "updated_at": item.updated_at,
-        "is_default": item.is_default,
-    }
-
-
-def recovery_hint_to_dict(hint: RecoveryHint) -> dict[str, Any]:
-    """Serialize an editable recovery-hint rule."""
-    return {
-        "rule_id": hint.rule_id,
-        "title": hint.title,
-        "tool_substring": hint.tool_substring,
-        "error_pattern": hint.error_pattern,
-        "body": hint.body,
-        "enabled": hint.enabled,
-        "is_builtin": hint.is_builtin,
-        "priority": hint.priority,
-        "updated_at": hint.updated_at,
-        "is_default": hint.is_default,
     }
 
 

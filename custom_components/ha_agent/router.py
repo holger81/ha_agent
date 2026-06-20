@@ -27,26 +27,18 @@ def classify_route(
     user_text: str,
     exposed_entities: list[dict],
     router_config: RouterConfig,
-    *,
-    route_keywords: dict[str, list[str]] | None = None,
 ) -> TaskRoute:
-    """Pick the route for this user turn.
-
-    ``route_keywords`` carries optional per-route UI keyword overrides
-    (``{"email": [...], "news": [...], "action": [...]}``). A route absent
-    from the map uses its shipped default matcher.
-    """
-    overrides = route_keywords or {}
-    if is_email_query(user_text, overrides.get("email")):
+    """Pick the route for this user turn."""
+    if is_email_query(user_text):
         return TaskRoute.EMAIL
 
-    if is_news_query(user_text, overrides.get("news")):
+    if is_news_query(user_text):
         return TaskRoute.NEWS
 
     if (
         router_config.action_enabled
         and router_config.action_backend
-        and is_device_action_query(user_text, overrides.get("action"))
+        and is_device_action_query(user_text)
     ):
         return TaskRoute.HA_ACTION
 
