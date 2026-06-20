@@ -10,6 +10,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .activity import list_turns
 from .api import chat as chat_api
 from .api import config as config_api
+from .api import eval as eval_api
 from .api import playbooks as playbooks_api
 from .api import recovery_hints as recovery_hints_api
 from .api import route_keywords as route_keywords_api
@@ -72,6 +73,14 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_threads_list)
     websocket_api.async_register_command(hass, ws_threads_update)
     websocket_api.async_register_command(hass, ws_threads_delete)
+    websocket_api.async_register_command(hass, ws_eval_status)
+    websocket_api.async_register_command(hass, ws_eval_runs_list)
+    websocket_api.async_register_command(hass, ws_eval_run_get)
+    websocket_api.async_register_command(hass, ws_eval_start)
+    websocket_api.async_register_command(hass, ws_eval_cancel)
+    websocket_api.async_register_command(hass, ws_eval_probe)
+    websocket_api.async_register_command(hass, ws_eval_apply)
+    websocket_api.async_register_command(hass, ws_eval_discover)
 
 
 def _entry_id_schema(extra: dict | None = None) -> dict:
@@ -843,3 +852,129 @@ async def ws_threads_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_message(
         websocket_api.result_message(msg["id"], {"success": True})
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/status",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.get_eval_status(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/runs/list",
+        **_entry_id_schema({vol.Optional("limit"): int}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_runs_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    runs = await eval_api.list_eval_runs(
+        hass,
+        msg["entry_id"],
+        limit=int(msg.get("limit") or 20),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], {"runs": runs}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/run/get",
+        vol.Required("entry_id"): str,
+        vol.Required("run_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_eval_run_get(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    run = await eval_api.get_eval_run(hass, msg["entry_id"], msg["run_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], {"run": run}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/start",
+        **_entry_id_schema(
+            {
+                vol.Optional("models"): [str],
+                vol.Optional("tasks"): [str],
+                vol.Optional("include_settings"): bool,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_start(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    payload = {
+        key: msg[key]
+        for key in ("models", "tasks", "include_settings")
+        if key in msg
+    }
+    result = await eval_api.start_eval(hass, msg["entry_id"], payload)
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/cancel",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.cancel_eval(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/probe",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_probe(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    capabilities = await eval_api.probe_server_capabilities(hass, msg["entry_id"])
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"capabilities": capabilities})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/apply",
+        **_entry_id_schema({vol.Optional("run_id"): str}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_apply(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.apply_eval_recommendations(
+        hass,
+        msg["entry_id"],
+        run_id=msg.get("run_id"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/discover",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_discover(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.discover_models(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], result))

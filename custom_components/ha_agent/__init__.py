@@ -36,6 +36,7 @@ from .const import (
     DOMAIN,
     LEGACY_TOOL_INSTRUCTION_MARKERS,
 )
+from .eval.store import close_eval_store, get_eval_store
 from .memory import async_load_memory
 from .panel import async_register_panel
 from .playbooks import close_playbook_store, get_playbook_store
@@ -146,6 +147,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     get_playbook_store(hass, entry.entry_id)
     get_route_keyword_store(hass, entry.entry_id)
     get_recovery_hint_store(hass, entry.entry_id)
+    get_eval_store(hass, entry.entry_id)
     await async_setup_services(hass)
     await async_load_memory(hass, entry.entry_id)
     await async_load_threads(hass, entry.entry_id)
@@ -160,6 +162,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     close_playbook_store(hass, entry.entry_id)
     close_route_keyword_store(hass, entry.entry_id)
     close_recovery_hint_store(hass, entry.entry_id)
+    close_eval_store(hass, entry.entry_id)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

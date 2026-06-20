@@ -41,6 +41,10 @@ class HaAgentPanel extends HTMLElement {
     this._recoveryHints = [];
     this._editingHint = null;
     this._hintNotice = null;
+    this._evalStatus = null;
+    this._evalCapabilities = null;
+    this._evalNotice = null;
+    this._evalPollTimer = null;
   }
 
   _newConversationId() {
@@ -73,6 +77,7 @@ class HaAgentPanel extends HTMLElement {
   disconnectedCallback() {
     this._clearTurnTimeout();
     this._clearThreadSearchTimer();
+    this._clearEvalPoll();
     if (this._messagesScrollEl) {
       this._messagesScrollEl.removeEventListener("scroll", this._onMessagesScroll);
       this._messagesScrollEl = null;
@@ -342,6 +347,76 @@ class HaAgentPanel extends HTMLElement {
       entry_id: this._entryId,
     });
     this._recoveryHints = data.hints || [];
+  }
+
+  async _loadEvalStatus() {
+    if (!this._entryId) return;
+    const data = await this._call("ha_agent/eval/status", {
+      entry_id: this._entryId,
+    });
+    this._evalStatus = data;
+    if (data.running) {
+      this._startEvalPoll();
+    } else {
+      this._clearEvalPoll();
+    }
+  }
+
+  _clearEvalPoll() {
+    if (this._evalPollTimer) {
+      clearInterval(this._evalPollTimer);
+      this._evalPollTimer = null;
+    }
+  }
+
+  _startEvalPoll() {
+    this._clearEvalPoll();
+    this._evalPollTimer = setInterval(async () => {
+      try {
+        await this._loadEvalStatus();
+        this._render();
+      } catch (_err) {
+        this._clearEvalPoll();
+      }
+    }, 3000);
+  }
+
+  async _probeEvalServer() {
+    if (!this._entryId) return;
+    this._evalNotice = "Probing llama.cpp server…";
+    this._render();
+    const data = await this._call("ha_agent/eval/probe", {
+      entry_id: this._entryId,
+    });
+    this._evalCapabilities = data.capabilities || null;
+    this._evalNotice = "Server probe complete.";
+    this._render();
+  }
+
+  async _startEvalRun() {
+    if (!this._entryId) return;
+    this._evalNotice = "Starting eval suite…";
+    this._render();
+    await this._call("ha_agent/eval/start", {
+      entry_id: this._entryId,
+      include_settings: true,
+    });
+    await this._loadEvalStatus();
+    this._evalNotice = "Eval running in background.";
+    this._render();
+  }
+
+  async _applyEvalRecommendations() {
+    if (!this._entryId) return;
+    if (!confirm("Apply recommended chat/action/classifier models from the latest eval?")) {
+      return;
+    }
+    const data = await this._call("ha_agent/eval/apply", {
+      entry_id: this._entryId,
+    });
+    this._config = data.config || this._config;
+    this._evalNotice = "Applied eval model recommendations.";
+    this._render();
   }
 
   _clearThreadSearchTimer() {
@@ -1896,6 +1971,58 @@ class HaAgentPanel extends HTMLElement {
       <p class="activity-hint">Hover a row to see tool names and verification notes.</p>`;
   }
 
+  _renderEval() {
+    const run = this._evalStatus?.run || {};
+    const progress = run.progress || {};
+    const recommendation = run.settings_recommendation || {};
+    const taskScores = run.task_scores || [];
+    const caps = this._evalCapabilities || run.server_capabilities || {};
+    const summary = caps.summary || {};
+    const settings = (recommendation.recommendations || [])
+      .map(
+        (item) =>
+          `<li><strong>${this._escape(item.setting)}</strong> = ${this._escape(item.value)} — ${this._escape(item.reason || "")}</li>`,
+      )
+      .join("");
+    const assignments = Object.entries(recommendation.model_assignments || {})
+      .map(
+        ([task, item]) =>
+          `<li><strong>${this._escape(task)}</strong>: ${this._escape(item.model || "")} — ${this._escape(item.reason || "")}</li>`,
+      )
+      .join("");
+    const scoreRows = taskScores
+      .map(
+        (item) => `<tr>
+          <td>${this._escape(item.task)}</td>
+          <td>${this._escape(item.model)}</td>
+          <td>${Number(item.score || 0).toFixed(2)}</td>
+          <td>${item.passed_count || 0}/${item.case_count || 0}</td>
+          <td>${item.avg_latency_ms ? Math.round(item.avg_latency_ms) : "—"}</td>
+        </tr>`,
+      )
+      .join("");
+    const running = this._evalStatus?.running ? "Running" : run.status || "idle";
+    return `
+      <div class="settings-grid">
+        <p class="activity-hint">${this._escape(this._evalNotice || "")}</p>
+        <p>Status: <strong>${this._escape(running)}</strong> ${progress.phase ? `(${this._escape(progress.phase)}${progress.model ? ` · ${this._escape(progress.model)}` : ""})` : ""}</p>
+        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx ?? "—"))}</p>
+        <div class="row">
+          <button data-action="eval-probe">Probe server</button>
+          <button data-action="eval-start">Run eval suite</button>
+          <button data-action="eval-apply">Apply model picks</button>
+        </div>
+        ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
+        ${assignments ? `<h4>Recommended models per task</h4><ul>${assignments}</ul>` : ""}
+        ${recommendation.summary ? `<p>${this._escape(recommendation.summary)}</p>` : ""}
+        <table>
+          <thead><tr><th>Task</th><th>Model</th><th>Score</th><th>Passed</th><th>Latency ms</th></tr></thead>
+          <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
+        </table>
+        <p class="activity-hint">Phase 2 will apply llama.cpp settings automatically. Phase 3 will search, download, and trial new models.</p>
+      </div>`;
+  }
+
   _escape(text) {
     return String(text || "")
       .replace(/&/g, "&amp;")
@@ -2053,6 +2180,7 @@ class HaAgentPanel extends HTMLElement {
       "routes",
       "recovery",
       "settings",
+      "eval",
       "activity",
     ];
     const tabLabels = { recovery: "Recovery hints" };
@@ -2076,6 +2204,7 @@ class HaAgentPanel extends HTMLElement {
     if (this._tab === "routes") body = this._renderRoutes();
     if (this._tab === "recovery") body = this._renderRecovery();
     if (this._tab === "settings") body = this._renderSettings();
+    if (this._tab === "eval") body = this._renderEval();
     if (this._tab === "activity") body = this._renderActivity();
 
     const panelClass = this._tab === "chat" ? "panel chat-panel" : "panel";
@@ -2110,6 +2239,7 @@ class HaAgentPanel extends HTMLElement {
         if (this._tab === "playbooks") await this._loadPlaybooks();
         if (this._tab === "routes") await this._loadRouteKeywords();
         if (this._tab === "recovery") await this._loadRecoveryHints();
+        if (this._tab === "eval") await this._loadEvalStatus();
         this._render();
         if (this._tab === "chat" && (this._streaming || this._findOpenStreamMessage())) {
           this._scheduleChatRender();
@@ -2438,6 +2568,22 @@ class HaAgentPanel extends HTMLElement {
 
     this._bindRouteEvents();
     this._bindRecoveryEvents();
+
+    this.shadowRoot
+      .querySelector('[data-action="eval-probe"]')
+      ?.addEventListener("click", async () => {
+        await this._probeEvalServer();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-start"]')
+      ?.addEventListener("click", async () => {
+        await this._startEvalRun();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-apply"]')
+      ?.addEventListener("click", async () => {
+        await this._applyEvalRecommendations();
+      });
 
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {
       const updates = {};
