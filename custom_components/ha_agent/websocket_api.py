@@ -11,6 +11,8 @@ from .activity import list_turns
 from .api import chat as chat_api
 from .api import config as config_api
 from .api import playbooks as playbooks_api
+from .api import recovery_hints as recovery_hints_api
+from .api import route_keywords as route_keywords_api
 from .api import skills as skills_api
 from .api.helpers import (
     config_snapshot,
@@ -54,6 +56,16 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_playbooks_delete)
     websocket_api.async_register_command(hass, ws_playbooks_set_enabled)
     websocket_api.async_register_command(hass, ws_playbooks_reset)
+    websocket_api.async_register_command(hass, ws_route_keywords_list)
+    websocket_api.async_register_command(hass, ws_route_keywords_update)
+    websocket_api.async_register_command(hass, ws_route_keywords_set_enabled)
+    websocket_api.async_register_command(hass, ws_route_keywords_reset)
+    websocket_api.async_register_command(hass, ws_recovery_hints_list)
+    websocket_api.async_register_command(hass, ws_recovery_hints_create)
+    websocket_api.async_register_command(hass, ws_recovery_hints_update)
+    websocket_api.async_register_command(hass, ws_recovery_hints_delete)
+    websocket_api.async_register_command(hass, ws_recovery_hints_set_enabled)
+    websocket_api.async_register_command(hass, ws_recovery_hints_reset)
     websocket_api.async_register_command(hass, ws_config_get)
     websocket_api.async_register_command(hass, ws_config_set)
     websocket_api.async_register_command(hass, ws_activity_list)
@@ -504,6 +516,208 @@ async def ws_playbooks_reset(hass: HomeAssistant, connection, msg: dict) -> None
     )
     connection.send_message(
         websocket_api.result_message(msg["id"], {"playbook": playbook})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/route_keywords/list",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_route_keywords_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    routes = await route_keywords_api.list_route_keywords(hass, msg["entry_id"])
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"routes": routes})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/route_keywords/update",
+        vol.Required("entry_id"): str,
+        vol.Required("route"): str,
+        vol.Required("route_keywords"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_route_keywords_update(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    route = await route_keywords_api.update_route_keywords(
+        hass,
+        msg["entry_id"],
+        msg["route"],
+        msg["route_keywords"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"route": route})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/route_keywords/set_enabled",
+        vol.Required("entry_id"): str,
+        vol.Required("route"): str,
+        vol.Required("enabled"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_route_keywords_set_enabled(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    route = await route_keywords_api.set_route_keywords_enabled(
+        hass,
+        msg["entry_id"],
+        msg["route"],
+        enabled=msg["enabled"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"route": route})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/route_keywords/reset",
+        vol.Required("entry_id"): str,
+        vol.Required("route"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_route_keywords_reset(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    route = await route_keywords_api.reset_route_keywords(
+        hass,
+        msg["entry_id"],
+        msg["route"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"route": route})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/recovery_hints/list",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_recovery_hints_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    hints = await recovery_hints_api.list_recovery_hints(hass, msg["entry_id"])
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"hints": hints})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/recovery_hints/create",
+        vol.Required("entry_id"): str,
+        vol.Required("hint"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_recovery_hints_create(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    hint = await recovery_hints_api.create_recovery_hint(
+        hass,
+        msg["entry_id"],
+        msg["hint"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"hint": hint})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/recovery_hints/update",
+        vol.Required("entry_id"): str,
+        vol.Required("rule_id"): str,
+        vol.Required("hint"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_recovery_hints_update(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    hint = await recovery_hints_api.update_recovery_hint(
+        hass,
+        msg["entry_id"],
+        msg["rule_id"],
+        msg["hint"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"hint": hint})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/recovery_hints/delete",
+        vol.Required("entry_id"): str,
+        vol.Required("rule_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_recovery_hints_delete(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    await recovery_hints_api.delete_recovery_hint(
+        hass,
+        msg["entry_id"],
+        msg["rule_id"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"success": True})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/recovery_hints/set_enabled",
+        vol.Required("entry_id"): str,
+        vol.Required("rule_id"): str,
+        vol.Required("enabled"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_recovery_hints_set_enabled(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    hint = await recovery_hints_api.set_recovery_hint_enabled(
+        hass,
+        msg["entry_id"],
+        msg["rule_id"],
+        enabled=msg["enabled"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"hint": hint})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/recovery_hints/reset",
+        vol.Required("entry_id"): str,
+        vol.Required("rule_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_recovery_hints_reset(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    hint = await recovery_hints_api.reset_recovery_hint(
+        hass,
+        msg["entry_id"],
+        msg["rule_id"],
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"hint": hint})
     )
 
 

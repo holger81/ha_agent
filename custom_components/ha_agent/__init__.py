@@ -39,6 +39,8 @@ from .const import (
 from .memory import async_load_memory
 from .panel import async_register_panel
 from .playbooks import close_playbook_store, get_playbook_store
+from .recovery_hints import close_recovery_hint_store, get_recovery_hint_store
+from .route_keywords import close_route_keyword_store, get_route_keyword_store
 from .skills.commands import async_setup_services
 from .skills.store import close_skill_store, get_skill_store
 from .thinking import normalize_thinking_level
@@ -142,6 +144,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     get_skill_store(hass, entry.entry_id)
     get_playbook_store(hass, entry.entry_id)
+    get_route_keyword_store(hass, entry.entry_id)
+    get_recovery_hint_store(hass, entry.entry_id)
     await async_setup_services(hass)
     await async_load_memory(hass, entry.entry_id)
     await async_load_threads(hass, entry.entry_id)
@@ -154,6 +158,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     close_skill_store(hass, entry.entry_id)
     close_playbook_store(hass, entry.entry_id)
+    close_route_keyword_store(hass, entry.entry_id)
+    close_recovery_hint_store(hass, entry.entry_id)
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

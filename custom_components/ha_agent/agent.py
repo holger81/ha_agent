@@ -45,6 +45,8 @@ from .loop_policy import (
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
 from .playbooks import async_select_playbook
+from .recovery_hints import async_recovery_hints
+from .route_keywords import async_route_keyword_map
 from .router import TaskRoute, backend_for_route, classify_route
 from .skills.commands import (
     _MANUAL_SAVE,
@@ -270,6 +272,7 @@ async def _process_tool_calls(
     controlled_entity_ids: list[str],
     loop_state: LoopState,
     trace: TurnTrace | None = None,
+    hint_rules: list[Any] | None = None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run tool calls and yield chat progress deltas."""
     for call in calls:
@@ -310,6 +313,7 @@ async def _process_tool_calls(
             raw_output,
             hass=hass,
             loop_state=loop_state,
+            hint_rules=hint_rules,
         )
         phase = "error" if output.startswith("Tool error:") else "done"
         verification_failed = False
@@ -357,6 +361,7 @@ async def _process_embedded_tool_calls(
     controlled_entity_ids: list[str],
     loop_state: LoopState,
     trace: TurnTrace | None = None,
+    hint_rules: list[Any] | None = None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Parse embedded tool markup, run tools, and yield progress deltas."""
     embedded = parse_embedded_tool_calls(content)
@@ -382,6 +387,7 @@ async def _process_embedded_tool_calls(
         controlled_entity_ids=controlled_entity_ids,
         loop_state=loop_state,
         trace=trace,
+        hint_rules=hint_rules,
     ):
         yield delta
 
@@ -540,8 +546,15 @@ async def run_agent(
         yield AgentDelta(content=reply)
         return
 
-    route = classify_route(user_text, exposed_entities, router_config)
+    route_keywords = await async_route_keyword_map(hass, entry_id)
+    route = classify_route(
+        user_text,
+        exposed_entities,
+        router_config,
+        route_keywords=route_keywords,
+    )
     record_route(hass, entry_id, route)
+    hint_rules = await async_recovery_hints(hass, entry_id)
 
     matched_skills = []
     skill_hints = ""
@@ -613,7 +626,7 @@ async def run_agent(
         hass,
         entry_id,
         llm,
-        backend,
+        router_config.classifier_backend or backend,
         user_text=user_text,
         route_value=route.value,
         history=history,
@@ -702,6 +715,7 @@ async def run_agent(
                     controlled_entity_ids=controlled_entity_ids,
                     loop_state=loop_state,
                     trace=trace,
+                    hint_rules=hint_rules,
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)
@@ -733,6 +747,7 @@ async def run_agent(
                     controlled_entity_ids=controlled_entity_ids,
                     loop_state=loop_state,
                     trace=trace,
+                    hint_rules=hint_rules,
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)
@@ -771,6 +786,7 @@ async def run_agent(
                     controlled_entity_ids=controlled_entity_ids,
                     loop_state=loop_state,
                     trace=trace,
+                    hint_rules=hint_rules,
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)
@@ -802,6 +818,7 @@ async def run_agent(
                     controlled_entity_ids=controlled_entity_ids,
                     loop_state=loop_state,
                     trace=trace,
+                    hint_rules=hint_rules,
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)
