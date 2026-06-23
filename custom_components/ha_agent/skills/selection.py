@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from ..config_helpers import LlmBackend
 from ..const import LOGGER
+from ..context import is_generic_chitchat
 from ..llm_client import LlmClient
 from .discovery import build_discovery_query
 from .models import Skill
@@ -242,7 +243,7 @@ async def resolve_skills_for_turn(
     max_inject: int = 3,
 ) -> list[Skill]:
     """Pick skill(s) for a turn via FTS candidates and LLM selection."""
-    if max_inject <= 0:
+    if max_inject <= 0 or is_generic_chitchat(user_text):
         return []
 
     store = get_skill_store(hass, entry_id)
@@ -261,9 +262,6 @@ async def resolve_skills_for_turn(
     fts_matches = _filter_by_route(fts_matches, route)
     if not candidates and not fts_matches:
         return []
-
-    if len(candidates) == 1:
-        return candidates[:max_inject]
 
     # FTS already pinned a single route-relevant skill — skip the extra LLM call.
     if len(fts_matches) == 1:

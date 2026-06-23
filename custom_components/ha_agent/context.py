@@ -118,6 +118,22 @@ def is_affirmative(query: str) -> bool:
     return bool(_AFFIRMATIVE.match(query.strip()))
 
 
+_GENERIC_CHITCHAT = re.compile(
+    r"^(?:"
+    r"hi|hello|hey|yo|howdy|"
+    r"good\s+(?:morning|afternoon|evening|night)|"
+    r"thanks|thank\s+you|thx|"
+    r"ok|okay|bye|goodbye|see\s+ya"
+    r")[!.?\s]*$",
+    re.IGNORECASE,
+)
+
+
+def is_generic_chitchat(query: str) -> bool:
+    """Return True for greetings and other non-task small talk."""
+    return bool(_GENERIC_CHITCHAT.match(query.strip()))
+
+
 def is_news_query(query: str, keywords: list[str] | None = None) -> bool:
     """Return True when the user asks for news.
 

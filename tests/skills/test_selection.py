@@ -46,20 +46,22 @@ def _load(name: str):
         sys.modules["homeassistant.core"] = ha_core
 
     deps = {
-        "skills.selection": [
-            "const",
-            "config_helpers",
-            "llm_client",
-            "skills.discovery",
-            "skills.models",
-            "skills.store",
-        ],
+    "skills.selection": [
+        "const",
+        "config_helpers",
+        "llm_client",
+        "skills.discovery",
+        "skills.models",
+        "skills.store",
+        "context",
+    ],
         "skills.discovery": ["skills.models", "skills.store", "skills.format"],
         "skills.store": ["skills.models", "const"],
         "skills.models": [],
         "config_helpers": ["const"],
         "llm_client": ["const", "config_helpers"],
         "const": [],
+        "context": [],
     }
     root = name if not name.startswith("skills.") else name.split(".", 1)[1]
     for dep in deps.get(name, deps.get(f"skills.{root}", [])):
@@ -316,7 +318,11 @@ async def test_single_fts_match_still_respects_route(monkeypatch) -> None:
 
     hass = MagicMock()
     hass.async_add_executor_job = AsyncMock(side_effect=_executor)
-    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        selection,
+        "get_skill_store",
+        MagicMock(return_value=MagicMock()),
+    )
     monkeypatch.setattr(
         selection,
         "_load_skill_candidates",
@@ -333,6 +339,55 @@ async def test_single_fts_match_still_respects_route(monkeypatch) -> None:
         MagicMock(),
         "what are todays news",
         route="news",
+    )
+
+    assert result == []
+    llm.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_greeting_does_not_auto_select_only_skill(monkeypatch) -> None:
+    """A lone catalog skill must not attach to generic greetings."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    email_skill = Skill(
+        id="email-1",
+        slug="advanced-email",
+        title="Advanced Email Management",
+        description="Check inbox and read unread email messages",
+        triggers=["email", "inbox"],
+        body="",
+        tool_steps=[],
+    )
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(
+        selection,
+        "get_skill_store",
+        MagicMock(return_value=MagicMock()),
+    )
+    monkeypatch.setattr(
+        selection,
+        "_load_skill_candidates",
+        MagicMock(return_value=([email_skill], [])),
+    )
+
+    llm = MagicMock()
+    llm.chat = AsyncMock()
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        MagicMock(),
+        "hi",
+        route="chat",
     )
 
     assert result == []
