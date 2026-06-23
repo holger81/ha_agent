@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import HomeAssistantError
@@ -11,6 +12,14 @@ from .llm_client import ToolCall
 
 if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
+
+_DISCOVERY_TOOL = re.compile(
+    r"(searchToolsForDomain|searchTool|tools/list|tools_list)",
+    re.IGNORECASE,
+)
+_TOOL_OUTPUT_MAX_CHARS = 10_000
+_DISCOVERY_OUTPUT_MAX_CHARS = 6_000
+_DISCOVERY_MAX_TOOLS = 40
 
 
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
@@ -278,3 +287,115 @@ def tool_result_message(call: ToolCall, output: str) -> dict[str, str]:
         "tool_call_id": call.id,
         "content": output,
     }
+
+
+def is_discovery_tool_name(tool_name: str) -> bool:
+    """Return True for MCP discovery/list tools."""
+    return bool(_DISCOVERY_TOOL.search(tool_name or ""))
+
+
+def _truncate_text(text: str, *, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return (
+        f"{text[: max_chars - 80]}\n\n"
+        f"[truncated — {len(text)} chars total; use narrower tool arguments]"
+    )
+
+
+def _tool_entry_name(entry: dict[str, Any]) -> str:
+    for key in ("toolName", "name"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _compact_tool_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    if name := _tool_entry_name(entry):
+        compact["toolName"] = name
+    description = entry.get("description")
+    if isinstance(description, str) and description.strip():
+        compact["description"] = description.strip()[:240]
+    context = entry.get("serverLlmContext")
+    if isinstance(context, str) and context.strip():
+        compact["serverLlmContext"] = context.strip()[:400]
+    domain = entry.get("domain")
+    if isinstance(domain, str) and domain.strip():
+        compact["domain"] = domain.strip()
+    return compact
+
+
+def _parse_discovery_payload(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    meta: dict[str, Any] = {}
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)], meta
+    if not isinstance(data, dict):
+        return [], meta
+
+    for key in ("mode", "domain", "hasMore", "offset", "limit", "total"):
+        if key in data:
+            meta[key] = data[key]
+
+    for key in ("tools", "results", "items"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)], meta
+
+    if _tool_entry_name(data):
+        return [data], meta
+    return [], meta
+
+
+def compact_discovery_tool_output(
+    output: str,
+    *,
+    max_tools: int = _DISCOVERY_MAX_TOOLS,
+    max_chars: int = _DISCOVERY_OUTPUT_MAX_CHARS,
+) -> str:
+    """Shrink discovery tool JSON so tool schemas do not blow the LLM context."""
+    if output.startswith("Tool error:"):
+        return output
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        return _truncate_text(output, max_chars=max_chars)
+
+    entries, meta = _parse_discovery_payload(data)
+    if not entries:
+        return _truncate_text(output, max_chars=max_chars)
+
+    shown = max(1, max_tools)
+    while shown > 0:
+        compacted = [
+            item
+            for item in (_compact_tool_entry(entry) for entry in entries[:shown])
+            if item
+        ]
+        result: dict[str, Any] = dict(meta)
+        if compacted:
+            result["tools"] = compacted
+        if len(entries) > shown:
+            result["truncated"] = True
+            result["shown"] = shown
+            result["total"] = meta.get("total", len(entries))
+            result["note"] = (
+                "Tool list shortened for context. Pick the best toolName and "
+                "call callTool; use searchTool with a narrower query if needed."
+            )
+        text = json.dumps(result, ensure_ascii=False)
+        if len(text) <= max_chars:
+            return text
+        shown = max(0, shown // 2)
+
+    return _truncate_text(output, max_chars=max_chars)
+
+
+def compact_tool_output(tool_name: str, output: str) -> str:
+    """Bound tool result size before it is appended to the LLM conversation."""
+    if output.startswith("Tool error:"):
+        return output
+    if is_discovery_tool_name(tool_name):
+        return compact_discovery_tool_output(output)
+    return _truncate_text(output, max_chars=_TOOL_OUTPUT_MAX_CHARS)

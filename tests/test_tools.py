@@ -207,3 +207,41 @@ def test_memory_assistant_text_appends_controlled_entities() -> None:
         ["light.dining_room_ceiling"],
     )
     assert "light.dining_room_ceiling" in text
+
+
+def test_compact_discovery_tool_output_strips_schemas() -> None:
+    """Discovery results keep names and descriptions, not full inputSchema."""
+    huge_schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    payload = {
+        "mode": "filtered",
+        "domain": "smart-home",
+        "tools": [
+            {
+                "toolName": f"home_assistant__tool_{index}",
+                "description": f"Tool {index}",
+                "inputSchema": huge_schema,
+                "serverLlmContext": "Use INBOX for unread mail.",
+            }
+            for index in range(80)
+        ],
+    }
+    compact = tools.compact_discovery_tool_output(json.dumps(payload))
+
+    parsed = json.loads(compact)
+    assert parsed["domain"] == "smart-home"
+    assert len(parsed["tools"]) <= tools._DISCOVERY_MAX_TOOLS
+    assert parsed["truncated"] is True
+    assert "inputSchema" not in compact
+    assert "home_assistant__tool_0" in compact
+    assert len(compact) < len(json.dumps(payload))
+
+
+def test_compact_tool_output_truncates_large_non_discovery_results() -> None:
+    """Non-discovery tool output is capped with a truncation notice."""
+    output = tools.compact_tool_output(
+        "mail_mcp__imap_fetch_message",
+        "x" * 20_000,
+    )
+
+    assert "[truncated" in output
+    assert len(output) < 20_000

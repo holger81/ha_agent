@@ -667,6 +667,9 @@ def finalize_output(
     hint_rules: list[Any] | None = None,
 ) -> str:
     """Apply error enrichment and optional HA verification to tool output."""
+    from .tools import compact_tool_output
+
+    output = compact_tool_output(tool_name, output)
     enriched = enrich_tool_output(tool_name, arguments, output, rules=hint_rules)
     if hass is None:
         return enriched
