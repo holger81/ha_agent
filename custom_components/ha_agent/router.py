@@ -72,8 +72,17 @@ def backend_for_route(
     *,
     chat_backend: LlmBackend,
     router_config: RouterConfig,
+    prefer_action: bool = True,
 ) -> LlmBackend:
     """Return the LLM backend for the active route."""
-    if route == TaskRoute.HA_ACTION and router_config.action_backend:
+    if (
+        prefer_action
+        and route == TaskRoute.HA_ACTION
+        and router_config.action_backend
+    ):
         return router_config.action_backend
+    if route == TaskRoute.EMAIL and router_config.email_backend:
+        return router_config.email_backend
+    if route == TaskRoute.NEWS and router_config.news_backend:
+        return router_config.news_backend
     return chat_backend

@@ -19,6 +19,7 @@ class EvalCase:
     expected_tool: str | None = None
     expected_tool_args: dict[str, Any] | None = None
     expected_text_contains: list[str] = field(default_factory=list)
+    expected_playbook_route: str | None = None
     mock_mcp_responses: list[str] = field(default_factory=list)
     max_iterations: int = 6
 

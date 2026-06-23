@@ -70,13 +70,28 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
         max_iterations=4,
     ),
     EvalCase(
-        id="classifier_evening",
+        id="classifier_movie_night",
         task="classifier",
-        user_text="good evening, dim the living room lights for movie night",
-        expected_tool=None,
-        expected_text_contains=[],
+        user_text="dim the living room lights for movie night",
+        expected_playbook_route="movie_night",
         mock_mcp_responses=[],
-        max_iterations=2,
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="classifier_email_inbox",
+        task="classifier",
+        user_text="how many unread emails do I have in my inbox",
+        expected_playbook_route="email",
+        mock_mcp_responses=[],
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="classifier_news_briefing",
+        task="classifier",
+        user_text="give me today's news briefing",
+        expected_playbook_route="news",
+        mock_mcp_responses=[],
+        max_iterations=1,
     ),
 )
 

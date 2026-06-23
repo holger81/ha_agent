@@ -98,3 +98,24 @@ def test_router_config_includes_classifier_backend():
     router = ch.get_router_config(entry)
     assert router.classifier_backend is not None
     assert router.classifier_backend.model == "fast-classifier"
+
+
+def test_email_backend_none_when_disabled():
+    ch = _load_config_helpers()
+    entry = _Entry({"llm_model": "chat-model"})
+    assert ch.get_email_backend(entry) is None
+
+
+def test_email_backend_when_enabled():
+    ch = _load_config_helpers()
+    entry = _Entry(
+        {
+            "email_model_enabled": True,
+            "email_llm_model": "mail-model",
+            "llm_base_url": "http://chat:9292/v1",
+        }
+    )
+    backend = ch.get_email_backend(entry)
+    assert backend is not None
+    assert backend.model == "mail-model"
+    assert backend.thinking_level == "off"

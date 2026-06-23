@@ -191,6 +191,42 @@ def test_eval_candidate_models_prefers_loaded() -> None:
     assert selected == ["b", "a"]
 
 
+def test_recommendations_to_preset() -> None:
+    preset_mod = _load("eval.preset", COMPONENT / "eval" / "preset.py")
+    preset = preset_mod.recommendations_to_preset(
+        [
+            {"setting": "parallel", "value": "2", "reason": "Single user"},
+            {"setting": "ctx-size", "value": "65536", "reason": "Long context"},
+        ]
+    )
+    assert "parallel = 2" in preset
+    assert "ctx-size = 65536" in preset
+
+
+def test_build_host_context_from_loaded_model() -> None:
+    host_mod = _load("eval.host_context", COMPONENT / "eval" / "host_context.py")
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        router_role="router",
+        max_instances=3,
+        model_details=[
+            llm_server.ModelInfo(
+                model_id="gemma",
+                status="loaded",
+                raw={
+                    "status": {
+                        "value": "loaded",
+                        "args": ["--parallel", "2", "--n-gpu-layers", "99"],
+                    }
+                },
+            )
+        ],
+    )
+    context = host_mod.build_host_context(caps)
+    assert context["loaded_model_args"] == ["--parallel", "2", "--n-gpu-layers", "99"]
+    assert context["max_instances"] == 3
+
+
 def test_eval_store_persists_runs_and_download_history() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "eval.db"

@@ -85,6 +85,7 @@ class ServerCapabilities:
     router_role: str | None = None
     max_instances: int | None = None
     models_autoload: bool | None = None
+    props_writable: bool = False
     health: ServerHealth | None = None
     props: ServerProps | None = None
     slots: list[ServerSlot] = field(default_factory=list)
@@ -105,6 +106,7 @@ class ServerCapabilities:
             "router_role": self.router_role,
             "max_instances": self.max_instances,
             "models_autoload": self.models_autoload,
+            "props_writable": self.props_writable,
             "health": self.health.raw if self.health else None,
             "props": self.props.raw if self.props else None,
             "slots": [slot.raw for slot in self.slots],
@@ -126,6 +128,7 @@ class ServerCapabilities:
             "router_role": self.router_role,
             "max_instances": self.max_instances,
             "models_autoload": self.models_autoload,
+            "props_writable": self.props_writable,
             "total_slots": props.total_slots if props else None,
             "n_ctx": props.n_ctx if props else None,
             "model_path": props.model_path if props else None,
@@ -199,6 +202,7 @@ class LlmServerProbe:
             await self._try_endpoint(root, path, headers, timeout, caps, handler)
 
         await self._enrich_router_model_details(root, headers, timeout, caps)
+        await self._probe_props_writable(root, headers, timeout, caps)
         return caps
 
     async def _fetch_models(
@@ -268,6 +272,29 @@ class LlmServerProbe:
             caps,
             self._parse_slots,
         )
+
+    async def _probe_props_writable(
+        self,
+        root: str,
+        headers: dict[str, str],
+        timeout: aiohttp.ClientTimeout,
+        caps: ServerCapabilities,
+    ) -> None:
+        """Detect whether POST /props is enabled on the server."""
+        if caps.router_role == "router":
+            caps.props_writable = False
+            return
+        url = f"{root}/props"
+        try:
+            async with self._session.post(
+                url,
+                json={},
+                headers={**headers, "Content-Type": "application/json"},
+                timeout=timeout,
+            ) as response:
+                caps.props_writable = response.status in {200, 204}
+        except (TimeoutError, aiohttp.ClientError):
+            caps.props_writable = False
 
     async def _try_endpoint(
         self,
@@ -433,3 +460,35 @@ async def probe_server(
     """Convenience wrapper for a one-shot server probe."""
     probe = LlmServerProbe(session)
     return await probe.probe(backend, models=models)
+
+
+async def apply_props_settings(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    settings: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Attempt to apply llama.cpp server settings via POST /props."""
+    root = server_root_from_base_url(backend.base_url)
+    url = f"{root}/props"
+    headers = _headers(backend)
+    headers["Content-Type"] = "application/json"
+    timeout = aiohttp.ClientTimeout(total=15)
+    results: list[dict[str, Any]] = []
+    for key, value in settings.items():
+        entry = {"setting": key, "value": value, "ok": False}
+        try:
+            async with session.post(
+                url,
+                json={key: value},
+                headers=headers,
+                timeout=timeout,
+            ) as response:
+                body = await response.text()
+                entry["status"] = response.status
+                entry["ok"] = response.status in {200, 204}
+                if not entry["ok"]:
+                    entry["error"] = body[:200]
+        except (TimeoutError, aiohttp.ClientError) as err:
+            entry["error"] = str(err)
+        results.append(entry)
+    return results

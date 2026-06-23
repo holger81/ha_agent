@@ -649,14 +649,11 @@ async def run_agent(
         reset_iteration_flags(loop_state)
         if iteration > 0:
             inject_loop_context(messages, loop_state)
-        active_backend = (
-            backend
-            if use_chat_backend
-            else backend_for_route(
-                route,
-                chat_backend=backend,
-                router_config=router_config,
-            )
+        active_backend = backend_for_route(
+            route,
+            chat_backend=backend,
+            router_config=router_config,
+            prefer_action=route == TaskRoute.HA_ACTION and not use_chat_backend,
         )
 
         if iteration > 0 and agent_config.show_reasoning_in_chat:

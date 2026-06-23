@@ -65,6 +65,12 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
             router.classifier_backend.model if router.classifier_backend else None
         ),
         "classifier_llm_base_url": data.get("classifier_llm_base_url", ""),
+        "email_model_enabled": router.email_backend is not None,
+        "email_model": router.email_backend.model if router.email_backend else None,
+        "email_llm_base_url": data.get("email_llm_base_url", ""),
+        "news_model_enabled": router.news_backend is not None,
+        "news_model": router.news_backend.model if router.news_backend else None,
+        "news_llm_base_url": data.get("news_llm_base_url", ""),
         "max_iterations": agent.max_iterations,
         "history_turns": agent.history_turns,
         "enable_streaming": agent.enable_streaming,

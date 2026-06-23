@@ -408,7 +408,7 @@ class HaAgentPanel extends HTMLElement {
 
   async _applyEvalRecommendations() {
     if (!this._entryId) return;
-    if (!confirm("Apply recommended chat/action/classifier models from the latest eval?")) {
+    if (!confirm("Apply recommended chat, action, email, news, and classifier models from the latest eval?")) {
       return;
     }
     const data = await this._call("ha_agent/eval/apply", {
@@ -416,6 +416,40 @@ class HaAgentPanel extends HTMLElement {
     });
     this._config = data.config || this._config;
     this._evalNotice = "Applied eval model recommendations.";
+    this._render();
+  }
+
+  async _applyEvalServerSettings() {
+    if (!this._entryId) return;
+    if (
+      !confirm(
+        "Try to apply recommended llama.cpp server settings via POST /props? Router servers usually need a preset edit instead.",
+      )
+    ) {
+      return;
+    }
+    const data = await this._call("ha_agent/eval/apply_settings", {
+      entry_id: this._entryId,
+    });
+    const applied = (data.applied || []).length;
+    const failed = (data.failed || []).length;
+    this._evalNotice = `Server settings: ${applied} applied, ${failed} failed.`;
+    this._render();
+  }
+
+  async _copyEvalPreset() {
+    const preset = this._evalStatus?.run?.settings_recommendation?.preset_ini || "";
+    if (!preset.trim()) {
+      this._evalNotice = "No preset available yet — run eval first.";
+      this._render();
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(preset);
+      this._evalNotice = "Copied llama.cpp preset to clipboard.";
+    } catch (_err) {
+      this._evalNotice = "Could not copy preset — select the preset text manually.";
+    }
     this._render();
   }
 
@@ -1932,6 +1966,12 @@ class HaAgentPanel extends HTMLElement {
         <label><input type="checkbox" data-config-bool="classifier_model_enabled" ${c.classifier_model_enabled ? "checked" : ""}/> Use a dedicated playbook classifier model</label>
         <label>Classifier model<input data-config="classifier_llm_model" value="${this._escape(c.classifier_model || "")}" placeholder="defaults to chat model" /></label>
         <label>Classifier base URL<input data-config="classifier_llm_base_url" value="${this._escape(c.classifier_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
+        <label><input type="checkbox" data-config-bool="email_model_enabled" ${c.email_model_enabled ? "checked" : ""}/> Use a dedicated email-route model</label>
+        <label>Email model<input data-config="email_llm_model" value="${this._escape(c.email_model || "")}" placeholder="defaults to chat model" /></label>
+        <label>Email base URL<input data-config="email_llm_base_url" value="${this._escape(c.email_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
+        <label><input type="checkbox" data-config-bool="news_model_enabled" ${c.news_model_enabled ? "checked" : ""}/> Use a dedicated news-route model</label>
+        <label>News model<input data-config="news_llm_model" value="${this._escape(c.news_model || "")}" placeholder="defaults to chat model" /></label>
+        <label>News base URL<input data-config="news_llm_base_url" value="${this._escape(c.news_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
         <label><input type="checkbox" data-config-bool="show_reasoning_in_chat" ${c.show_reasoning_in_chat ? "checked" : ""}/> Show model reasoning in chat</label>
         <label><input type="checkbox" data-config-bool="enable_streaming" ${c.enable_streaming ? "checked" : ""}/> Enable streaming</label>
         <label><input type="checkbox" data-config-bool="skills_learning_enabled" ${c.skills_learning_enabled ? "checked" : ""}/> Skill learning</label>
@@ -2001,6 +2041,7 @@ class HaAgentPanel extends HTMLElement {
         </tr>`,
       )
       .join("");
+    const presetIni = recommendation.preset_ini || "";
     const running = this._evalStatus?.running ? "Running" : run.status || "idle";
     return `
       <div class="settings-grid">
@@ -2012,8 +2053,11 @@ class HaAgentPanel extends HTMLElement {
           <button data-action="eval-probe">Probe server</button>
           <button data-action="eval-start">Run eval suite</button>
           <button data-action="eval-apply">Apply model picks</button>
+          <button data-action="eval-apply-settings">Apply server settings</button>
+          <button data-action="eval-copy-preset">Copy preset</button>
         </div>
         ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
+        ${presetIni ? `<label>llama.cpp preset<textarea readonly rows="8">${this._escape(presetIni)}</textarea></label>` : ""}
         ${assignments ? `<h4>Recommended models per task</h4><ul>${assignments}</ul>` : ""}
         ${recommendation.summary ? `<p>${this._escape(recommendation.summary)}</p>` : ""}
         <table>
@@ -2584,6 +2628,16 @@ class HaAgentPanel extends HTMLElement {
       .querySelector('[data-action="eval-apply"]')
       ?.addEventListener("click", async () => {
         await this._applyEvalRecommendations();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-apply-settings"]')
+      ?.addEventListener("click", async () => {
+        await this._applyEvalServerSettings();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-copy-preset"]')
+      ?.addEventListener("click", async () => {
+        await this._copyEvalPreset();
       });
 
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {

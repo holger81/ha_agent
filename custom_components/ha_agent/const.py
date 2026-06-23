@@ -42,6 +42,14 @@ CONF_CLASSIFIER_MODEL_ENABLED = "classifier_model_enabled"
 CONF_CLASSIFIER_LLM_BASE_URL = "classifier_llm_base_url"
 CONF_CLASSIFIER_LLM_MODEL = "classifier_llm_model"
 
+CONF_EMAIL_MODEL_ENABLED = "email_model_enabled"
+CONF_EMAIL_LLM_BASE_URL = "email_llm_base_url"
+CONF_EMAIL_LLM_MODEL = "email_llm_model"
+
+CONF_NEWS_MODEL_ENABLED = "news_model_enabled"
+CONF_NEWS_LLM_BASE_URL = "news_llm_base_url"
+CONF_NEWS_LLM_MODEL = "news_llm_model"
+
 DEFAULT_LLM_BASE_URL = "http://192.168.10.31:9292/v1"
 DEFAULT_LLM_MODEL = "unsloth/gemma-4-26B-A4B-it-GGUF:IQ4_XS"
 DEFAULT_LLM_MAX_TOKENS = 4096
@@ -84,7 +92,7 @@ DEFAULT_TOOL_INSTRUCTIONS = (
 # Saved during setup before MCP-compliant defaults; reset on upgrade.
 LEGACY_TOOL_INSTRUCTION_MARKERS = ("mcp_call_tool",)
 
-CONFIG_ENTRY_VERSION = 7
+CONFIG_ENTRY_VERSION = 8
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"

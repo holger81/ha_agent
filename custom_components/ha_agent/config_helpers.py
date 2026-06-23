@@ -19,6 +19,9 @@ from .const import (
     CONF_CONVERSATION_ENABLE_STREAMING,
     CONF_CONVERSATION_HISTORY_TURNS,
     CONF_CONVERSATION_SHOW_REASONING,
+    CONF_EMAIL_LLM_BASE_URL,
+    CONF_EMAIL_LLM_MODEL,
+    CONF_EMAIL_MODEL_ENABLED,
     CONF_LLM_API_KEY,
     CONF_LLM_BASE_URL,
     CONF_LLM_ENABLE_THINKING,
@@ -32,6 +35,9 @@ from .const import (
     CONF_MCP_HEALTH_URL,
     CONF_MCP_TIMEOUT,
     CONF_MCP_URL,
+    CONF_NEWS_LLM_BASE_URL,
+    CONF_NEWS_LLM_MODEL,
+    CONF_NEWS_MODEL_ENABLED,
     CONF_SKILLS_AUTO_SAVE,
     CONF_SKILLS_LEARNING_ENABLED,
     CONF_SKILLS_MAX_INJECT,
@@ -107,11 +113,13 @@ class SkillsConfig:
 
 @dataclass(frozen=True, slots=True)
 class RouterConfig:
-    """Optional action-model routing settings."""
+    """Optional per-route LLM backend settings."""
 
     action_enabled: bool
     action_backend: LlmBackend | None
     classifier_backend: LlmBackend | None = None
+    email_backend: LlmBackend | None = None
+    news_backend: LlmBackend | None = None
 
 
 def default_mcp_health_url(mcp_url: str) -> str:
@@ -198,6 +206,52 @@ def get_classifier_backend(entry: ConfigEntry) -> LlmBackend | None:
     )
 
 
+def get_email_backend(entry: ConfigEntry) -> LlmBackend | None:
+    """Return a dedicated email-route backend when configured."""
+    data = entry.data
+    if not data.get(CONF_EMAIL_MODEL_ENABLED):
+        return None
+
+    model = data.get(CONF_EMAIL_LLM_MODEL)
+    if not model:
+        return None
+
+    chat = get_llm_backend(entry)
+    base_url = (data.get(CONF_EMAIL_LLM_BASE_URL) or chat.base_url).rstrip("/")
+    return LlmBackend(
+        base_url=base_url,
+        model=model,
+        api_key=chat.api_key,
+        max_tokens=chat.max_tokens,
+        temperature=chat.temperature,
+        timeout=chat.timeout,
+        thinking_level="off",
+    )
+
+
+def get_news_backend(entry: ConfigEntry) -> LlmBackend | None:
+    """Return a dedicated news-route backend when configured."""
+    data = entry.data
+    if not data.get(CONF_NEWS_MODEL_ENABLED):
+        return None
+
+    model = data.get(CONF_NEWS_LLM_MODEL)
+    if not model:
+        return None
+
+    chat = get_llm_backend(entry)
+    base_url = (data.get(CONF_NEWS_LLM_BASE_URL) or chat.base_url).rstrip("/")
+    return LlmBackend(
+        base_url=base_url,
+        model=model,
+        api_key=chat.api_key,
+        max_tokens=chat.max_tokens,
+        temperature=chat.temperature,
+        timeout=chat.timeout,
+        thinking_level="off",
+    )
+
+
 def get_skills_config(entry: ConfigEntry) -> SkillsConfig:
     """Return skills settings for the config entry."""
     data = entry.data
@@ -215,6 +269,8 @@ def get_router_config(entry: ConfigEntry) -> RouterConfig:
         action_enabled=bool(entry.data.get(CONF_ACTION_MODEL_ENABLED)),
         action_backend=get_action_backend(entry),
         classifier_backend=get_classifier_backend(entry),
+        email_backend=get_email_backend(entry),
+        news_backend=get_news_backend(entry),
     )
 
 

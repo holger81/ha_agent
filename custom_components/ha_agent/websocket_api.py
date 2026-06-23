@@ -80,6 +80,7 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_eval_cancel)
     websocket_api.async_register_command(hass, ws_eval_probe)
     websocket_api.async_register_command(hass, ws_eval_apply)
+    websocket_api.async_register_command(hass, ws_eval_apply_settings)
     websocket_api.async_register_command(hass, ws_eval_discover)
 
 
@@ -960,6 +961,25 @@ async def ws_eval_probe(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_eval_apply(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     result = await eval_api.apply_eval_recommendations(
+        hass,
+        msg["entry_id"],
+        run_id=msg.get("run_id"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/apply_settings",
+        **_entry_id_schema({vol.Optional("run_id"): str}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_apply_settings(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await eval_api.apply_server_settings(
         hass,
         msg["entry_id"],
         run_id=msg.get("run_id"),

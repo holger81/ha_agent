@@ -158,5 +158,38 @@ def test_backend_for_route_returns_action_backend() -> None:
         router.TaskRoute.HA_ACTION,
         chat_backend=chat,
         router_config=router_config,
+        prefer_action=True,
     )
     assert backend.model == "action-model"
+
+
+def test_backend_for_route_returns_email_backend() -> None:
+    chat = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="chat-model",
+        api_key=None,
+        max_tokens=512,
+        temperature=0.3,
+        timeout=30,
+        thinking_level="off",
+    )
+    email = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="email-model",
+        api_key=None,
+        max_tokens=512,
+        temperature=0.3,
+        timeout=30,
+        thinking_level="off",
+    )
+    router_config = config_helpers.RouterConfig(
+        action_enabled=False,
+        action_backend=None,
+        email_backend=email,
+    )
+    backend = router.backend_for_route(
+        router.TaskRoute.EMAIL,
+        chat_backend=chat,
+        router_config=router_config,
+    )
+    assert backend.model == "email-model"

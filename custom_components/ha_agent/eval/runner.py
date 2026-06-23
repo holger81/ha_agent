@@ -17,7 +17,9 @@ from ..config_helpers import (
     get_action_backend,
     get_agent_config,
     get_classifier_backend,
+    get_email_backend,
     get_llm_backend,
+    get_news_backend,
     get_router_config,
 )
 from ..const import DATA_KEY, LOGGER
@@ -25,9 +27,14 @@ from ..llm_client import LlmClient
 from ..llm_server import eval_candidate_models, probe_server
 from ..skills.models import TurnTrace
 from .cases import list_eval_cases
+from .classifier_runner import run_classifier_case
 from .mcp_mock import EvalMcpClient
 from .models import EVAL_TASKS, EvalCaseScore, EvalRun, EvalRunState
-from .recommender import recommend_settings, settings_recommendation_to_dict
+from .recommender import (
+    finalize_settings_recommendation,
+    recommend_settings,
+    settings_recommendation_to_dict,
+)
 from .scorer import aggregate_task_scores, score_case
 from .store import get_eval_store
 
@@ -131,10 +138,16 @@ async def run_eval_suite(
     configured_models = [chat_backend.model]
     action_backend = get_action_backend(entry)
     classifier_backend = get_classifier_backend(entry)
+    email_backend = get_email_backend(entry)
+    news_backend = get_news_backend(entry)
     if action_backend:
         configured_models.append(action_backend.model)
     if classifier_backend:
         configured_models.append(classifier_backend.model)
+    if email_backend:
+        configured_models.append(email_backend.model)
+    if news_backend:
+        configured_models.append(news_backend.model)
     skills_config = SkillsConfig(
         learning_enabled=False,
         auto_save=False,
@@ -202,6 +215,43 @@ async def run_eval_suite(
                         "task": case.task,
                         "case_id": case.id,
                     }
+                    if case.task == "classifier":
+                        classifier_backend = LlmBackend(
+                            base_url=chat_backend.base_url,
+                            model=model,
+                            api_key=chat_backend.api_key,
+                            max_tokens=256,
+                            temperature=0.0,
+                            timeout=chat_backend.timeout,
+                            thinking_level="off",
+                        )
+                        try:
+                            run.case_scores.append(
+                                await run_classifier_case(
+                                    llm,
+                                    classifier_backend,
+                                    case,
+                                )
+                            )
+                        except Exception as err:
+                            LOGGER.warning(
+                                "Classifier eval case %s failed for %s: %s",
+                                case.id,
+                                model,
+                                err,
+                            )
+                            run.case_scores.append(
+                                EvalCaseScore(
+                                    case_id=case.id,
+                                    task=case.task,
+                                    model=model,
+                                    score=0.0,
+                                    passed=False,
+                                    details=[str(err)],
+                                )
+                            )
+                        continue
+
                     mcp = EvalMcpClient(
                         session_prompt=(
                             "MCP SERVER INSTRUCTIONS:\n"
@@ -273,6 +323,10 @@ async def run_eval_suite(
                         chat_backend,
                         capabilities=capabilities,
                         task_scores=run.task_scores,
+                    )
+                    recommendation = finalize_settings_recommendation(
+                        recommendation,
+                        capabilities=capabilities,
                     )
                     run.settings_recommendation = settings_recommendation_to_dict(
                         recommendation

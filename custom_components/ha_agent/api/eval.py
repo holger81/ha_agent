@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
+from ..config_helpers import get_llm_backend
 from ..eval.model_registry import get_model_registry, propose_models_from_web
+from ..eval.preset import recommendations_to_preset
 from ..eval.runner import (
     eval_run_to_dict,
     get_eval_state,
@@ -16,6 +19,7 @@ from ..eval.runner import (
     start_eval_background,
 )
 from ..eval.store import get_eval_store
+from ..llm_server import apply_props_settings
 from .config import set_config
 
 
@@ -113,12 +117,20 @@ async def apply_eval_recommendations(
     updates: dict[str, Any] = {}
     chat = assignments.get("chat") or {}
     action = assignments.get("action") or {}
+    email = assignments.get("email") or {}
+    news = assignments.get("news") or {}
     classifier = assignments.get("classifier") or {}
     if isinstance(chat, dict) and chat.get("model"):
         updates["llm_model"] = chat["model"]
     if isinstance(action, dict) and action.get("model"):
         updates["action_model_enabled"] = True
         updates["action_llm_model"] = action["model"]
+    if isinstance(email, dict) and email.get("model"):
+        updates["email_model_enabled"] = True
+        updates["email_llm_model"] = email["model"]
+    if isinstance(news, dict) and news.get("model"):
+        updates["news_model_enabled"] = True
+        updates["news_llm_model"] = news["model"]
     if isinstance(classifier, dict) and classifier.get("model"):
         updates["classifier_model_enabled"] = True
         updates["classifier_llm_model"] = classifier["model"]
@@ -128,6 +140,66 @@ async def apply_eval_recommendations(
 
     config = await set_config(hass, entry_id, updates)
     return {"applied": updates, "config": config}
+
+
+async def apply_server_settings(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Apply recommended llama.cpp server settings via POST /props (manual action)."""
+    store = get_eval_store(hass, entry_id)
+    run = await hass.async_add_executor_job(
+        store.get_run, run_id
+    ) if run_id else await hass.async_add_executor_job(store.latest_run)
+    if not run:
+        raise HomeAssistantError("No eval run with settings recommendations found.")
+    recommendation = run.get("settings_recommendation") or {}
+    items = recommendation.get("recommendations") or []
+    if not isinstance(items, list) or not items:
+        raise HomeAssistantError("Eval run has no server settings to apply.")
+
+    settings = {
+        str(item.get("setting")): str(item.get("value"))
+        for item in items
+        if isinstance(item, dict) and item.get("setting") and item.get("value")
+    }
+    if not settings:
+        raise HomeAssistantError("Eval run has no valid server settings to apply.")
+
+    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
+    async with aiohttp.ClientSession() as session:
+        results = await apply_props_settings(session, backend, settings)
+    applied = [item for item in results if item.get("ok")]
+    failed = [item for item in results if not item.get("ok")]
+    if not applied and failed:
+        raise HomeAssistantError(
+            "Server rejected all settings changes. "
+            "Router mode usually requires editing the server preset instead."
+        )
+    return {"applied": applied, "failed": failed}
+
+
+async def export_server_preset(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Return a llama.cpp preset INI snippet from the latest eval run."""
+    store = get_eval_store(hass, entry_id)
+    run = await hass.async_add_executor_job(
+        store.get_run, run_id
+    ) if run_id else await hass.async_add_executor_job(store.latest_run)
+    if not run:
+        raise HomeAssistantError("No eval run found.")
+    recommendation = run.get("settings_recommendation") or {}
+    preset = recommendation.get("preset_ini")
+    if not preset:
+        items = recommendation.get("recommendations") or []
+        preset = recommendations_to_preset(items if isinstance(items, list) else [])
+    return {"preset_ini": preset}
 
 
 async def discover_models(

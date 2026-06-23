@@ -10,7 +10,9 @@ from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..llm_client import LlmClient
 from ..llm_server import ServerCapabilities
+from .host_context import build_host_context
 from .models import EvalTaskScore, SettingsRecommendation
+from .preset import recommendations_to_preset
 from .scorer import best_model_per_task
 
 _SETTINGS_PROMPT = (
@@ -24,6 +26,8 @@ _SETTINGS_PROMPT = (
     "- classifier: route/playbook selection (small, fast model)\n\n"
     "Server capabilities:\n"
     "{capabilities_json}\n\n"
+    "Host/runtime context:\n"
+    "{host_context_json}\n\n"
     "Benchmark scores (model -> task -> score 0..1, higher is better):\n"
     "{benchmark_json}\n\n"
     "Recommend llama.cpp server settings (parallel slots, ctx-size, batch-size, "
@@ -162,6 +166,10 @@ async def recommend_settings(
     )
     prompt = _SETTINGS_PROMPT.format(
         capabilities_json=json.dumps(capabilities.summary(), ensure_ascii=False),
+        host_context_json=json.dumps(
+            build_host_context(capabilities),
+            ensure_ascii=False,
+        ),
         benchmark_json=benchmark_json,
     )
     try:
@@ -200,6 +208,23 @@ async def recommend_settings(
     )
 
 
+def finalize_settings_recommendation(
+    recommendation: SettingsRecommendation,
+    *,
+    capabilities: ServerCapabilities,
+) -> SettingsRecommendation:
+    """Attach host context metadata before persistence."""
+    raw = dict(recommendation.raw)
+    raw["host_context"] = build_host_context(capabilities)
+    return SettingsRecommendation(
+        summary=recommendation.summary,
+        recommendations=list(recommendation.recommendations),
+        warnings=list(recommendation.warnings),
+        model_assignments=dict(recommendation.model_assignments),
+        raw=raw,
+    )
+
+
 def settings_recommendation_to_dict(
     recommendation: SettingsRecommendation,
 ) -> dict[str, Any]:
@@ -209,5 +234,7 @@ def settings_recommendation_to_dict(
         "recommendations": list(recommendation.recommendations),
         "warnings": list(recommendation.warnings),
         "model_assignments": dict(recommendation.model_assignments),
+        "preset_ini": recommendations_to_preset(recommendation.recommendations),
+        "host_context": recommendation.raw.get("host_context", {}),
         "raw": dict(recommendation.raw),
     }

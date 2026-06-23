@@ -19,9 +19,15 @@ from .const import (
     CONF_AGENT_SYSTEM_PROMPT,
     CONF_CONVERSATION_MEMORY_PERSIST,
     CONF_CONVERSATION_SHOW_REASONING,
+    CONF_EMAIL_LLM_BASE_URL,
+    CONF_EMAIL_LLM_MODEL,
+    CONF_EMAIL_MODEL_ENABLED,
     CONF_LLM_ENABLE_THINKING,
     CONF_LLM_MODEL,
     CONF_LLM_THINKING_LEVEL,
+    CONF_NEWS_LLM_BASE_URL,
+    CONF_NEWS_LLM_MODEL,
+    CONF_NEWS_MODEL_ENABLED,
     CONF_SKILLS_AUTO_SAVE,
     CONF_SKILLS_LEARNING_ENABLED,
     CONF_SKILLS_MAX_INJECT,
@@ -114,6 +120,15 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
     if version == 6:
         data.setdefault(CONF_CONVERSATION_MEMORY_PERSIST, False)
+        version = 7
+
+    if version == 7:
+        data.setdefault(CONF_EMAIL_MODEL_ENABLED, False)
+        data.setdefault(CONF_EMAIL_LLM_BASE_URL, "")
+        data.setdefault(CONF_EMAIL_LLM_MODEL, "")
+        data.setdefault(CONF_NEWS_MODEL_ENABLED, False)
+        data.setdefault(CONF_NEWS_LLM_BASE_URL, "")
+        data.setdefault(CONF_NEWS_LLM_MODEL, "")
         version = CONFIG_ENTRY_VERSION
 
     if version != config_entry.version:
