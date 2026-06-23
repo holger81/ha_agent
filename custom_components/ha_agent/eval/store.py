@@ -12,7 +12,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from ..const import DATA_KEY
-from .models import EvalRun
+from .models import EvalCase, EvalRun
 from .scorer import case_score_to_dict, task_score_to_dict
 
 EVAL_STORE_KEY = "eval_stores"
@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS model_downloads (
     status TEXT NOT NULL DEFAULT 'unknown',
     notes TEXT
 );
+
+CREATE TABLE IF NOT EXISTS custom_eval_cases (
+    id TEXT PRIMARY KEY,
+    task TEXT NOT NULL,
+    promoted_at REAL NOT NULL,
+    source_timestamp REAL,
+    source_conversation_id TEXT,
+    case_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_eval_cases_task
+    ON custom_eval_cases(task, promoted_at DESC);
 """
 
 
@@ -272,6 +284,69 @@ class EvalStore:
         if row["deleted_at"] is not None:
             return True
         return row["status"] in {"rejected", "deleted_after_eval"}
+
+    def list_custom_cases(self) -> list[EvalCase]:
+        """Return promoted eval cases newest-first."""
+        from .case_serde import eval_case_from_dict
+
+        rows = self._connection().execute(
+            "SELECT case_json FROM custom_eval_cases "
+            "ORDER BY promoted_at DESC",
+        ).fetchall()
+        cases: list[EvalCase] = []
+        for row in rows:
+            payload = _json_loads(row["case_json"], {})
+            if isinstance(payload, dict) and payload.get("id"):
+                cases.append(eval_case_from_dict(payload))
+        return cases
+
+    def save_custom_case(self, case: EvalCase) -> EvalCase:
+        """Persist one promoted eval case."""
+        from .case_serde import eval_case_to_dict
+
+        if case.source != "promoted":
+            raise ValueError("Only promoted cases can be saved as custom eval cases.")
+        conn = self._connection()
+        payload = eval_case_to_dict(case)
+        conn.execute(
+            "INSERT OR REPLACE INTO custom_eval_cases "
+            "(id, task, promoted_at, source_timestamp, source_conversation_id, "
+            "case_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                case.id,
+                case.task,
+                float(case.promoted_at or time.time()),
+                case.source_timestamp,
+                case.source_conversation_id,
+                _json_dumps(payload),
+            ),
+        )
+        conn.commit()
+        return case
+
+    def delete_custom_case(self, case_id: str) -> bool:
+        """Delete a promoted eval case. Built-in ids are not stored here."""
+        conn = self._connection()
+        cursor = conn.execute(
+            "DELETE FROM custom_eval_cases WHERE id = ?",
+            (case_id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+    def get_custom_case(self, case_id: str) -> EvalCase | None:
+        from .case_serde import eval_case_from_dict
+
+        row = self._connection().execute(
+            "SELECT case_json FROM custom_eval_cases WHERE id = ?",
+            (case_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = _json_loads(row["case_json"], {})
+        if not isinstance(payload, dict) or not payload.get("id"):
+            return None
+        return eval_case_from_dict(payload)
 
 
 def get_eval_store(hass: HomeAssistant, entry_id: str) -> EvalStore:

@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
+from ..activity import list_turns
 from ..config_helpers import get_llm_backend
+from ..eval.case_promote import (
+    build_case_from_turn,
+    find_activity_turn,
+    turn_dict_to_trace,
+)
+from ..eval.case_serde import eval_case_to_dict
+from ..eval.cases import list_eval_cases_for_entry
 from ..eval.discover_config import get_discover_config
 from ..eval.discover_models import propose_models_from_web as discover_propose_models
 from ..eval.discover_runner import (
@@ -455,3 +464,61 @@ async def mark_model_for_cleanup(
     registry = get_model_registry(hass, entry_id)
     registry.mark_deleted(model_id, notes=notes)
     return {"model_id": model_id, "status": "deleted"}
+
+
+async def list_eval_cases_api(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    tasks: list[str] | None = None,
+) -> dict[str, Any]:
+    """Return built-in and promoted eval cases for the console."""
+    cases = list_eval_cases_for_entry(hass, entry_id, tasks=tasks)
+    return {
+        "cases": [eval_case_to_dict(case) for case in cases],
+        "promoted_count": sum(1 for case in cases if case.source == "promoted"),
+    }
+
+
+async def promote_activity_turn(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    timestamp: float,
+    task: str | None = None,
+) -> dict[str, Any]:
+    """Promote one activity turn into a custom eval benchmark case."""
+    turns, _total = list_turns(hass, entry_id, limit=200)
+    turn = find_activity_turn(turns, timestamp)
+    if turn is None:
+        raise HomeAssistantError("Activity turn not found. Refresh and try again.")
+    trace = turn_dict_to_trace(turn)
+    case = build_case_from_turn(
+        trace,
+        source_timestamp=float(turn.get("timestamp") or timestamp),
+        task_override=task,
+    )
+    store = get_eval_store(hass, entry_id)
+    existing = await hass.async_add_executor_job(store.get_custom_case, case.id)
+    if existing is not None:
+        case = build_case_from_turn(
+            trace,
+            source_timestamp=float(turn.get("timestamp") or timestamp),
+            case_id=f"{case.id}-{int(time.time())}",
+            task_override=task,
+        )
+    saved = await hass.async_add_executor_job(store.save_custom_case, case)
+    return {"case": eval_case_to_dict(saved)}
+
+
+async def delete_eval_case(
+    hass: HomeAssistant,
+    entry_id: str,
+    case_id: str,
+) -> dict[str, Any]:
+    """Delete a promoted eval case."""
+    store = get_eval_store(hass, entry_id)
+    deleted = await hass.async_add_executor_job(store.delete_custom_case, case_id)
+    if not deleted:
+        raise HomeAssistantError(f"Promoted eval case not found: {case_id}")
+    return {"deleted": case_id}

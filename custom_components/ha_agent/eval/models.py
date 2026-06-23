@@ -22,6 +22,10 @@ class EvalCase:
     expected_playbook_route: str | None = None
     mock_mcp_responses: list[str] = field(default_factory=list)
     max_iterations: int = 6
+    source: str = "builtin"
+    promoted_at: float | None = None
+    source_timestamp: float | None = None
+    source_conversation_id: str | None = None
 
 
 @dataclass(slots=True)

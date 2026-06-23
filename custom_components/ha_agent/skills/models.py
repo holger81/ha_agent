@@ -54,6 +54,8 @@ class TurnTrace:
     conversation_id: str | None = None
     outcome: str = ""
     verification_notes: list[str] = field(default_factory=list)
+    route: str = ""
+    exposed_entities: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

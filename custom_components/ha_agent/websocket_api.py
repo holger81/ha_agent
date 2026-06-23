@@ -85,6 +85,9 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_eval_discover_start)
     websocket_api.async_register_command(hass, ws_eval_discover_approve_download)
     websocket_api.async_register_command(hass, ws_eval_discover_approve_trial)
+    websocket_api.async_register_command(hass, ws_eval_cases_list)
+    websocket_api.async_register_command(hass, ws_eval_cases_promote)
+    websocket_api.async_register_command(hass, ws_eval_cases_delete)
 
 
 def _entry_id_schema(extra: dict | None = None) -> dict:
@@ -1127,5 +1130,72 @@ async def ws_eval_discover_approve_trial(
         msg["entry_id"],
         msg["model_id"],
         approved=msg["approved"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/cases/list",
+        **_entry_id_schema(
+            {
+                vol.Optional("tasks"): [str],
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_cases_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    tasks = msg.get("tasks")
+    parsed_tasks = [str(item) for item in tasks] if isinstance(tasks, list) else None
+    result = await eval_api.list_eval_cases_api(
+        hass,
+        msg["entry_id"],
+        tasks=parsed_tasks,
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/cases/promote",
+        **_entry_id_schema(
+            {
+                vol.Required("timestamp"): vol.Coerce(float),
+                vol.Optional("task"): str,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_cases_promote(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.promote_activity_turn(
+        hass,
+        msg["entry_id"],
+        timestamp=msg["timestamp"],
+        task=msg.get("task"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/cases/delete",
+        **_entry_id_schema(
+            {
+                vol.Required("case_id"): str,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_cases_delete(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.delete_eval_case(
+        hass,
+        msg["entry_id"],
+        msg["case_id"],
     )
     connection.send_message(websocket_api.result_message(msg["id"], result))

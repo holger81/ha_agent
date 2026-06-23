@@ -27,7 +27,7 @@ from ..const import DATA_KEY, LOGGER
 from ..llm_client import LlmClient
 from ..llm_server import eval_candidate_models, preload_models, probe_server
 from ..skills.models import TurnTrace
-from .cases import list_eval_cases
+from .cases import list_eval_cases_for_entry
 from .classifier_runner import run_classifier_case
 from .mcp_mock import EvalMcpClient
 from .models import EVAL_TASKS, EvalCaseScore, EvalRun, EvalRunState, EvalTaskScore
@@ -53,6 +53,8 @@ def _trace_from_activity(data: dict[str, Any]) -> TurnTrace:
         assistant_text=str(data.get("assistant_text") or ""),
         outcome=str(data.get("outcome") or ""),
         conversation_id=data.get("conversation_id"),
+        route=str(data.get("route") or ""),
+        exposed_entities=list(data.get("exposed_entities") or []),
     )
 
 
@@ -212,7 +214,7 @@ async def run_eval_suite(
                 run.server_capabilities = capabilities.to_dict()
 
             selected_tasks = list(tasks or EVAL_TASKS)
-            cases = list_eval_cases(tasks=selected_tasks)
+            cases = list_eval_cases_for_entry(hass, entry_id, tasks=selected_tasks)
             if not cases:
                 raise RuntimeError("No eval cases matched the requested tasks.")
 
@@ -413,7 +415,7 @@ async def benchmark_single_model(
         timeout=chat_backend.timeout,
         thinking_level="off",
     )
-    cases = list_eval_cases()
+    cases = list_eval_cases_for_entry(hass, entry_id)
     case_scores: list[EvalCaseScore] = []
 
     async with aiohttp.ClientSession() as session:

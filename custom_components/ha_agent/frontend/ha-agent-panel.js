@@ -44,7 +44,9 @@ class HaAgentPanel extends HTMLElement {
     this._evalStatus = null;
     this._evalCapabilities = null;
     this._evalNotice = null;
+    this._evalCases = [];
     this._evalPollTimer = null;
+    this._activityNotice = null;
     this._discoverRequireDownloadApproval = true;
     this._discoverRequireTrialApproval = true;
     this._discoverModelsDir = "";
@@ -370,6 +372,45 @@ class HaAgentPanel extends HTMLElement {
     } else {
       this._clearEvalPoll();
     }
+    await this._loadEvalCases();
+  }
+
+  async _loadEvalCases() {
+    if (!this._entryId) return;
+    const data = await this._call("ha_agent/eval/cases/list", {
+      entry_id: this._entryId,
+    });
+    this._evalCases = data.cases || [];
+  }
+
+  async _promoteActivityTurn(timestamp) {
+    if (!this._entryId || timestamp == null) return;
+    this._activityNotice = "Promoting turn to eval case…";
+    this._render();
+    try {
+      const data = await this._call("ha_agent/eval/cases/promote", {
+        entry_id: this._entryId,
+        timestamp,
+      });
+      const caseId = data.case?.id || "case";
+      this._activityNotice = `Promoted ${caseId}. It will run on the next eval suite.`;
+      await this._loadEvalCases();
+    } catch (err) {
+      this._activityNotice = `Promote failed: ${err?.message || err}`;
+    }
+    this._render();
+  }
+
+  async _deleteEvalCase(caseId) {
+    if (!this._entryId || !caseId) return;
+    if (!confirm(`Delete promoted eval case ${caseId}?`)) return;
+    await this._call("ha_agent/eval/cases/delete", {
+      entry_id: this._entryId,
+      case_id: caseId,
+    });
+    this._evalNotice = `Deleted ${caseId}.`;
+    await this._loadEvalCases();
+    this._render();
   }
 
   _clearEvalPoll() {
@@ -2214,23 +2255,37 @@ class HaAgentPanel extends HTMLElement {
           .join(", ");
         const verify = (t.verification_notes || []).join(" | ");
         const title = [tools, verify].filter(Boolean).join("\n");
+        const promotable =
+          !t.fallback &&
+          !t.tool_errors &&
+          (!t.outcome || t.outcome === "success" || t.outcome === "partial");
+        const promoteBtn =
+          t.timestamp && promotable
+            ? `<button data-action="activity-promote" data-timestamp="${t.timestamp}">Promote</button>`
+            : "—";
         return `
       <tr title="${this._escape(title)}">
         <td>${t.timestamp ? new Date(t.timestamp * 1000).toLocaleString() : "—"}</td>
+        <td>${this._escape(t.route || "—")}</td>
         <td>${this._escape(t.user_text || "")}</td>
         <td>${this._escape(t.outcome || "—")}</td>
         <td>${t.iterations || 0}</td>
         <td>${(t.tool_calls || []).length}</td>
         <td>${t.tool_errors || 0}</td>
+        <td>${promoteBtn}</td>
       </tr>`;
       })
       .join("");
+    const notice = this._activityNotice
+      ? `<p class="activity-hint">${this._escape(this._activityNotice)}</p>`
+      : "";
     return `
+      ${notice}
       <table>
-        <thead><tr><th>Time</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>Errors</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="6">No activity yet.</td></tr>'}</tbody>
+        <thead><tr><th>Time</th><th>Route</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>Errors</th><th>Eval</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="8">No activity yet.</td></tr>'}</tbody>
       </table>
-      <p class="activity-hint">Hover a row to see tool names and verification notes.</p>`;
+      <p class="activity-hint">Promote successful turns to custom eval cases. They run with the built-in suite on the next eval (mock MCP, same scoring).</p>`;
   }
 
   _renderEval() {
@@ -2286,6 +2341,18 @@ class HaAgentPanel extends HTMLElement {
           `<li>${this._escape(modelId)} <button data-action="eval-unload-model" data-model-id="${this._escape(modelId)}">Unload</button></li>`,
       )
       .join("");
+    const promotedCases = (this._evalCases || []).filter((item) => item.source === "promoted");
+    const promotedRows = promotedCases
+      .map(
+        (item) => `<tr>
+          <td>${this._escape(item.id)}</td>
+          <td>${this._escape(item.task)}</td>
+          <td>${this._escape(item.user_text || "")}</td>
+          <td>${this._escape((item.expected_tool || "—") + (item.expected_text_contains?.length ? ` · text: ${item.expected_text_contains.join(", ")}` : ""))}</td>
+          <td><button data-action="eval-case-delete" data-case-id="${this._escape(item.id)}">Delete</button></td>
+        </tr>`,
+      )
+      .join("");
     return `
       <div class="settings-grid">
         <p class="activity-hint">${this._escape(this._evalNotice || "")}</p>
@@ -2312,9 +2379,24 @@ class HaAgentPanel extends HTMLElement {
           <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
         </table>
         <p class="activity-hint">Eval benchmarks loaded models by default. Use preload or pass explicit models via API to benchmark catalog entries on a router server.</p>
+        <h4>Promoted cases (from Activity)</h4>
+        <table>
+          <thead><tr><th>ID</th><th>Task</th><th>Prompt</th><th>Expectations</th><th></th></tr></thead>
+          <tbody>${promotedRows || '<tr><td colspan="5">No promoted cases yet — use Activity → Promote.</td></tr>'}</tbody>
+        </table>
         ${loadedList ? `<h4>Loaded models</h4><ul>${loadedList}</ul>` : ""}
         ${this._renderDiscoverSection(discover)}
       </div>`;
+  }
+
+  _bindActivityEvents() {
+    this.shadowRoot.querySelectorAll('[data-action="activity-promote"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        const raw = button.getAttribute("data-timestamp");
+        if (!raw) return;
+        await this._promoteActivityTurn(Number(raw));
+      });
+    });
   }
 
   _bindEvalEvents() {
@@ -2404,6 +2486,11 @@ class HaAgentPanel extends HTMLElement {
       ?.addEventListener("change", (event) => {
         this._discoverRequireTrialApproval = event.target.checked;
       });
+    this.shadowRoot.querySelectorAll('[data-action="eval-case-delete"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this._deleteEvalCase(button.getAttribute("data-case-id"));
+      });
+    });
     this.shadowRoot
       .querySelector('[data-field="discover-models-dir"]')
       ?.addEventListener("input", (event) => {
@@ -2962,6 +3049,7 @@ class HaAgentPanel extends HTMLElement {
     this._bindRouteEvents();
     this._bindRecoveryEvents();
     this._bindEvalEvents();
+    this._bindActivityEvents();
 
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {
       const updates = {};

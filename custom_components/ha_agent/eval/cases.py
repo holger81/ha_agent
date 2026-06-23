@@ -1,8 +1,11 @@
-"""Built-in eval benchmark cases per HA Agent task route."""
+"""Built-in and promoted eval benchmark cases."""
 
 from __future__ import annotations
 
+from homeassistant.core import HomeAssistant
+
 from .models import EVAL_TASKS, EvalCase
+from .store import get_eval_store
 
 _BUILTIN_CASES: tuple[EvalCase, ...] = (
     EvalCase(
@@ -96,10 +99,28 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
 )
 
 
-def list_eval_cases(*, tasks: list[str] | None = None) -> list[EvalCase]:
-    """Return built-in cases, optionally filtered by task."""
+def list_eval_cases(
+    *,
+    tasks: list[str] | None = None,
+    custom_cases: list[EvalCase] | None = None,
+) -> list[EvalCase]:
+    """Return built-in cases plus optional promoted cases."""
     allowed = set(tasks or EVAL_TASKS)
-    return [case for case in _BUILTIN_CASES if case.task in allowed]
+    builtin = [case for case in _BUILTIN_CASES if case.task in allowed]
+    promoted = [case for case in (custom_cases or []) if case.task in allowed]
+    return [*builtin, *promoted]
+
+
+def list_eval_cases_for_entry(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    tasks: list[str] | None = None,
+) -> list[EvalCase]:
+    """Return built-in and entry-specific promoted eval cases."""
+    store = get_eval_store(hass, entry_id)
+    custom_cases = store.list_custom_cases()
+    return list_eval_cases(tasks=tasks, custom_cases=custom_cases)
 
 
 def cases_for_task(task: str) -> list[EvalCase]:

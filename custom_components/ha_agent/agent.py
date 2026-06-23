@@ -580,6 +580,8 @@ async def run_agent(
         history_len=len(history),
         matched_skill_ids=[skill.id for skill in matched_skills],
         conversation_id=conversation_id,
+        route=route.value,
+        exposed_entities=list(exposed_entities),
     )
 
     mcp_session_prompt = ""

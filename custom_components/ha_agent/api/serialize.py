@@ -102,6 +102,8 @@ def turn_trace_to_dict(
         "controlled_entity_ids": list(trace.controlled_entity_ids),
         "outcome": trace.outcome,
         "verification_notes": list(trace.verification_notes),
+        "route": trace.route,
+        "exposed_entities": list(trace.exposed_entities),
     }
 
 
