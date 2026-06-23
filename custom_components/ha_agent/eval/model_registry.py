@@ -83,7 +83,7 @@ async def propose_models_from_web(
     Not implemented yet — returns an empty list. When wired up, this should:
     - search HuggingFace / model cards / community benchmarks
     - respect ``should_skip_download`` history
-    - optionally download via llamacpp MCP or HF API
+    - download via HF API into the llama models volume; load/unload via HTTP
     """
     LOGGER.info(
         "Model web discovery not implemented yet (capabilities=%s)",
