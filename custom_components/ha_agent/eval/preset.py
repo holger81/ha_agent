@@ -25,7 +25,8 @@ _PRESET_KEY_ALIASES = {
 }
 
 
-def _normalize_key(setting: str) -> str:
+def normalize_setting_key(setting: str) -> str:
+    """Map eval setting names to llama.cpp preset keys."""
     cleaned = setting.strip().lower().replace(" ", "-")
     return _PRESET_KEY_ALIASES.get(cleaned, cleaned)
 
@@ -45,7 +46,7 @@ def recommendations_to_preset(
         value = str(item.get("value") or "").strip()
         if not setting or not value:
             continue
-        key = _normalize_key(setting)
+        key = normalize_setting_key(setting)
         if key in seen:
             continue
         seen.add(key)

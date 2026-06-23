@@ -24,7 +24,7 @@ from ..config_helpers import (
 )
 from ..const import DATA_KEY, LOGGER
 from ..llm_client import LlmClient
-from ..llm_server import eval_candidate_models, probe_server
+from ..llm_server import eval_candidate_models, preload_models, probe_server
 from ..skills.models import TurnTrace
 from .cases import list_eval_cases
 from .classifier_runner import run_classifier_case
@@ -113,6 +113,7 @@ async def run_eval_suite(
     models: list[str] | None = None,
     tasks: list[str] | None = None,
     include_settings: bool = True,
+    preload_models_flag: bool = False,
 ) -> EvalRun:
     """Run benchmark cases across models and recommend settings."""
     from ..agent import run_agent
@@ -186,6 +187,28 @@ async def run_eval_suite(
                     len(candidate_models),
                     len(capabilities.models),
                 )
+
+            if preload_models_flag and candidate_models:
+                run.progress = {"phase": "preload"}
+                preload_results = await preload_models(
+                    session,
+                    chat_backend,
+                    candidate_models,
+                    loaded_models=capabilities.loaded_models,
+                )
+                failed_preload = [
+                    item
+                    for item in preload_results
+                    if not item.get("ok") and not item.get("skipped")
+                ]
+                if failed_preload:
+                    LOGGER.warning(
+                        "Eval preload failed for %d model(s): %s",
+                        len(failed_preload),
+                        [item.get("model") for item in failed_preload],
+                    )
+                capabilities = await probe_server(session, chat_backend)
+                run.server_capabilities = capabilities.to_dict()
 
             selected_tasks = list(tasks or EVAL_TASKS)
             cases = list_eval_cases(tasks=selected_tasks)
@@ -358,6 +381,7 @@ async def start_eval_background(
     models: list[str] | None = None,
     tasks: list[str] | None = None,
     include_settings: bool = True,
+    preload_models_flag: bool = False,
 ) -> EvalRun:
     """Schedule an eval run and return the placeholder run record."""
     state_store = _state_store(hass)
@@ -380,6 +404,7 @@ async def start_eval_background(
             models=models,
             tasks=tasks,
             include_settings=include_settings,
+            preload_models_flag=preload_models_flag,
         )
 
     hass.async_create_task(_run())

@@ -462,6 +462,125 @@ async def probe_server(
     return await probe.probe(backend, models=models)
 
 
+async def load_model(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+) -> dict[str, Any]:
+    """Load a model on a llama.cpp router server."""
+    root = server_root_from_base_url(backend.base_url)
+    url = f"{root}/models/load"
+    headers = _headers(backend)
+    headers["Content-Type"] = "application/json"
+    timeout = aiohttp.ClientTimeout(total=300)
+    try:
+        async with session.post(
+            url,
+            json={"model": model_id},
+            headers=headers,
+            timeout=timeout,
+        ) as response:
+            body = await response.text()
+            ok = response.status in {200, 204}
+            parsed: dict[str, Any] = {}
+            if body.strip():
+                try:
+                    loaded = json.loads(body)
+                    if isinstance(loaded, dict):
+                        parsed = loaded
+                except json.JSONDecodeError:
+                    parsed = {"raw": body[:500]}
+            return {
+                "model": model_id,
+                "ok": ok or bool(parsed.get("success")),
+                "status": response.status,
+                "response": parsed,
+                "error": None if ok or parsed.get("success") else body[:300],
+            }
+    except (TimeoutError, aiohttp.ClientError) as err:
+        return {
+            "model": model_id,
+            "ok": False,
+            "status": None,
+            "response": {},
+            "error": str(err),
+        }
+
+
+async def unload_model(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+) -> dict[str, Any]:
+    """Unload a model from a llama.cpp router server."""
+    root = server_root_from_base_url(backend.base_url)
+    url = f"{root}/models/unload"
+    headers = _headers(backend)
+    headers["Content-Type"] = "application/json"
+    timeout = aiohttp.ClientTimeout(total=120)
+    try:
+        async with session.post(
+            url,
+            json={"model": model_id},
+            headers=headers,
+            timeout=timeout,
+        ) as response:
+            body = await response.text()
+            ok = response.status in {200, 204}
+            parsed: dict[str, Any] = {}
+            if body.strip():
+                try:
+                    loaded = json.loads(body)
+                    if isinstance(loaded, dict):
+                        parsed = loaded
+                except json.JSONDecodeError:
+                    parsed = {"raw": body[:500]}
+            return {
+                "model": model_id,
+                "ok": ok or bool(parsed.get("success")),
+                "status": response.status,
+                "response": parsed,
+                "error": None if ok or parsed.get("success") else body[:300],
+            }
+    except (TimeoutError, aiohttp.ClientError) as err:
+        return {
+            "model": model_id,
+            "ok": False,
+            "status": None,
+            "response": {},
+            "error": str(err),
+        }
+
+
+async def preload_models(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_ids: list[str],
+    *,
+    loaded_models: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Load models that are not already resident on the router."""
+    already_loaded = set(loaded_models or [])
+    results: list[dict[str, Any]] = []
+    for model_id in model_ids:
+        if model_id in already_loaded:
+            results.append(
+                {
+                    "model": model_id,
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "already loaded",
+                }
+            )
+            continue
+        result = await load_model(session, backend, model_id)
+        result["skipped"] = False
+        results.append(result)
+        if result.get("ok"):
+            already_loaded.add(model_id)
+    return results
+
+
 async def apply_props_settings(
     session: aiohttp.ClientSession,
     backend: LlmBackend,

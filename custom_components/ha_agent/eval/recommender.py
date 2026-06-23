@@ -14,6 +14,7 @@ from .host_context import build_host_context
 from .models import EvalTaskScore, SettingsRecommendation
 from .preset import recommendations_to_preset
 from .scorer import best_model_per_task
+from .server_apply import server_apply_mode
 
 _SETTINGS_PROMPT = (
     "You analyze llama.cpp server capabilities and recommend optimal server "
@@ -216,6 +217,7 @@ def finalize_settings_recommendation(
     """Attach host context metadata before persistence."""
     raw = dict(recommendation.raw)
     raw["host_context"] = build_host_context(capabilities)
+    raw["apply_mode"] = server_apply_mode(capabilities)
     return SettingsRecommendation(
         summary=recommendation.summary,
         recommendations=list(recommendation.recommendations),
@@ -235,6 +237,7 @@ def settings_recommendation_to_dict(
         "warnings": list(recommendation.warnings),
         "model_assignments": dict(recommendation.model_assignments),
         "preset_ini": recommendations_to_preset(recommendation.recommendations),
+        "apply_mode": recommendation.raw.get("apply_mode", "preset"),
         "host_context": recommendation.raw.get("host_context", {}),
         "raw": dict(recommendation.raw),
     }

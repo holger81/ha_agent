@@ -907,6 +907,7 @@ async def ws_eval_run_get(hass: HomeAssistant, connection, msg: dict) -> None:
                 vol.Optional("models"): [str],
                 vol.Optional("tasks"): [str],
                 vol.Optional("include_settings"): bool,
+                vol.Optional("preload_models"): bool,
             }
         ),
     }
@@ -916,7 +917,7 @@ async def ws_eval_start(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     payload = {
         key: msg[key]
-        for key in ("models", "tasks", "include_settings")
+        for key in ("models", "tasks", "include_settings", "preload_models")
         if key in msg
     }
     result = await eval_api.start_eval(hass, msg["entry_id"], payload)
@@ -983,6 +984,57 @@ async def ws_eval_apply_settings(
         hass,
         msg["entry_id"],
         run_id=msg.get("run_id"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/load_model",
+        **_entry_id_schema({vol.Required("model_id"): str}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_load_model(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.load_eval_model(
+        hass,
+        msg["entry_id"],
+        msg["model_id"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/unload_model",
+        **_entry_id_schema({vol.Required("model_id"): str}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_unload_model(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.unload_eval_model(
+        hass,
+        msg["entry_id"],
+        msg["model_id"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/preload_models",
+        **_entry_id_schema({vol.Required("models"): [str]}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_preload_models(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.preload_eval_models(
+        hass,
+        msg["entry_id"],
+        msg["models"],
     )
     connection.send_message(websocket_api.result_message(msg["id"], result))
 

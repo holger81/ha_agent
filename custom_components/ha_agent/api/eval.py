@@ -18,8 +18,15 @@ from ..eval.runner import (
     request_eval_cancel,
     start_eval_background,
 )
+from ..eval.server_apply import server_apply_mode, verify_settings_applied
 from ..eval.store import get_eval_store
-from ..llm_server import apply_props_settings
+from ..llm_server import (
+    apply_props_settings,
+    load_model,
+    preload_models,
+    probe_server,
+    unload_model,
+)
 from .config import set_config
 
 
@@ -68,6 +75,7 @@ async def start_eval(
     models = payload.get("models")
     tasks = payload.get("tasks")
     include_settings = bool(payload.get("include_settings", True))
+    preload_models_flag = bool(payload.get("preload_models", False))
     parsed_models = [str(item) for item in models] if isinstance(models, list) else None
     parsed_tasks = [str(item) for item in tasks] if isinstance(tasks, list) else None
     await start_eval_background(
@@ -76,6 +84,7 @@ async def start_eval(
         models=parsed_models,
         tasks=parsed_tasks,
         include_settings=include_settings,
+        preload_models_flag=preload_models_flag,
     )
     state = get_eval_state(hass, entry_id)
     return {
@@ -148,7 +157,7 @@ async def apply_server_settings(
     *,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Apply recommended llama.cpp server settings via POST /props (manual action)."""
+    """Apply recommended llama.cpp server settings with probe verification."""
     store = get_eval_store(hass, entry_id)
     run = await hass.async_add_executor_job(
         store.get_run, run_id
@@ -168,17 +177,109 @@ async def apply_server_settings(
     if not settings:
         raise HomeAssistantError("Eval run has no valid server settings to apply.")
 
+    preset_ini = recommendation.get("preset_ini") or recommendations_to_preset(items)
     backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
     async with aiohttp.ClientSession() as session:
+        before = await probe_server(session, backend)
+        mode = server_apply_mode(before)
+        if mode == "preset":
+            return {
+                "mode": "preset",
+                "applied": [],
+                "failed": [],
+                "verification": None,
+                "preset_ini": preset_ini,
+                "before": before.summary(),
+                "after": before.summary(),
+                "message": (
+                    "Router mode cannot apply settings via POST /props. "
+                    "Copy the preset below into your llama.cpp preset volume, "
+                    "then restart the llama Docker container."
+                ),
+                "docker_hint": "docker compose restart <llama-service>",
+            }
+
         results = await apply_props_settings(session, backend, settings)
+        after = await probe_server(session, backend)
     applied = [item for item in results if item.get("ok")]
     failed = [item for item in results if not item.get("ok")]
+    verification = verify_settings_applied(before, after, settings)
     if not applied and failed:
         raise HomeAssistantError(
             "Server rejected all settings changes. "
-            "Router mode usually requires editing the server preset instead."
+            "Try copying the preset and restarting the llama container."
         )
-    return {"applied": applied, "failed": failed}
+    return {
+        "mode": "props",
+        "applied": applied,
+        "failed": failed,
+        "verification": verification,
+        "preset_ini": preset_ini,
+        "before": before.summary(),
+        "after": after.summary(),
+        "message": (
+            f"Applied {len(applied)} setting(s); "
+            f"verified {verification['verified_count']}/{len(settings)} via re-probe."
+        ),
+    }
+
+
+async def load_eval_model(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_id: str,
+) -> dict[str, Any]:
+    """Load one model on the llama.cpp router via HTTP."""
+    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
+    async with aiohttp.ClientSession() as session:
+        result = await load_model(session, backend, model_id)
+        caps = await probe_server(session, backend)
+    return {"result": result, "capabilities": caps.to_dict()}
+
+
+async def unload_eval_model(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_id: str,
+) -> dict[str, Any]:
+    """Unload one model from the llama.cpp router via HTTP."""
+    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
+    async with aiohttp.ClientSession() as session:
+        result = await unload_model(session, backend, model_id)
+        caps = await probe_server(session, backend)
+    return {"result": result, "capabilities": caps.to_dict()}
+
+
+async def preload_eval_models(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_ids: list[str],
+) -> dict[str, Any]:
+    """Load multiple eval candidate models before benchmarking."""
+    if not model_ids:
+        raise HomeAssistantError("No models specified to preload.")
+    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
+    async with aiohttp.ClientSession() as session:
+        before = await probe_server(session, backend)
+        results = await preload_models(
+            session,
+            backend,
+            model_ids,
+            loaded_models=before.loaded_models,
+        )
+        after = await probe_server(session, backend)
+    loaded = [item for item in results if item.get("ok")]
+    failed = [
+        item
+        for item in results
+        if not item.get("ok") and not item.get("skipped")
+    ]
+    return {
+        "results": results,
+        "loaded_count": len(loaded),
+        "failed_count": len(failed),
+        "capabilities": after.to_dict(),
+    }
 
 
 async def export_server_preset(

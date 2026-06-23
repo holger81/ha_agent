@@ -393,16 +393,60 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
-  async _startEvalRun() {
+  async _startEvalRun(preloadModels = false) {
     if (!this._entryId) return;
-    this._evalNotice = "Starting eval suite…";
+    this._evalNotice = preloadModels
+      ? "Starting eval suite (preloading models first)…"
+      : "Starting eval suite…";
     this._render();
     await this._call("ha_agent/eval/start", {
       entry_id: this._entryId,
       include_settings: true,
+      preload_models: preloadModels,
     });
     await this._loadEvalStatus();
     this._evalNotice = "Eval running in background.";
+    this._render();
+  }
+
+  async _preloadEvalModels() {
+    if (!this._entryId) return;
+    const assignments = this._evalStatus?.run?.settings_recommendation?.model_assignments || {};
+    const models = [
+      ...new Set(
+        Object.values(assignments)
+          .map((item) => item?.model)
+          .filter(Boolean),
+      ),
+    ];
+    if (!models.length) {
+      this._evalNotice = "No recommended models to preload — run eval first.";
+      this._render();
+      return;
+    }
+    this._evalNotice = `Preloading ${models.length} model(s)…`;
+    this._render();
+    const data = await this._call("ha_agent/eval/preload_models", {
+      entry_id: this._entryId,
+      models,
+    });
+    this._evalCapabilities = data.capabilities || this._evalCapabilities;
+    this._evalNotice = `Preload complete: ${data.loaded_count || 0} loaded, ${data.failed_count || 0} failed.`;
+    this._render();
+  }
+
+  async _unloadEvalModel(modelId) {
+    if (!this._entryId || !modelId) return;
+    if (!confirm(`Unload model ${modelId} from llama.cpp?`)) return;
+    const data = await this._call("ha_agent/eval/unload_model", {
+      entry_id: this._entryId,
+      model_id: modelId,
+    });
+    this._evalCapabilities = data.capabilities || null;
+    const ok = data.result?.ok;
+    this._evalNotice = ok
+      ? `Unloaded ${modelId}.`
+      : `Failed to unload ${modelId}: ${data.result?.error || "unknown error"}`;
     this._render();
   }
 
@@ -421,19 +465,43 @@ class HaAgentPanel extends HTMLElement {
 
   async _applyEvalServerSettings() {
     if (!this._entryId) return;
-    if (
-      !confirm(
-        "Try to apply recommended llama.cpp server settings via POST /props? Router servers usually need a preset edit instead.",
-      )
-    ) {
+    const applyMode =
+      this._evalStatus?.run?.settings_recommendation?.apply_mode || "preset";
+    const confirmMsg =
+      applyMode === "preset"
+        ? "Router mode: settings cannot be applied live. Copy the preset and restart the llama Docker container?"
+        : "Apply recommended llama.cpp server settings via POST /props and re-probe?";
+    if (!confirm(confirmMsg)) {
       return;
     }
     const data = await this._call("ha_agent/eval/apply_settings", {
       entry_id: this._entryId,
     });
-    const applied = (data.applied || []).length;
-    const failed = (data.failed || []).length;
-    this._evalNotice = `Server settings: ${applied} applied, ${failed} failed.`;
+    if (data.mode === "preset") {
+      const preset = data.preset_ini || "";
+      if (preset.trim()) {
+        try {
+          await navigator.clipboard.writeText(preset);
+          this._evalNotice = `${data.message || "Preset copied."} Restart the llama container after updating the preset file.`;
+        } catch (_err) {
+          this._evalNotice = `${data.message || "Use the preset below."} ${data.docker_hint || ""}`;
+        }
+      } else {
+        this._evalNotice = data.message || "Router mode requires a preset edit.";
+      }
+    } else {
+      const verified = data.verification?.verified_count ?? 0;
+      const total = (data.verification?.checks || []).length;
+      const applied = (data.applied || []).length;
+      const failed = (data.failed || []).length;
+      this._evalNotice = `${data.message || "Settings applied."} (${applied} ok, ${failed} failed, ${verified}/${total} verified)`;
+      if (data.after) {
+        this._evalCapabilities = {
+          ...(this._evalCapabilities || {}),
+          summary: data.after,
+        };
+      }
+    }
     this._render();
   }
 
@@ -2042,21 +2110,34 @@ class HaAgentPanel extends HTMLElement {
       )
       .join("");
     const presetIni = recommendation.preset_ini || "";
+    const applyMode =
+      recommendation.apply_mode || (summary.props_writable ? "props" : "preset");
     const running = this._evalStatus?.running ? "Running" : run.status || "idle";
+    const loadedModels = caps.loaded_models || [];
+    const loadedList = loadedModels
+      .map(
+        (modelId) =>
+          `<li>${this._escape(modelId)} <button data-action="eval-unload-model" data-model-id="${this._escape(modelId)}">Unload</button></li>`,
+      )
+      .join("");
     return `
       <div class="settings-grid">
         <p class="activity-hint">${this._escape(this._evalNotice || "")}</p>
         <p>Status: <strong>${this._escape(running)}</strong> ${progress.phase ? `(${this._escape(progress.phase)}${progress.model ? ` · ${this._escape(progress.model)}` : ""})` : ""}</p>
         ${run.error ? `<p class="banner">${this._escape(run.error)}</p>` : ""}
-        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Loaded: ${this._escape(String(summary.loaded_model_count ?? caps.loaded_models?.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? summary.max_instances ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx && summary.n_ctx > 0 ? summary.n_ctx : "—"))}</p>
+        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Loaded: ${this._escape(String(summary.loaded_model_count ?? loadedModels.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? summary.max_instances ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx && summary.n_ctx > 0 ? summary.n_ctx : "—"))} · Apply mode: <strong>${this._escape(applyMode)}</strong>${summary.router_role ? ` · ${this._escape(summary.router_role)}` : ""}</p>
         <div class="row">
           <button data-action="eval-probe">Probe server</button>
           <button data-action="eval-start">Run eval suite</button>
+          <button data-action="eval-start-preload">Run eval + preload models</button>
+          <button data-action="eval-preload">Preload recommended models</button>
           <button data-action="eval-apply">Apply model picks</button>
-          <button data-action="eval-apply-settings">Apply server settings</button>
+          <button data-action="eval-apply-settings">${applyMode === "preset" ? "Copy preset + instructions" : "Apply server settings"}</button>
           <button data-action="eval-copy-preset">Copy preset</button>
         </div>
+        ${loadedList ? `<h4>Loaded models</h4><ul>${loadedList}</ul>` : ""}
         ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
+        ${applyMode === "preset" ? `<p class="activity-hint">Router/Docker: edit the preset file on the llama volume, then restart the container. Live POST /props is not available.</p>` : ""}
         ${presetIni ? `<label>llama.cpp preset<textarea readonly rows="8">${this._escape(presetIni)}</textarea></label>` : ""}
         ${assignments ? `<h4>Recommended models per task</h4><ul>${assignments}</ul>` : ""}
         ${recommendation.summary ? `<p>${this._escape(recommendation.summary)}</p>` : ""}
@@ -2064,8 +2145,51 @@ class HaAgentPanel extends HTMLElement {
           <thead><tr><th>Task</th><th>Model</th><th>Score</th><th>Passed</th><th>Latency ms</th></tr></thead>
           <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
         </table>
-        <p class="activity-hint">Eval benchmarks loaded models by default (3 on a router server). Pass explicit models via API to include unloaded catalog entries.</p>
+        <p class="activity-hint">Eval benchmarks loaded models by default. Use preload or pass explicit models via API to benchmark catalog entries on a router server.</p>
       </div>`;
+  }
+
+  _bindEvalEvents() {
+    this.shadowRoot
+      .querySelector('[data-action="eval-probe"]')
+      ?.addEventListener("click", async () => {
+        await this._probeEvalServer();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-start"]')
+      ?.addEventListener("click", async () => {
+        await this._startEvalRun(false);
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-start-preload"]')
+      ?.addEventListener("click", async () => {
+        await this._startEvalRun(true);
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-preload"]')
+      ?.addEventListener("click", async () => {
+        await this._preloadEvalModels();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-apply"]')
+      ?.addEventListener("click", async () => {
+        await this._applyEvalRecommendations();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-apply-settings"]')
+      ?.addEventListener("click", async () => {
+        await this._applyEvalServerSettings();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="eval-copy-preset"]')
+      ?.addEventListener("click", async () => {
+        await this._copyEvalPreset();
+      });
+    this.shadowRoot.querySelectorAll('[data-action="eval-unload-model"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this._unloadEvalModel(button.getAttribute("data-model-id"));
+      });
+    });
   }
 
   _escape(text) {
@@ -2613,32 +2737,7 @@ class HaAgentPanel extends HTMLElement {
 
     this._bindRouteEvents();
     this._bindRecoveryEvents();
-
-    this.shadowRoot
-      .querySelector('[data-action="eval-probe"]')
-      ?.addEventListener("click", async () => {
-        await this._probeEvalServer();
-      });
-    this.shadowRoot
-      .querySelector('[data-action="eval-start"]')
-      ?.addEventListener("click", async () => {
-        await this._startEvalRun();
-      });
-    this.shadowRoot
-      .querySelector('[data-action="eval-apply"]')
-      ?.addEventListener("click", async () => {
-        await this._applyEvalRecommendations();
-      });
-    this.shadowRoot
-      .querySelector('[data-action="eval-apply-settings"]')
-      ?.addEventListener("click", async () => {
-        await this._applyEvalServerSettings();
-      });
-    this.shadowRoot
-      .querySelector('[data-action="eval-copy-preset"]')
-      ?.addEventListener("click", async () => {
-        await this._copyEvalPreset();
-      });
+    this._bindEvalEvents();
 
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {
       const updates = {};

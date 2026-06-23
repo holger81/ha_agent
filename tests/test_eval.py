@@ -227,6 +227,55 @@ def test_build_host_context_from_loaded_model() -> None:
     assert context["max_instances"] == 3
 
 
+def test_server_apply_mode_router_uses_preset() -> None:
+    server_apply = _load("eval.server_apply", COMPONENT / "eval" / "server_apply.py")
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        router_role="router",
+        props_writable=False,
+    )
+    assert server_apply.server_apply_mode(caps) == "preset"
+
+
+def test_server_apply_mode_props_when_writable() -> None:
+    server_apply = _load("eval.server_apply", COMPONENT / "eval" / "server_apply.py")
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        props_writable=True,
+    )
+    assert server_apply.server_apply_mode(caps) == "props"
+
+
+def test_verify_settings_applied_detects_ctx_change() -> None:
+    server_apply = _load("eval.server_apply", COMPONENT / "eval" / "server_apply.py")
+    before = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        props=llm_server.ServerProps(n_ctx=8192),
+    )
+    after = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        props=llm_server.ServerProps(n_ctx=65536),
+    )
+    result = server_apply.verify_settings_applied(
+        before,
+        after,
+        {"ctx-size": "65536"},
+    )
+    assert result["verified_count"] == 1
+    assert result["all_verified"] is True
+
+
+def test_probe_setting_value_reads_parallel() -> None:
+    server_apply = _load("eval.server_apply", COMPONENT / "eval" / "server_apply.py")
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        max_instances=3,
+        props=llm_server.ServerProps(total_slots=2),
+    )
+    assert server_apply.probe_setting_value(caps, "parallel") == 2
+    assert server_apply.probe_setting_value(caps, "n_parallel") == 2
+
+
 def test_eval_store_persists_runs_and_download_history() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "eval.db"
