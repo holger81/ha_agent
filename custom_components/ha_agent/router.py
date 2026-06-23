@@ -6,9 +6,12 @@ from enum import StrEnum
 
 from .config_helpers import LlmBackend, RouterConfig
 from .context import (
+    _recent_email_context,
+    _recent_news_context,
     entity_matches_query,
     is_device_action_query,
     is_email_query,
+    is_informational_follow_up,
     is_news_query,
 )
 from .playbooks import default_playbook_body, playbook_key_for_route
@@ -29,6 +32,7 @@ def classify_route(
     router_config: RouterConfig,
     *,
     route_keywords: dict[str, list[str]] | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> TaskRoute:
     """Pick the route for this user turn.
 
@@ -37,6 +41,7 @@ def classify_route(
     from the map uses its shipped default matcher.
     """
     overrides = route_keywords or {}
+    prior = history or []
     if is_email_query(user_text, overrides.get("email")):
         return TaskRoute.EMAIL
 
@@ -49,6 +54,20 @@ def classify_route(
         and is_device_action_query(user_text, overrides.get("action"))
     ):
         return TaskRoute.HA_ACTION
+
+    if (
+        _recent_news_context(prior)
+        and is_informational_follow_up(user_text)
+        and not is_email_query(user_text, overrides.get("email"))
+    ):
+        return TaskRoute.NEWS
+
+    if (
+        _recent_email_context(prior)
+        and is_informational_follow_up(user_text)
+        and not is_news_query(user_text, overrides.get("news"))
+    ):
+        return TaskRoute.EMAIL
 
     return TaskRoute.CHAT
 

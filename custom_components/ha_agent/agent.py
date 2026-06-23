@@ -562,6 +562,7 @@ async def run_agent(
         exposed_entities,
         router_config,
         route_keywords=route_keywords,
+        history=history,
     )
     record_route(hass, entry_id, route)
     hint_rules = await async_recovery_hints(hass, entry_id)

@@ -24,8 +24,32 @@ _SELECT_PROMPT = (
     "- Only use slugs from AVAILABLE SKILLS.\n"
     "- Prefer a skill when the request clearly matches its title, triggers, or "
     "description.\n"
-    "- Return [] when no skill applies or a generic reply suffices."
+    "- Return [] when no skill applies or a generic reply suffices.\n"
+    "- Never pick a skill whose domain conflicts with route (e.g. email skill "
+    "when route is news, or news skill when route is email).\n"
+    "- When route is news, email, or action, only pick skills that clearly "
+    "belong to that domain."
 )
+
+_ROUTE_DOMAIN_MARKERS: dict[str, re.Pattern[str]] = {
+    "email": re.compile(
+        r"\b(email|e-?mail|inbox|imap|mailbox|unread)\b",
+        re.IGNORECASE,
+    ),
+    "news": re.compile(
+        r"\b(news|headline|briefing|rss|nachrichten|curate)\b",
+        re.IGNORECASE,
+    ),
+    "action": re.compile(
+        r"\b("
+        r"light|switch|cover|fan|lock|climate|camera|entity_id|snapshot|"
+        r"ha_call_service|turn\s+on|turn\s+off|toggle"
+        r")\b",
+        re.IGNORECASE,
+    ),
+}
+
+_SPECIALIZED_ROUTES = frozenset(_ROUTE_DOMAIN_MARKERS)
 
 _ROUTE_SEARCH_HINTS: dict[str, str] = {
     "email": "email mail inbox unread messages",
@@ -33,6 +57,43 @@ _ROUTE_SEARCH_HINTS: dict[str, str] = {
 }
 
 _CATALOG_LIMIT = 30
+
+
+def _skill_text(skill: Skill) -> str:
+    """Return searchable skill text for route matching."""
+    return " ".join(
+        [
+            skill.title,
+            skill.description,
+            skill.body,
+            *[str(trigger) for trigger in skill.triggers],
+        ]
+    )
+
+
+def skill_matches_route(skill: Skill, route: str | None) -> bool:
+    """Return True when a skill plausibly belongs on the active route."""
+    route_key = (route or "").lower()
+    if route_key not in _SPECIALIZED_ROUTES:
+        return True
+
+    target = _ROUTE_DOMAIN_MARKERS[route_key]
+    text = _skill_text(skill)
+    if target.search(text):
+        return True
+
+    for other_route, other_pattern in _ROUTE_DOMAIN_MARKERS.items():
+        if other_route == route_key:
+            continue
+        if other_pattern.search(text):
+            return False
+
+    return False
+
+
+def _filter_by_route(skills: list[Skill], route: str | None) -> list[Skill]:
+    """Drop skills whose domain conflicts with the active route."""
+    return [skill for skill in skills if skill_matches_route(skill, route)]
 
 
 def parse_skill_selection(content: str) -> list[str]:
@@ -149,6 +210,7 @@ def _load_skill_candidates(
         enabled_only=True,
     )
     fts_skills = store.load_skills_by_ids([row.id for row in fts_rows])
+    fts_skills = _filter_by_route(fts_skills, route)
 
     route_hint = _ROUTE_SEARCH_HINTS.get(route or "")
     if route_hint is None:
@@ -165,7 +227,7 @@ def _load_skill_candidates(
     relevant_ids = {row.id for row in hint_rows}
     relevant_ids.update(skill.id for skill in fts_skills)
     candidates = [skill for skill in enabled if skill.id in relevant_ids]
-    return candidates, fts_skills
+    return _filter_by_route(candidates, route), fts_skills
 
 
 async def resolve_skills_for_turn(
@@ -195,17 +257,22 @@ async def resolve_skills_for_turn(
         )
 
     candidates, fts_matches = await hass.async_add_executor_job(_load)
-    if not candidates:
+    candidates = _filter_by_route(candidates, route)
+    fts_matches = _filter_by_route(fts_matches, route)
+    if not candidates and not fts_matches:
         return []
 
     if len(candidates) == 1:
         return candidates[:max_inject]
 
-    # FTS already pinned a single skill — trust it and skip the extra LLM call.
+    # FTS already pinned a single route-relevant skill — skip the extra LLM call.
     if len(fts_matches) == 1:
         return fts_matches[:max_inject]
 
-    catalog = _merge_catalog(fts_matches, candidates)
+    catalog = _filter_by_route(_merge_catalog(fts_matches, candidates), route)
+    if not catalog:
+        return []
+
     selected = await select_skills_with_llm(
         llm,
         backend,
@@ -215,7 +282,7 @@ async def resolve_skills_for_turn(
         max_select=max_inject,
     )
     if selected:
-        return selected[:max_inject]
+        return _filter_by_route(selected, route)[:max_inject]
 
     if fts_matches:
         return fts_matches[:max_inject]

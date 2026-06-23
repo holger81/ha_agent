@@ -163,6 +163,24 @@ def test_backend_for_route_returns_action_backend() -> None:
     assert backend.model == "action-model"
 
 
+def test_classify_route_news_follow_up_after_briefing() -> None:
+    """News detail questions stay on the news route."""
+    history = [
+        {"role": "user", "content": "what are todays news"},
+        {
+            "role": "assistant",
+            "content": "California shooting at a library and World Cup headlines.",
+        },
+    ]
+    route = router.classify_route(
+        "what is this about the California shooting",
+        [],
+        _router_config(enabled=True),
+        history=history,
+    )
+    assert route == router.TaskRoute.NEWS
+
+
 def test_backend_for_route_returns_email_backend() -> None:
     chat = config_helpers.LlmBackend(
         base_url="http://example/v1",

@@ -272,3 +272,68 @@ async def test_news_route_does_not_select_email_only_skill(monkeypatch) -> None:
 
     assert result == []
     llm.chat.assert_not_called()
+
+
+def test_skill_matches_route_rejects_email_on_news() -> None:
+    """Email-only skills must not match the news route."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    email_skill = Skill(
+        id="1",
+        slug="advanced-email",
+        title="Advanced Email Management",
+        description="Check inbox and read unread email messages",
+        triggers=["email", "inbox"],
+        body="Use imap tools for mailbox status.",
+        tool_steps=[],
+    )
+
+    assert selection.skill_matches_route(email_skill, "news") is False
+    assert selection.skill_matches_route(email_skill, "email") is True
+
+
+@pytest.mark.asyncio
+async def test_single_fts_match_still_respects_route(monkeypatch) -> None:
+    """A lone FTS hit is ignored when it conflicts with the active route."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    email_skill = Skill(
+        id="email-1",
+        slug="advanced-email",
+        title="Advanced Email Management",
+        description="Check inbox and read unread email messages",
+        triggers=["email", "inbox"],
+        body="",
+        tool_steps=[],
+    )
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        selection,
+        "_load_skill_candidates",
+        MagicMock(return_value=([email_skill], [email_skill])),
+    )
+
+    llm = MagicMock()
+    llm.chat = AsyncMock()
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        MagicMock(),
+        "what are todays news",
+        route="news",
+    )
+
+    assert result == []
+    llm.chat.assert_not_called()

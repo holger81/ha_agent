@@ -330,6 +330,26 @@ def _recent_news_context(history: list[dict[str, str]]) -> bool:
     return bool(is_news_query(combined))
 
 
+def _recent_email_context(history: list[dict[str, str]]) -> bool:
+    """Return True when recent turns were about email."""
+    combined = " ".join(message.get("content", "") for message in history[-4:])
+    return bool(is_email_query(combined))
+
+
+_INFORMATIONAL_FOLLOW_UP = re.compile(
+    r"\b("
+    r"about|more|detail|details|tell me|explain|what happened|who|why|where|"
+    r"this|these|that|those|it|them|again"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_informational_follow_up(query: str) -> bool:
+    """Return True when the user asks for more detail on a prior topic."""
+    return bool(_INFORMATIONAL_FOLLOW_UP.search(query))
+
+
 def _follow_up_device_hint(
     query: str,
     history: list[dict[str, str]],
