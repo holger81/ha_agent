@@ -9,7 +9,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from ..config_helpers import get_llm_backend
-from ..eval.model_registry import get_model_registry, propose_models_from_web
+from ..eval.discover_config import get_discover_config
+from ..eval.discover_models import propose_models_from_web as discover_propose_models
+from ..eval.discover_runner import (
+    approve_discover_download,
+    approve_discover_trial,
+    discover_run_to_dict,
+    get_discover_state,
+    start_discover_background,
+)
+from ..eval.model_registry import get_model_registry
 from ..eval.preset import recommendations_to_preset
 from ..eval.runner import (
     eval_run_to_dict,
@@ -31,16 +40,31 @@ from .config import set_config
 
 
 async def get_eval_status(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
-    """Return current or latest eval run status."""
-    state = get_eval_state(hass, entry_id)
-    if state is not None:
-        return {
-            "running": state.run.status == "running",
-            "run": eval_run_to_dict(state),
-        }
+    """Return current eval and discover pipeline status."""
+    discover_state = get_discover_state(hass, entry_id)
+    eval_state = get_eval_state(hass, entry_id)
+    discover_active = bool(
+        discover_state
+        and discover_state.run.status in {"running", "awaiting_approval"}
+    )
+    eval_active = bool(eval_state and eval_state.run.status == "running")
+
     store = get_eval_store(hass, entry_id)
     latest = await hass.async_add_executor_job(store.latest_run)
-    return {"running": False, "run": latest}
+    return {
+        "running": discover_active or eval_active,
+        "pipeline": (
+            "discover"
+            if discover_active
+            else ("eval" if eval_active else None)
+        ),
+        "discover": discover_run_to_dict(discover_state)
+        if discover_state
+        else None,
+        "run": eval_run_to_dict(eval_state)
+        if eval_active and eval_state
+        else latest,
+    }
 
 
 async def list_eval_runs(
@@ -307,26 +331,116 @@ async def discover_models(
     hass: HomeAssistant,
     entry_id: str,
 ) -> dict[str, Any]:
-    """Phase 3 stub: web model discovery."""
-    capabilities = await probe_entry_server(hass, entry_id)
+    """Search the web and return model proposals without starting the pipeline."""
+    entry = hass.config_entries.async_get_entry(entry_id)
+    config = get_discover_config(entry)
+    backend = get_llm_backend(entry)
     registry = get_model_registry(hass, entry_id)
-    proposals = await propose_models_from_web(
-        hass,
-        entry_id,
-        capabilities_summary=capabilities.get("summary", {}),
-    )
+    async with aiohttp.ClientSession() as session:
+        from ..llm_client import LlmClient
+        from ..llm_server import probe_server
+
+        capabilities = await probe_server(session, backend)
+        llm = LlmClient(session)
+        proposals = await discover_propose_models(
+            session,
+            llm,
+            backend,
+            capabilities=capabilities,
+            max_models=config.max_models,
+            skip_model_ids={
+                model_id
+                for model_id in capabilities.models
+                if registry.should_skip_download(model_id)
+            },
+        )
     return {
-        "implemented": False,
+        "implemented": True,
         "proposals": [
             {
-                "model_id": item.model_id,
-                "source_url": item.source_url,
-                "reason": item.reason,
-                "expected_benefit": item.expected_benefit,
+                **item.to_dict(),
                 "skip_download": registry.should_skip_download(item.model_id),
             }
             for item in proposals
         ],
+    }
+
+
+async def start_discover(
+    hass: HomeAssistant,
+    entry_id: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Start the full discover/download/trial pipeline."""
+    payload = payload or {}
+    entry = hass.config_entries.async_get_entry(entry_id)
+    config = get_discover_config(entry)
+    require_download = payload.get("require_download_approval")
+    require_trial = payload.get("require_trial_approval")
+    max_models = payload.get("max_models")
+    models_dir = payload.get("models_dir")
+    if require_download is None:
+        require_download = config.require_download_approval
+    if require_trial is None:
+        require_trial = config.require_trial_approval
+    parsed_max = int(max_models) if max_models is not None else None
+    parsed_dir = str(models_dir).strip() if models_dir else None
+    parsed_webhook = str(payload.get("download_webhook_url") or "").strip() or None
+    await start_discover_background(
+        hass,
+        entry_id,
+        require_download_approval=bool(require_download),
+        require_trial_approval=bool(require_trial),
+        max_models=parsed_max,
+        models_dir=parsed_dir or config.models_dir,
+        download_webhook_url=parsed_webhook or config.download_webhook_url,
+    )
+    state = get_discover_state(hass, entry_id)
+    return {
+        "started": True,
+        "discover": discover_run_to_dict(state) if state else {"status": "running"},
+    }
+
+
+async def approve_discover_downloads(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_ids: list[str],
+) -> dict[str, Any]:
+    """Approve downloading selected proposal models."""
+    if not approve_discover_download(hass, entry_id, model_ids):
+        raise HomeAssistantError(
+            "No discover pipeline is waiting for download approval."
+        )
+    state = get_discover_state(hass, entry_id)
+    return {
+        "approved": model_ids,
+        "discover": discover_run_to_dict(state) if state else None,
+    }
+
+
+async def approve_discover_trial_run(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_id: str,
+    *,
+    approved: bool,
+) -> dict[str, Any]:
+    """Approve or skip benchmarking one downloaded model."""
+    if not approve_discover_trial(
+        hass,
+        entry_id,
+        model_id=model_id,
+        approved=approved,
+    ):
+        raise HomeAssistantError(
+            f"No discover pipeline is waiting for trial approval on {model_id}."
+        )
+    state = get_discover_state(hass, entry_id)
+    return {
+        "model_id": model_id,
+        "approved": approved,
+        "discover": discover_run_to_dict(state) if state else None,
     }
 
 

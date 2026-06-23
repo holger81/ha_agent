@@ -20,6 +20,11 @@ from ..const import (
     CONF_EMAIL_LLM_BASE_URL,
     CONF_EMAIL_LLM_MODEL,
     CONF_EMAIL_MODEL_ENABLED,
+    CONF_EVAL_DISCOVER_MAX_MODELS,
+    CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL,
+    CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL,
+    CONF_EVAL_DOWNLOAD_WEBHOOK_URL,
+    CONF_EVAL_MODELS_DIR,
     CONF_LLM_MODEL,
     CONF_LLM_THINKING_LEVEL,
     CONF_MAX_AGENT_ITERATIONS,
@@ -57,6 +62,13 @@ _CONFIG_KEYS = {
     "skills_use_enabled": CONF_SKILLS_USE_ENABLED,
     "skills_max_inject": CONF_SKILLS_MAX_INJECT,
     "memory_persist": CONF_CONVERSATION_MEMORY_PERSIST,
+    "eval_models_dir": CONF_EVAL_MODELS_DIR,
+    "eval_download_webhook_url": CONF_EVAL_DOWNLOAD_WEBHOOK_URL,
+    "eval_discover_require_download_approval": (
+        CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL
+    ),
+    "eval_discover_require_trial_approval": CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL,
+    "eval_discover_max_models": CONF_EVAL_DISCOVER_MAX_MODELS,
 }
 
 

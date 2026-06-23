@@ -45,6 +45,11 @@ class HaAgentPanel extends HTMLElement {
     this._evalCapabilities = null;
     this._evalNotice = null;
     this._evalPollTimer = null;
+    this._discoverRequireDownloadApproval = true;
+    this._discoverRequireTrialApproval = true;
+    this._discoverModelsDir = "";
+    this._discoverWebhookUrl = "";
+    this._discoverSelectedModels = new Set();
   }
 
   _newConversationId() {
@@ -355,6 +360,11 @@ class HaAgentPanel extends HTMLElement {
       entry_id: this._entryId,
     });
     this._evalStatus = data;
+    const discover = data.discover || {};
+    const discoverMsg = discover.progress?.message;
+    if (discoverMsg && (data.pipeline === "discover" || discover.status === "awaiting_approval")) {
+      this._evalNotice = discoverMsg;
+    }
     if (data.running) {
       this._startEvalPoll();
     } else {
@@ -503,6 +513,150 @@ class HaAgentPanel extends HTMLElement {
       }
     }
     this._render();
+  }
+
+  async _cancelPipeline() {
+    if (!this._entryId) return;
+    const data = await this._call("ha_agent/eval/cancel", { entry_id: this._entryId });
+    this._evalNotice = data.cancelled
+      ? "Cancel requested — stopping pipeline…"
+      : "No active pipeline to cancel.";
+    await this._loadEvalStatus();
+    this._render();
+  }
+
+  async _startDiscoverPipeline() {
+    if (!this._entryId) return;
+    this._evalNotice = "Starting model discover pipeline…";
+    this._render();
+    const payload = {
+      require_download_approval: this._discoverRequireDownloadApproval,
+      require_trial_approval: this._discoverRequireTrialApproval,
+    };
+    const dir = (this._discoverModelsDir || this._config?.eval_models_dir || "").trim();
+    const webhook = (
+      this._discoverWebhookUrl || this._config?.eval_download_webhook_url || ""
+    ).trim();
+    if (dir) payload.models_dir = dir;
+    if (webhook) payload.download_webhook_url = webhook;
+    await this._call("ha_agent/eval/discover/start", {
+      entry_id: this._entryId,
+      ...payload,
+    });
+    await this._loadEvalStatus();
+    this._evalNotice =
+      this._evalStatus?.discover?.progress?.message || "Discover pipeline running.";
+    this._render();
+  }
+
+  async _approveDiscoverDownloads(modelIds = null) {
+    if (!this._entryId) return;
+    const ids = modelIds ?? [...this._discoverSelectedModels];
+    if (!ids.length && modelIds === null) {
+      this._evalNotice = "Select at least one model to download.";
+      this._render();
+      return;
+    }
+    await this._call("ha_agent/eval/discover/approve_download", {
+      entry_id: this._entryId,
+      model_ids: ids,
+    });
+    this._discoverSelectedModels = new Set();
+    await this._loadEvalStatus();
+    this._evalNotice =
+      this._evalStatus?.discover?.progress?.message || "Download approved.";
+    this._render();
+  }
+
+  async _approveDiscoverTrial(modelId, approved) {
+    if (!this._entryId || !modelId) return;
+    await this._call("ha_agent/eval/discover/approve_trial", {
+      entry_id: this._entryId,
+      model_id: modelId,
+      approved,
+    });
+    await this._loadEvalStatus();
+    this._evalNotice =
+      this._evalStatus?.discover?.progress?.message ||
+      (approved ? `Trial approved for ${modelId}.` : `Skipped trial for ${modelId}.`);
+    this._render();
+  }
+
+  _renderDiscoverSection(discover) {
+    if (!discover) return "";
+    const progress = discover.progress || {};
+    const proposals = discover.proposals || [];
+    const trialResults = discover.trial_results || [];
+    const pending = discover.pending_approval;
+    const proposalChecks = proposals
+      .map((item) => {
+        const id = item.model_id || "";
+        const checked = this._discoverSelectedModels.has(id) ? "checked" : "";
+        return `<li>
+          <label>
+            <input type="checkbox" data-action="discover-select-model" data-model-id="${this._escape(id)}" ${checked} />
+            <strong>${this._escape(id)}</strong>
+            ${item.skip_download ? " (skipped — tried before)" : ""}
+          </label>
+          <div class="activity-hint">${this._escape(item.reason || "")}</div>
+        </li>`;
+      })
+      .join("");
+    const trialRows = trialResults
+      .map(
+        (item) => `<tr>
+          <td>${this._escape(item.model_id || "")}</td>
+          <td>${item.mean_score != null ? Number(item.mean_score).toFixed(2) : "—"}</td>
+          <td>${item.incumbent_score != null ? Number(item.incumbent_score).toFixed(2) : "—"}</td>
+          <td>${item.accepted ? "accepted" : item.skipped ? "skipped" : "rejected"}</td>
+          <td>${this._escape(item.reason || "")}</td>
+        </tr>`,
+      )
+      .join("");
+    const trialModel =
+      discover.pending_trial_model_id || progress.model_id || null;
+    const manual = progress.manual_download || {};
+    return `
+      <hr />
+      <h3>Phase 3 — Discover models</h3>
+      <p><strong>${this._escape(discover.status || "idle")}</strong> — ${this._escape(progress.message || "")}</p>
+      ${manual.hf_url ? `<p class="activity-hint">Download URL: <a href="${this._escape(manual.hf_url)}" target="_blank" rel="noopener">${this._escape(manual.hf_url)}</a></p>` : ""}
+      ${manual.docker_hint ? `<p class="activity-hint">${this._escape(manual.docker_hint)}</p>` : ""}
+      ${manual.llama_cli_hint ? `<p class="activity-hint">${this._escape(manual.llama_cli_hint)}</p>` : ""}
+      ${discover.error ? `<p class="banner">${this._escape(discover.error)}</p>` : ""}
+      <label><input type="checkbox" data-action="discover-require-download" ${this._discoverRequireDownloadApproval ? "checked" : ""} /> Require approval before download</label>
+      <label><input type="checkbox" data-action="discover-require-trial" ${this._discoverRequireTrialApproval ? "checked" : ""} /> Require approval before trial eval</label>
+      <label>Download webhook (optional — runs on llama host)
+        <input data-field="discover-webhook-url" value="${this._escape(this._discoverWebhookUrl || this._config?.eval_download_webhook_url || "")}" placeholder="http://192.168.10.31:9999/ha-agent/download" />
+      </label>
+      <label>Shared models dir (optional — only if HA can write the llama volume)
+        <input data-field="discover-models-dir" value="${this._escape(this._discoverModelsDir || this._config?.eval_models_dir || "")}" placeholder="/path/to/llama/models volume" />
+      </label>
+      <div class="row">
+        <button data-action="discover-start">Start discover pipeline</button>
+        <button data-action="eval-cancel">Cancel pipeline</button>
+      </div>
+      ${pending === "download" && proposals.length ? `
+        <h4>Approve downloads</h4>
+        <ul>${proposalChecks}</ul>
+        <div class="row">
+          <button data-action="discover-approve-download">Download selected</button>
+          <button data-action="discover-approve-download-none">Skip all downloads</button>
+        </div>` : ""}
+      ${pending === "trial" && trialModel ? `
+        <h4>Approve trial</h4>
+        <p>Benchmark <strong>${this._escape(trialModel)}</strong> against your incumbent model?</p>
+        <div class="row">
+          <button data-action="discover-approve-trial" data-model-id="${this._escape(trialModel)}" data-approved="true">Run trial eval</button>
+          <button data-action="discover-approve-trial" data-model-id="${this._escape(trialModel)}" data-approved="false">Skip this model</button>
+        </div>` : ""}
+      ${proposals.length && pending !== "download" ? `<h4>Proposals</h4><ul>${proposalChecks.replace(/<input[^>]+>/g, "")}</ul>` : ""}
+      ${trialRows ? `<h4>Trial results</h4>
+        <table>
+          <thead><tr><th>Model</th><th>Score</th><th>Incumbent</th><th>Outcome</th><th>Notes</th></tr></thead>
+          <tbody>${trialRows}</tbody>
+        </table>` : ""}
+      <p class="activity-hint">Default: download on the llama Docker host (HA polls until the model appears). Optional webhook automates host download. Shared models dir only if Home Assistant can write that path.</p>`;
   }
 
   async _copyEvalPreset() {
@@ -2112,7 +2266,19 @@ class HaAgentPanel extends HTMLElement {
     const presetIni = recommendation.preset_ini || "";
     const applyMode =
       recommendation.apply_mode || (summary.props_writable ? "props" : "preset");
-    const running = this._evalStatus?.running ? "Running" : run.status || "idle";
+    const pipeline = this._evalStatus?.pipeline;
+    const discover = this._evalStatus?.discover;
+    const running = this._evalStatus?.running
+      ? pipeline === "discover"
+        ? "Discover running"
+        : "Eval running"
+      : run.status || "idle";
+    const statusDetail =
+      pipeline === "discover" && discover?.progress?.message
+        ? discover.progress.message
+        : progress.phase
+          ? `${progress.phase}${progress.model ? ` · ${progress.model}` : ""}`
+          : "";
     const loadedModels = caps.loaded_models || [];
     const loadedList = loadedModels
       .map(
@@ -2123,9 +2289,8 @@ class HaAgentPanel extends HTMLElement {
     return `
       <div class="settings-grid">
         <p class="activity-hint">${this._escape(this._evalNotice || "")}</p>
-        <p>Status: <strong>${this._escape(running)}</strong> ${progress.phase ? `(${this._escape(progress.phase)}${progress.model ? ` · ${this._escape(progress.model)}` : ""})` : ""}</p>
+        <p>Status: <strong>${this._escape(running)}</strong> ${statusDetail ? `(${this._escape(statusDetail)})` : ""}</p>
         ${run.error ? `<p class="banner">${this._escape(run.error)}</p>` : ""}
-        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Loaded: ${this._escape(String(summary.loaded_model_count ?? loadedModels.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? summary.max_instances ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx && summary.n_ctx > 0 ? summary.n_ctx : "—"))} · Apply mode: <strong>${this._escape(applyMode)}</strong>${summary.router_role ? ` · ${this._escape(summary.router_role)}` : ""}</p>
         <div class="row">
           <button data-action="eval-probe">Probe server</button>
           <button data-action="eval-start">Run eval suite</button>
@@ -2134,8 +2299,9 @@ class HaAgentPanel extends HTMLElement {
           <button data-action="eval-apply">Apply model picks</button>
           <button data-action="eval-apply-settings">${applyMode === "preset" ? "Copy preset + instructions" : "Apply server settings"}</button>
           <button data-action="eval-copy-preset">Copy preset</button>
+          <button data-action="eval-cancel">Cancel pipeline</button>
         </div>
-        ${loadedList ? `<h4>Loaded models</h4><ul>${loadedList}</ul>` : ""}
+        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Loaded: ${this._escape(String(summary.loaded_model_count ?? loadedModels.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? summary.max_instances ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx && summary.n_ctx > 0 ? summary.n_ctx : "—"))} · Apply mode: <strong>${this._escape(applyMode)}</strong>${summary.router_role ? ` · ${this._escape(summary.router_role)}` : ""}</p>
         ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
         ${applyMode === "preset" ? `<p class="activity-hint">Router/Docker: edit the preset file on the llama volume, then restart the container. Live POST /props is not available.</p>` : ""}
         ${presetIni ? `<label>llama.cpp preset<textarea readonly rows="8">${this._escape(presetIni)}</textarea></label>` : ""}
@@ -2146,6 +2312,8 @@ class HaAgentPanel extends HTMLElement {
           <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
         </table>
         <p class="activity-hint">Eval benchmarks loaded models by default. Use preload or pass explicit models via API to benchmark catalog entries on a router server.</p>
+        ${loadedList ? `<h4>Loaded models</h4><ul>${loadedList}</ul>` : ""}
+        ${this._renderDiscoverSection(discover)}
       </div>`;
   }
 
@@ -2190,6 +2358,62 @@ class HaAgentPanel extends HTMLElement {
         await this._unloadEvalModel(button.getAttribute("data-model-id"));
       });
     });
+    this.shadowRoot
+      .querySelector('[data-action="eval-cancel"]')
+      ?.addEventListener("click", async () => {
+        await this._cancelPipeline();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="discover-start"]')
+      ?.addEventListener("click", async () => {
+        await this._startDiscoverPipeline();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="discover-approve-download"]')
+      ?.addEventListener("click", async () => {
+        await this._approveDiscoverDownloads();
+      });
+    this.shadowRoot
+      .querySelector('[data-action="discover-approve-download-none"]')
+      ?.addEventListener("click", async () => {
+        await this._approveDiscoverDownloads([]);
+      });
+    this.shadowRoot.querySelectorAll('[data-action="discover-approve-trial"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this._approveDiscoverTrial(
+          button.getAttribute("data-model-id"),
+          button.getAttribute("data-approved") === "true",
+        );
+      });
+    });
+    this.shadowRoot.querySelectorAll('[data-action="discover-select-model"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        const modelId = input.getAttribute("data-model-id");
+        if (!modelId) return;
+        if (input.checked) this._discoverSelectedModels.add(modelId);
+        else this._discoverSelectedModels.delete(modelId);
+      });
+    });
+    this.shadowRoot
+      .querySelector('[data-action="discover-require-download"]')
+      ?.addEventListener("change", (event) => {
+        this._discoverRequireDownloadApproval = event.target.checked;
+      });
+    this.shadowRoot
+      .querySelector('[data-action="discover-require-trial"]')
+      ?.addEventListener("change", (event) => {
+        this._discoverRequireTrialApproval = event.target.checked;
+      });
+    this.shadowRoot
+      .querySelector('[data-field="discover-models-dir"]')
+      ?.addEventListener("input", (event) => {
+        this._discoverModelsDir = event.target.value;
+      });
+    this.shadowRoot
+      .querySelector('[data-field="discover-webhook-url"]')
+      ?.addEventListener("input", (event) => {
+        this._discoverWebhookUrl = event.target.value;
+      });
   }
 
   _escape(text) {

@@ -82,6 +82,9 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_eval_apply)
     websocket_api.async_register_command(hass, ws_eval_apply_settings)
     websocket_api.async_register_command(hass, ws_eval_discover)
+    websocket_api.async_register_command(hass, ws_eval_discover_start)
+    websocket_api.async_register_command(hass, ws_eval_discover_approve_download)
+    websocket_api.async_register_command(hass, ws_eval_discover_approve_trial)
 
 
 def _entry_id_schema(extra: dict | None = None) -> dict:
@@ -1049,4 +1052,80 @@ async def ws_eval_preload_models(hass: HomeAssistant, connection, msg: dict) -> 
 async def ws_eval_discover(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     result = await eval_api.discover_models(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/discover/start",
+        **_entry_id_schema(
+            {
+                vol.Optional("require_download_approval"): bool,
+                vol.Optional("require_trial_approval"): bool,
+                vol.Optional("max_models"): int,
+                vol.Optional("models_dir"): str,
+                vol.Optional("download_webhook_url"): str,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_discover_start(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    payload = {
+        key: msg[key]
+        for key in (
+            "require_download_approval",
+            "require_trial_approval",
+            "max_models",
+            "models_dir",
+            "download_webhook_url",
+        )
+        if key in msg
+    }
+    result = await eval_api.start_discover(hass, msg["entry_id"], payload)
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/discover/approve_download",
+        **_entry_id_schema({vol.Required("model_ids"): [str]}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_discover_approve_download(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await eval_api.approve_discover_downloads(
+        hass,
+        msg["entry_id"],
+        msg["model_ids"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/discover/approve_trial",
+        **_entry_id_schema(
+            {
+                vol.Required("model_id"): str,
+                vol.Required("approved"): bool,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_discover_approve_trial(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await eval_api.approve_discover_trial_run(
+        hass,
+        msg["entry_id"],
+        msg["model_id"],
+        approved=msg["approved"],
+    )
     connection.send_message(websocket_api.result_message(msg["id"], result))

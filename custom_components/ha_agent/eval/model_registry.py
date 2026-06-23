@@ -19,6 +19,22 @@ class ModelProposal:
     source_url: str | None
     reason: str
     expected_benefit: str = ""
+    hf_repo: str = ""
+    hf_filename: str = ""
+    skip_download: bool = False
+    local_path: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "source_url": self.source_url,
+            "reason": self.reason,
+            "expected_benefit": self.expected_benefit,
+            "hf_repo": self.hf_repo,
+            "hf_filename": self.hf_filename,
+            "skip_download": self.skip_download,
+            "local_path": self.local_path,
+        }
 
 
 class ModelRegistry:
@@ -73,20 +89,14 @@ class ModelRegistry:
 
 
 async def propose_models_from_web(
-    _hass: HomeAssistant,
-    _entry_id: str,
+    hass: HomeAssistant,
+    entry_id: str,
     *,
     capabilities_summary: dict[str, Any],
 ) -> list[ModelProposal]:
-    """Phase 3: search the web and propose models for this setup.
-
-    Not implemented yet — returns an empty list. When wired up, this should:
-    - search HuggingFace / model cards / community benchmarks
-    - respect ``should_skip_download`` history
-    - download via HF API into the llama models volume; load/unload via HTTP
-    """
+    """Legacy stub entry point — use discover_models.propose_models_from_web."""
     LOGGER.info(
-        "Model web discovery not implemented yet (capabilities=%s)",
+        "Use discover pipeline for web proposals (capabilities=%s)",
         capabilities_summary.get("model_count"),
     )
     return []

@@ -50,6 +50,14 @@ CONF_NEWS_MODEL_ENABLED = "news_model_enabled"
 CONF_NEWS_LLM_BASE_URL = "news_llm_base_url"
 CONF_NEWS_LLM_MODEL = "news_llm_model"
 
+CONF_EVAL_MODELS_DIR = "eval_models_dir"
+CONF_EVAL_DOWNLOAD_WEBHOOK_URL = "eval_download_webhook_url"
+CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL = "eval_discover_require_download_approval"
+CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL = "eval_discover_require_trial_approval"
+CONF_EVAL_DISCOVER_MAX_MODELS = "eval_discover_max_models"
+
+DEFAULT_EVAL_DISCOVER_MAX_MODELS = 3
+
 DEFAULT_LLM_BASE_URL = "http://192.168.10.31:9292/v1"
 DEFAULT_LLM_MODEL = "unsloth/gemma-4-26B-A4B-it-GGUF:IQ4_XS"
 DEFAULT_LLM_MAX_TOKENS = 4096
@@ -92,7 +100,7 @@ DEFAULT_TOOL_INSTRUCTIONS = (
 # Saved during setup before MCP-compliant defaults; reset on upgrade.
 LEGACY_TOOL_INSTRUCTION_MARKERS = ("mcp_call_tool",)
 
-CONFIG_ENTRY_VERSION = 8
+CONFIG_ENTRY_VERSION = 9
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"

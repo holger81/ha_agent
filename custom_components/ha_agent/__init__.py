@@ -22,6 +22,11 @@ from .const import (
     CONF_EMAIL_LLM_BASE_URL,
     CONF_EMAIL_LLM_MODEL,
     CONF_EMAIL_MODEL_ENABLED,
+    CONF_EVAL_DISCOVER_MAX_MODELS,
+    CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL,
+    CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL,
+    CONF_EVAL_DOWNLOAD_WEBHOOK_URL,
+    CONF_EVAL_MODELS_DIR,
     CONF_LLM_ENABLE_THINKING,
     CONF_LLM_MODEL,
     CONF_LLM_THINKING_LEVEL,
@@ -37,6 +42,7 @@ from .const import (
     DEFAULT_ACTION_LLM_MAX_TOKENS,
     DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
+    DEFAULT_EVAL_DISCOVER_MAX_MODELS,
     DEFAULT_SKILLS_MAX_INJECT,
     DEFAULT_TOOL_INSTRUCTIONS,
     DOMAIN,
@@ -129,6 +135,14 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         data.setdefault(CONF_NEWS_MODEL_ENABLED, False)
         data.setdefault(CONF_NEWS_LLM_BASE_URL, "")
         data.setdefault(CONF_NEWS_LLM_MODEL, "")
+        version = 8
+
+    if version == 8:
+        data.setdefault(CONF_EVAL_MODELS_DIR, "")
+        data.setdefault(CONF_EVAL_DOWNLOAD_WEBHOOK_URL, "")
+        data.setdefault(CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL, True)
+        data.setdefault(CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL, True)
+        data.setdefault(CONF_EVAL_DISCOVER_MAX_MODELS, DEFAULT_EVAL_DISCOVER_MAX_MODELS)
         version = CONFIG_ENTRY_VERSION
 
     if version != config_entry.version:

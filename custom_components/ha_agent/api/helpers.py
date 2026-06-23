@@ -12,7 +12,14 @@ from ..config_helpers import (
     get_router_config,
     get_skills_config,
 )
-from ..const import DOMAIN
+from ..const import (
+    CONF_EVAL_DISCOVER_MAX_MODELS,
+    CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL,
+    CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL,
+    CONF_EVAL_DOWNLOAD_WEBHOOK_URL,
+    CONF_EVAL_MODELS_DIR,
+    DOMAIN,
+)
 
 
 def require_admin(connection) -> None:
@@ -80,4 +87,15 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "skills_use_enabled": skills.use_enabled,
         "skills_max_inject": skills.max_inject,
         "memory_persist": bool(data.get("conversation_memory_persist", False)),
+        "eval_models_dir": data.get(CONF_EVAL_MODELS_DIR, ""),
+        "eval_download_webhook_url": data.get(CONF_EVAL_DOWNLOAD_WEBHOOK_URL, ""),
+        "eval_discover_require_download_approval": bool(
+            data.get(CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL, True)
+        ),
+        "eval_discover_require_trial_approval": bool(
+            data.get(CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL, True)
+        ),
+        "eval_discover_max_models": int(
+            data.get(CONF_EVAL_DISCOVER_MAX_MODELS, 3)
+        ),
     }

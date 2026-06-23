@@ -87,3 +87,31 @@ class EvalRunState:
 
     run: EvalRun
     cancel_requested: bool = False
+
+
+@dataclass(slots=True)
+class DiscoverRun:
+    """One phase-3 discover/download/trial pipeline execution."""
+
+    id: str
+    entry_id: str
+    status: str
+    started_at: float
+    finished_at: float | None = None
+    progress: dict[str, Any] = field(default_factory=dict)
+    proposals: list[dict[str, Any]] = field(default_factory=list)
+    trial_results: list[dict[str, Any]] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class DiscoverRunState:
+    """In-memory status for a background discover pipeline."""
+
+    run: DiscoverRun
+    cancel_requested: bool = False
+    download_approval_ready: bool = False
+    approved_download_ids: list[str] = field(default_factory=list)
+    trial_approval_ready: bool = False
+    trial_approved: bool | None = None
+    pending_trial_model_id: str | None = None

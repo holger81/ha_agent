@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -579,6 +582,54 @@ async def preload_models(
         if result.get("ok"):
             already_loaded.add(model_id)
     return results
+
+
+async def model_available_on_server(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+) -> bool:
+    """Return True when model_id appears in the llama.cpp model catalog."""
+    probe = LlmServerProbe(session)
+    caps = await probe.probe(backend)
+    return model_id in caps.models
+
+
+async def wait_for_model_on_server(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+    poll_interval: float = 10.0,
+    timeout: float = 7200.0,
+) -> dict[str, Any]:
+    """Poll /v1/models until a model shows up (manual or remote download)."""
+    started = time.monotonic()
+    while True:
+        if cancel_check and cancel_check():
+            return {"ok": False, "cancelled": True, "model": model_id}
+        elapsed = time.monotonic() - started
+        if elapsed > timeout:
+            return {
+                "ok": False,
+                "model": model_id,
+                "error": (
+                    f"Timed out after {int(timeout)}s waiting for model on server."
+                ),
+            }
+        if await model_available_on_server(session, backend, model_id):
+            return {"ok": True, "model": model_id, "wait_seconds": int(elapsed)}
+        if on_progress:
+            on_progress(
+                {
+                    "model": model_id,
+                    "wait_seconds": int(elapsed),
+                    "poll_interval": poll_interval,
+                }
+            )
+        await asyncio.sleep(poll_interval)
 
 
 async def apply_props_settings(

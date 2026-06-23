@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -29,7 +30,7 @@ from ..skills.models import TurnTrace
 from .cases import list_eval_cases
 from .classifier_runner import run_classifier_case
 from .mcp_mock import EvalMcpClient
-from .models import EVAL_TASKS, EvalCaseScore, EvalRun, EvalRunState
+from .models import EVAL_TASKS, EvalCaseScore, EvalRun, EvalRunState, EvalTaskScore
 from .recommender import (
     finalize_settings_recommendation,
     recommend_settings,
@@ -374,6 +375,144 @@ def _router_config_for_case(task: str, router_config: RouterConfig) -> RouterCon
     return router_config
 
 
+async def benchmark_single_model(
+    hass: HomeAssistant,
+    entry_id: str,
+    model: str,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[EvalCaseScore], list[EvalTaskScore]]:
+    """Run all eval cases for one model (used by the discover pipeline)."""
+    from ..agent import run_agent
+
+    entry = hass.config_entries.async_get_entry(entry_id)
+    chat_backend = get_llm_backend(entry)
+    agent_config = get_agent_config(entry)
+    router_config = get_router_config(entry)
+    skills_config = SkillsConfig(
+        learning_enabled=False,
+        auto_save=False,
+        use_enabled=False,
+        max_inject=0,
+    )
+    eval_agent_config = AgentConfig(
+        system_prompt=agent_config.system_prompt,
+        tool_instructions=agent_config.tool_instructions,
+        max_iterations=agent_config.max_iterations,
+        history_turns=0,
+        enable_streaming=False,
+        show_reasoning_in_chat=False,
+    )
+    model_backend = LlmBackend(
+        base_url=chat_backend.base_url,
+        model=model,
+        api_key=chat_backend.api_key,
+        max_tokens=min(chat_backend.max_tokens, 1024),
+        temperature=chat_backend.temperature,
+        timeout=chat_backend.timeout,
+        thinking_level="off",
+    )
+    cases = list_eval_cases()
+    case_scores: list[EvalCaseScore] = []
+
+    async with aiohttp.ClientSession() as session:
+        llm = LlmClient(session)
+        for case in cases:
+            if cancel_check and cancel_check():
+                break
+            if progress_callback:
+                progress_callback(
+                    {
+                        "phase": "benchmarking",
+                        "model": model,
+                        "task": case.task,
+                        "case_id": case.id,
+                    }
+                )
+            if case.task == "classifier":
+                classifier_backend = LlmBackend(
+                    base_url=chat_backend.base_url,
+                    model=model,
+                    api_key=chat_backend.api_key,
+                    max_tokens=256,
+                    temperature=0.0,
+                    timeout=chat_backend.timeout,
+                    thinking_level="off",
+                )
+                try:
+                    case_scores.append(
+                        await run_classifier_case(llm, classifier_backend, case)
+                    )
+                except Exception as err:
+                    case_scores.append(
+                        EvalCaseScore(
+                            case_id=case.id,
+                            task=case.task,
+                            model=model,
+                            score=0.0,
+                            passed=False,
+                            details=[str(err)],
+                        )
+                    )
+                continue
+
+            mcp = EvalMcpClient(
+                session_prompt=(
+                    "MCP SERVER INSTRUCTIONS:\n"
+                    "Use callTool with exact toolName values."
+                ),
+                responses=list(case.mock_mcp_responses),
+            )
+            conversation_id = f"discover-{entry_id}-{case.id}-{model}"
+            started = time.perf_counter()
+            try:
+                async for _delta in run_agent(
+                    hass,
+                    llm=llm,
+                    mcp_client=mcp,
+                    backend=model_backend,
+                    agent_config=eval_agent_config,
+                    router_config=_router_config_for_case(case.task, router_config),
+                    skills_config=skills_config,
+                    entry_id=entry_id,
+                    conversation_id=conversation_id,
+                    user_text=case.user_text,
+                    exposed_entities=list(case.exposed_entities),
+                ):
+                    if cancel_check and cancel_check():
+                        break
+            except Exception as err:
+                case_scores.append(
+                    EvalCaseScore(
+                        case_id=case.id,
+                        task=case.task,
+                        model=model,
+                        score=0.0,
+                        passed=False,
+                        latency_ms=(time.perf_counter() - started) * 1000,
+                        details=[str(err)],
+                    )
+                )
+                continue
+            latency_ms = (time.perf_counter() - started) * 1000
+            turns, _total = list_turns(hass, entry_id, limit=1)
+            trace = _trace_from_activity(turns[0]) if turns else TurnTrace(
+                user_text=case.user_text,
+                history_len=0,
+            )
+            case_scores.append(
+                score_case(
+                    case,
+                    model=model,
+                    trace=trace,
+                    latency_ms=latency_ms,
+                )
+            )
+
+    return case_scores, aggregate_task_scores(case_scores)
+
+
 async def start_eval_background(
     hass: HomeAssistant,
     entry_id: str,
@@ -384,9 +523,11 @@ async def start_eval_background(
     preload_models_flag: bool = False,
 ) -> EvalRun:
     """Schedule an eval run and return the placeholder run record."""
+    from .discover_runner import _pipeline_busy
+
     state_store = _state_store(hass)
-    if entry_id in state_store and state_store[entry_id].run.status == "running":
-        raise RuntimeError("An eval run is already in progress for this entry.")
+    if _pipeline_busy(hass, entry_id):
+        raise RuntimeError("An eval or discover pipeline is already in progress.")
 
     placeholder = EvalRun(
         id="pending",
@@ -412,11 +553,9 @@ async def start_eval_background(
 
 
 def request_eval_cancel(hass: HomeAssistant, entry_id: str) -> bool:
-    state = _state_store(hass).get(entry_id)
-    if state is None or state.run.status != "running":
-        return False
-    state.cancel_requested = True
-    return True
+    from .discover_runner import request_pipeline_cancel
+
+    return request_pipeline_cancel(hass, entry_id)
 
 
 async def probe_entry_server(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
