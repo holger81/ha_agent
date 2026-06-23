@@ -6,6 +6,7 @@ from homeassistant.core import HomeAssistant
 
 from ..config_helpers import LlmBackend
 from ..llm_client import LlmClient
+from .body import normalize_skill_draft
 from .models import Skill, SkillDraft, TurnTrace
 from .observer import observe_skill_candidate
 from .store import get_skill_store
@@ -72,9 +73,13 @@ async def create_skill_from_trace(
         return store.find_duplicate(draft.triggers)
 
     duplicate = await hass.async_add_executor_job(_find_dup)
+    normalized = normalize_skill_draft(
+        draft,
+        explicit_tool_steps=bool(draft.tool_steps),
+    )
     return await save_skill_from_draft(
         hass,
         entry_id,
-        draft,
+        normalized,
         update_existing=duplicate,
     )

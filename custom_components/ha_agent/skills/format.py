@@ -21,10 +21,16 @@ def format_skills_for_context(
     if route in _ROUTE_SKILL_PRIORITY:
         header = (
             "ACTIVE SKILLS (PRIORITY — selected for this turn): "
-            "Follow its tool_steps in order before improvising other tools. "
-            "Reuse toolName values and arguments exactly unless a step failed "
-            "with recovery hints. Do not repeat identical tool calls already "
-            "shown in this conversation."
+            "Follow the workflow below. "
+        )
+        if any(skill.tool_steps for skill in skills):
+            header += (
+                "When tool steps are listed, run them in order before improvising. "
+                "Reuse toolName values and arguments exactly unless a step failed "
+                "with recovery hints. "
+            )
+        header += (
+            "Do not repeat identical tool calls already shown in this conversation."
         )
     else:
         header = (
@@ -35,14 +41,18 @@ def format_skills_for_context(
     lines = [header]
     for skill in skills:
         lines.append(f"- [{skill.slug}] {skill.title}: {skill.description}")
+        body_preview = skill.body.strip()
+        if body_preview:
+            lines.append(f"  Workflow:\n{body_preview}")
         if skill.tool_steps:
             steps_json = json.dumps(skill.tool_steps, ensure_ascii=True)
             lines.append(f"  Tool steps: {steps_json}")
             lines.append(
-                "  Run each tool step once per turn. After the last step, confirm the "
-                "outcome matches the workflow before answering the user."
+                "  Run each tool step once per turn. After the last step, confirm "
+                "the outcome matches the workflow before answering the user."
             )
-        body_preview = skill.body.strip()
-        if body_preview:
-            lines.append(f"  Workflow:\n{body_preview}")
+        elif body_preview:
+            lines.append(
+                "  Follow the workflow steps above; call the named tools in order."
+            )
     return "\n".join(lines)

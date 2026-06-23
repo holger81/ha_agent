@@ -10,6 +10,7 @@ from typing import Any
 from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..llm_client import LlmClient
+from .body import normalize_skill_draft
 from .models import SkillDraft, TurnTrace
 
 _DISCOVERY_TOOL = re.compile(
@@ -29,14 +30,14 @@ _OBSERVER_PROMPT = (
     "- title (max 64 chars)\n"
     "- description (third-person WHAT + WHEN, max 512 chars)\n"
     "- triggers (3-8 example user phrases)\n"
-    "- body (markdown workflow steps; omit incidental content)\n"
-    "- tool_steps (list of {toolName, arguments} for reusable execution steps)\n"
+    "- body (markdown workflow — primary instructions; mention tools in backticks)\n"
+    "- tool_steps (optional; omit or [] to derive tool names from body on save)\n"
     "Rules for learn=true:\n"
     "- Repeatable procedure the user may ask again (device control, email check "
     "workflow, etc.), not a single factual answer.\n"
-    "- tool_steps must list only execution tools that should run again; EXCLUDE "
-    "discovery/searchToolsForDomain/searchTool calls unless they are the core "
-    "workflow.\n"
+    "- Prefer a clear markdown body; tool_steps are optional when body names "
+    "tools in backticks (e.g. `mcp_news__news_curate`).\n"
+    "- EXCLUDE discovery/searchToolsForDomain/searchTool from body unless core.\n"
     "- Do not copy email bodies, headlines, or assistant reply text into body.\n"
     "- Use entity_id values only from controlled_entity_ids or tool arguments.\n"
     "Rules for learn=false:\n"
@@ -158,16 +159,21 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
     if not triggers:
         triggers = [title]
 
-    return SkillObserverResult(
-        learn=True,
-        reason=reason,
-        draft=SkillDraft(
+    draft = normalize_skill_draft(
+        SkillDraft(
             title=title,
             description=description,
             triggers=triggers,
             body=body,
             tool_steps=tool_steps,
         ),
+        explicit_tool_steps=bool(tool_steps),
+    )
+
+    return SkillObserverResult(
+        learn=True,
+        reason=reason,
+        draft=draft,
     )
 
 

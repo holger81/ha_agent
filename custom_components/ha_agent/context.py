@@ -411,9 +411,9 @@ def build_tool_context(
 
     if route in {"email", "news"} and skill_hints.strip():
         context_parts.append(
-            "When ACTIVE SKILLS include tool_steps for this route, execute those "
-            "steps first. Use the route playbook only for gaps the skill does "
-            "not cover."
+            "When ACTIVE SKILLS include a workflow for this route, follow that "
+            "workflow first. Use tool_steps only when present; otherwise follow "
+            "the markdown workflow text."
         )
 
     if exposed:

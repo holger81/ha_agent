@@ -1,0 +1,133 @@
+"""Markdown-first skill workflow helpers."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from .models import Skill, SkillDraft
+
+_TOOL_STEPS_FENCE = re.compile(
+    r"```(?:json)?\s*tool[_\s-]*steps?\s*\n(.*?)```",
+    re.IGNORECASE | re.DOTALL,
+)
+_JSON_ARRAY_FENCE = re.compile(
+    r"```json\s*\n(\[[\s\S]*?\])\s*```",
+    re.IGNORECASE,
+)
+_BACKTICK_TOOL = re.compile(
+    r"`([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`",
+    re.IGNORECASE,
+)
+_BARE_TOOL = re.compile(
+    r"\b([a-z][a-z0-9_]*__[a-z0-9_]+)\b",
+    re.IGNORECASE,
+)
+
+
+def _coerce_tool_steps(raw: Any) -> list[dict[str, Any]]:
+    """Parse a JSON value into normalized tool step dicts."""
+    if not isinstance(raw, list):
+        return []
+    steps: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("toolName") or item.get("name") or "").strip()
+        if not name:
+            continue
+        arguments = item.get("arguments")
+        steps.append(
+            {
+                "toolName": name,
+                "arguments": arguments if isinstance(arguments, dict) else {},
+            }
+        )
+    return steps
+
+
+def extract_tool_steps_block(body: str) -> list[dict[str, Any]]:
+    """Return tool steps from an optional ```tool_steps fenced block."""
+    if not body.strip():
+        return []
+    match = _TOOL_STEPS_FENCE.search(body)
+    if match:
+        try:
+            return _coerce_tool_steps(json.loads(match.group(1).strip()))
+        except json.JSONDecodeError:
+            return []
+    for match in _JSON_ARRAY_FENCE.finditer(body):
+        try:
+            parsed = json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            continue
+        steps = _coerce_tool_steps(parsed)
+        if steps:
+            return steps
+    return []
+
+
+def derive_tool_steps_from_body(body: str) -> list[dict[str, Any]]:
+    """Derive structured tool steps from markdown workflow text."""
+    if not body.strip():
+        return []
+
+    if block_steps := extract_tool_steps_block(body):
+        return block_steps
+
+    seen: set[str] = set()
+    steps: list[dict[str, Any]] = []
+    for pattern in (_BACKTICK_TOOL, _BARE_TOOL):
+        for match in pattern.finditer(body):
+            name = match.group(1).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            steps.append({"toolName": name, "arguments": {}})
+    return steps
+
+
+def resolve_tool_steps(
+    body: str,
+    tool_steps: list[dict[str, Any]] | None,
+    *,
+    explicit_override: bool,
+) -> list[dict[str, Any]]:
+    """Choose explicit tool steps or derive them from the workflow body."""
+    if explicit_override and tool_steps is not None:
+        return _coerce_tool_steps(tool_steps)
+    derived = derive_tool_steps_from_body(body)
+    if derived:
+        return derived
+    return _coerce_tool_steps(tool_steps or [])
+
+
+def normalize_skill_draft(
+    draft: SkillDraft,
+    *,
+    explicit_tool_steps: bool = False,
+) -> SkillDraft:
+    """Ensure tool_steps reflect the markdown workflow when not overridden."""
+    steps = resolve_tool_steps(
+        draft.body,
+        draft.tool_steps,
+        explicit_override=explicit_tool_steps,
+    )
+    return SkillDraft(
+        title=draft.title,
+        description=draft.description,
+        triggers=draft.triggers,
+        body=draft.body,
+        tool_steps=steps,
+    )
+
+
+def normalize_skill(skill: Skill, *, explicit_tool_steps: bool = False) -> Skill:
+    """Refresh a skill's tool_steps from its body unless explicitly overridden."""
+    skill.tool_steps = resolve_tool_steps(
+        skill.body,
+        skill.tool_steps,
+        explicit_override=explicit_tool_steps,
+    )
+    return skill

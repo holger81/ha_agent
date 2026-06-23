@@ -72,7 +72,7 @@ def test_format_skills_for_context_email_route_priority() -> None:
 
     assert "ACTIVE SKILLS (PRIORITY" in block
     assert "selected for this turn" in block
-    assert "tool_steps in order" in block
+    assert "run them in order" in block
 
 
 def test_build_tool_context_includes_skill_hints() -> None:
@@ -98,4 +98,4 @@ def test_build_tool_context_includes_skill_hints() -> None:
     )
     assert "ACTIVE SKILLS" in context
     assert "News briefing" in context
-    assert "execute those steps first" in context
+    assert "follow that workflow first" in context

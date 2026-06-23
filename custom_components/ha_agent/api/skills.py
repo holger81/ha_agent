@@ -10,6 +10,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ..config_helpers import get_llm_backend
 from ..llm_client import LlmClient
+from ..skills.body import normalize_skill, normalize_skill_draft
 from ..skills.creator import create_skill_from_trace, save_skill_from_draft
 from ..skills.models import Skill, SkillDraft
 from ..skills.runtime import get_pending_draft as runtime_get_pending_draft
@@ -122,20 +123,22 @@ async def create_skill(
     description = str(payload.get("description", "")).strip()
     body = str(payload.get("body", "")).strip()
     triggers = payload.get("triggers", [])
-    tool_steps = payload.get("tool_steps", [])
+    explicit_tool_steps = "tool_steps" in payload
+    tool_steps = payload.get("tool_steps", []) if explicit_tool_steps else []
     if not title or not description or not body:
         raise HomeAssistantError("title, description, and body are required")
     if not isinstance(triggers, list) or not triggers:
         raise HomeAssistantError("At least one trigger is required")
-    if not isinstance(tool_steps, list):
-        tool_steps = []
 
-    draft = SkillDraft(
-        title=title,
-        description=description,
-        triggers=[str(t).strip() for t in triggers if str(t).strip()],
-        body=body,
-        tool_steps=[step for step in tool_steps if isinstance(step, dict)],
+    draft = normalize_skill_draft(
+        SkillDraft(
+            title=title,
+            description=description,
+            triggers=[str(t).strip() for t in triggers if str(t).strip()],
+            body=body,
+            tool_steps=[step for step in tool_steps if isinstance(step, dict)],
+        ),
+        explicit_tool_steps=explicit_tool_steps,
     )
     skill = await save_skill_from_draft(hass, entry_id, draft)
     return skill_to_dict(skill)
@@ -165,7 +168,8 @@ async def update_skill(
             if not isinstance(triggers, list) or not triggers:
                 raise HomeAssistantError("At least one trigger is required")
             skill.triggers = [str(t).strip() for t in triggers if str(t).strip()]
-        if "tool_steps" in payload:
+        explicit_tool_steps = "tool_steps" in payload
+        if explicit_tool_steps:
             steps = payload["tool_steps"]
             skill.tool_steps = (
                 [step for step in steps if isinstance(step, dict)]
@@ -174,6 +178,7 @@ async def update_skill(
             )
         if "enabled" in payload:
             skill.enabled = bool(payload["enabled"])
+        normalize_skill(skill, explicit_tool_steps=explicit_tool_steps)
         skill.version += 1
         return store.update_skill(skill)
 

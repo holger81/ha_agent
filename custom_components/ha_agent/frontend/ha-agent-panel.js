@@ -1592,24 +1592,18 @@ class HaAgentPanel extends HTMLElement {
     const triggers = (skill.triggers || [])
       .map((t) => `<li>${this._escape(t)}</li>`)
       .join("");
-    const toolSteps = this._escape(
-      JSON.stringify(skill.tool_steps || [], null, 2)
-    );
+    const toolStepCount = (skill.tool_steps || []).length;
     return `
       <div class="skill-detail">
         <h3>${this._escape(skill.title || "Skill")}</h3>
         <div class="skill-meta">
           ${skill.enabled ? "Enabled" : "Disabled"} · used ${skill.use_count || 0} times
           ${skill.version ? ` · v${skill.version}` : ""}
+          ${toolStepCount ? ` · ${toolStepCount} tool step(s)` : ""}
         </div>
         <p>${this._escape(skill.description || "")}</p>
         <div class="skill-body">${this._escape(skill.body || "")}</div>
         ${triggers ? `<ul class="skill-triggers">${triggers}</ul>` : ""}
-        ${
-          (skill.tool_steps || []).length
-            ? `<pre class="skill-tool-steps">${toolSteps}</pre>`
-            : ""
-        }
         <div class="actions">
           <button data-action="skill-detail-edit">Edit</button>
           <button data-action="skill-detail-delete">Delete</button>
@@ -1621,15 +1615,23 @@ class HaAgentPanel extends HTMLElement {
   _renderSkillEditor() {
     const skill = this._editingSkill;
     if (!skill) return "";
+    const toolStepsJson = this._escape(
+      JSON.stringify(skill.tool_steps || [], null, 2)
+    );
     return `
       <div class="skill-editor">
         <h3>${skill.id ? "Edit skill" : "New skill"}</h3>
         <div class="form-grid">
           <label>Title<input id="skill-title" value="${this._escape(skill.title || "")}" /></label>
-          <label>Description<textarea id="skill-description">${this._escape(skill.description || "")}</textarea></label>
-          <label>Triggers (one per line)<textarea id="skill-triggers">${this._escape((skill.triggers || []).join("\n"))}</textarea></label>
-          <label>Body<textarea id="skill-body">${this._escape(skill.body || "")}</textarea></label>
-          <label>Tool steps JSON<textarea id="skill-tool-steps">${this._escape(JSON.stringify(skill.tool_steps || [], null, 2))}</textarea></label>
+          <label>Description<textarea id="skill-description" rows="2">${this._escape(skill.description || "")}</textarea></label>
+          <label>Triggers (one per line)<textarea id="skill-triggers" rows="3">${this._escape((skill.triggers || []).join("\n"))}</textarea></label>
+          <label>Workflow<textarea id="skill-body" rows="12">${this._escape(skill.body || "")}</textarea></label>
+          <p class="activity-hint">Write markdown steps. Mention tools in backticks (e.g. <code>mcp_news__news_curate</code>) — structured tool steps are derived automatically when you save.</p>
+          <details class="skill-advanced">
+            <summary>Advanced: override tool steps JSON</summary>
+            <label><input type="checkbox" id="skill-tool-steps-override" ${(skill.tool_steps || []).length ? "checked" : ""}/> Use manual tool steps instead of auto-derivation</label>
+            <label>Tool steps JSON<textarea id="skill-tool-steps" rows="8">${toolStepsJson}</textarea></label>
+          </details>
           <label><input type="checkbox" id="skill-enabled" ${skill.enabled !== false ? "checked" : ""}/> Enabled</label>
           <div class="actions">
             <button data-action="skill-save">Save</button>
@@ -2111,7 +2113,10 @@ class HaAgentPanel extends HTMLElement {
           title: "",
           description: "",
           triggers: [],
-          body: "",
+          body:
+            "1. Describe what the agent should do in numbered steps.\n" +
+            "2. Name tools in backticks, e.g. `mcp_news__news_curate`.\n" +
+            "3. Tool steps are derived automatically when you save.",
           tool_steps: [],
           enabled: true,
         };
@@ -2154,20 +2159,9 @@ class HaAgentPanel extends HTMLElement {
   async _saveSkillEditor() {
     const editor = this.shadowRoot.querySelector(".skill-editor");
     if (!editor || !this._editingSkill) return;
-    let toolSteps = [];
-    try {
-      toolSteps = JSON.parse(
-        editor.querySelector("#skill-tool-steps")?.value || "[]"
-      );
-      if (!Array.isArray(toolSteps)) {
-        throw new Error("Tool steps must be a JSON array");
-      }
-    } catch (err) {
-      this._skillNotice = `Invalid tool steps JSON: ${err?.message || err}`;
-      this._render();
-      return;
-    }
-
+    const override = Boolean(
+      editor.querySelector("#skill-tool-steps-override")?.checked
+    );
     const payload = {
       title: editor.querySelector("#skill-title")?.value || "",
       description: editor.querySelector("#skill-description")?.value || "",
@@ -2176,9 +2170,23 @@ class HaAgentPanel extends HTMLElement {
         .map((s) => s.trim())
         .filter(Boolean),
       body: editor.querySelector("#skill-body")?.value || "",
-      tool_steps: toolSteps,
       enabled: Boolean(editor.querySelector("#skill-enabled")?.checked),
     };
+    if (override) {
+      try {
+        const toolSteps = JSON.parse(
+          editor.querySelector("#skill-tool-steps")?.value || "[]"
+        );
+        if (!Array.isArray(toolSteps)) {
+          throw new Error("Tool steps must be a JSON array");
+        }
+        payload.tool_steps = toolSteps;
+      } catch (err) {
+        this._skillNotice = `Invalid tool steps JSON: ${err?.message || err}`;
+        this._render();
+        return;
+      }
+    }
 
     try {
       if (this._editingSkill.id) {
