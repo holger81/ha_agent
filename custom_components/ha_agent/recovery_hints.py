@@ -90,6 +90,19 @@ DEFAULT_RECOVERY_HINTS: list[dict[str, object]] = [
         ),
         "priority": 4,
     },
+    {
+        "rule_id": "ha_search_entities_unavailable",
+        "title": "ha_search_entities unavailable",
+        "tool_substring": "search_entities",
+        "error_pattern": r"unknown tool|not found|unavailable",
+        "body": (
+            "home_assistant__ha_search_entities is unavailable. Skip entity "
+            "search. Use an EXPOSED ENTITIES shortcut with "
+            "home_assistant__ha_call_service (domain, service, entity_id) "
+            "instead."
+        ),
+        "priority": 5,
+    },
 ]
 
 _DEFAULT_BY_ID = {rule["rule_id"]: rule for rule in DEFAULT_RECOVERY_HINTS}

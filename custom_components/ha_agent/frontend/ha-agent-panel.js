@@ -1627,6 +1627,9 @@ class HaAgentPanel extends HTMLElement {
           <label>Triggers (one per line)<textarea id="skill-triggers" rows="3">${this._escape((skill.triggers || []).join("\n"))}</textarea></label>
           <label>Workflow<textarea id="skill-body" rows="12">${this._escape(skill.body || "")}</textarea></label>
           <p class="activity-hint">Write markdown steps. Mention tools in backticks (e.g. <code>mcp_news__news_curate</code>) — structured tool steps are derived automatically when you save.</p>
+          <div class="actions">
+            <button type="button" data-action="skill-derive-tool-steps">Recreate tool steps from workflow</button>
+          </div>
           <details class="skill-advanced">
             <summary>Advanced: override tool steps JSON</summary>
             <label><input type="checkbox" id="skill-tool-steps-override" ${(skill.tool_steps || []).length ? "checked" : ""}/> Use manual tool steps instead of auto-derivation</label>
@@ -2152,6 +2155,44 @@ class HaAgentPanel extends HTMLElement {
       this._render();
     } catch (err) {
       this._skillNotice = `Could not delete skill: ${err?.message || err}`;
+      this._render();
+    }
+  }
+
+  async _deriveSkillToolSteps() {
+    const editor = this.shadowRoot.querySelector(".skill-editor");
+    if (!editor) return;
+    const body = editor.querySelector("#skill-body")?.value || "";
+    try {
+      const data = await this._call("ha_agent/skills/derive_tool_steps", {
+        entry_id: this._entryId,
+        body,
+      });
+      const steps = data.tool_steps || [];
+      const stepsField = editor.querySelector("#skill-tool-steps");
+      const override = editor.querySelector("#skill-tool-steps-override");
+      const advanced = editor.querySelector(".skill-advanced");
+      if (stepsField) {
+        stepsField.value = JSON.stringify(steps, null, 2);
+      }
+      if (override) {
+        override.checked = true;
+      }
+      if (advanced) {
+        advanced.open = true;
+      }
+      this._skillNotice =
+        steps.length > 0
+          ? `Recreated ${steps.length} tool step(s) from workflow. Review and save.`
+          : "No tool names found in workflow — add tools in backticks, then try again.";
+      const notice = this.shadowRoot.querySelector(".skill-notice");
+      if (notice) {
+        notice.textContent = this._skillNotice;
+      } else {
+        this._render();
+      }
+    } catch (err) {
+      this._skillNotice = `Could not derive tool steps: ${err?.message || err}`;
       this._render();
     }
   }
@@ -2924,6 +2965,10 @@ class HaAgentPanel extends HTMLElement {
         this._viewingSkill = null;
         this._render();
       });
+
+    this.shadowRoot
+      .querySelector('[data-action="skill-derive-tool-steps"]')
+      ?.addEventListener("click", () => void this._deriveSkillToolSteps());
 
     this.shadowRoot
       .querySelector('[data-action="skill-save"]')

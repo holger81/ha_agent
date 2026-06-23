@@ -131,6 +131,19 @@ def test_inject_loop_context_uses_system_role_not_user() -> None:
     assert "AGENT PLAN PROGRESS" in messages[0]["content"]
 
 
+def test_initialize_loop_plan_seeds_action_route() -> None:
+    """Action route seeds ha_call_service as the default plan step."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="turn off dining room lights",
+        route="action",
+    )
+    assert state.plan_steps == [{"toolName": "ha_call_service"}]
+    assert state.plan_current_step_index == 0
+
+
 def test_initialize_loop_plan_tracks_skill_steps() -> None:
     """Skill tool_steps seed the per-turn plan and focus pointer."""
     policy = _load_loop_policy()
@@ -281,6 +294,19 @@ def test_record_and_inject_mcp_guidance() -> None:
     assert "MCP SERVER GUIDANCE" in messages[0]["content"]
     assert "Use domain smart-home." in messages[0]["content"]
     assert state.mcp_guidance == []
+
+
+def test_enrich_tool_output_adds_search_entities_recovery() -> None:
+    """Unknown ha_search_entities steers the model to ha_call_service."""
+    policy = _load_loop_policy()
+    output = policy.enrich_tool_output(
+        "home_assistant__ha_search_entities",
+        {},
+        "Tool error: Unknown tool: 'ha_search_entities'",
+    )
+
+    assert "RECOVERY HINTS" in output
+    assert "ha_call_service" in output
 
 
 def test_enrich_tool_output_adds_email_recovery_hints() -> None:

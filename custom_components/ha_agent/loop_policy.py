@@ -68,7 +68,7 @@ _ROUTE_PLAN_STEPS: dict[str, list[dict[str, Any]]] = {
     "news": [
         {"toolName": "news_curate"},
     ],
-    "ha_action": [
+    "action": [
         {"toolName": "ha_call_service"},
     ],
 }
@@ -78,10 +78,10 @@ _ROUTE_NEXT_HINTS: dict[str, str] = {
         "fetch bodies if needed, then answer."
     ),
     "news": "Run news_curate (or equivalent), then summarize headlines.",
-    "ha_action": (
+    "action": (
         "Prefer exposed-entity shortcuts when they match; otherwise discover "
         "entities in domain smart-home, then call ha_call_service with domain, "
-        "service, and entity_id."
+        "service, and entity_id. Do not call ha_search_entities."
     ),
     "general": "Use tools to gather evidence, then answer from results.",
 }
@@ -533,6 +533,17 @@ def _default_recovery_hints(name_lower: str, lowered: str) -> list[str]:
         hints.append(
             "MCP may be offline. Tell the user to check MCP proxy connectivity "
             "in HA Agent Settings."
+        )
+
+    if "search_entities" in name_lower and re.search(
+        r"unknown tool|not found|unavailable",
+        lowered,
+    ):
+        hints.append(
+            "home_assistant__ha_search_entities is unavailable. Skip entity "
+            "search. Use an EXPOSED ENTITIES shortcut with "
+            "home_assistant__ha_call_service (domain, service, entity_id) "
+            "instead."
         )
 
     if "ha_call_service" in name_lower and "domain" in lowered:

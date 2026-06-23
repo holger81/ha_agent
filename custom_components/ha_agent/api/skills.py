@@ -10,7 +10,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ..config_helpers import get_llm_backend
 from ..llm_client import LlmClient
-from ..skills.body import normalize_skill, normalize_skill_draft
+from ..skills.body import (
+    derive_tool_steps_from_body,
+    normalize_skill,
+    normalize_skill_draft,
+)
 from ..skills.creator import create_skill_from_trace, save_skill_from_draft
 from ..skills.models import Skill, SkillDraft
 from ..skills.runtime import get_pending_draft as runtime_get_pending_draft
@@ -79,6 +83,11 @@ async def get_skill(
     if skill is None:
         raise HomeAssistantError(f"Skill not found: {skill_id}")
     return skill_to_dict(skill)
+
+
+async def derive_skill_tool_steps(body: str) -> list[dict[str, Any]]:
+    """Derive tool steps from a workflow body (console preview / recreate)."""
+    return derive_tool_steps_from_body(str(body or ""))
 
 
 async def set_skill_enabled(

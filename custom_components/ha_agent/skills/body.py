@@ -24,6 +24,13 @@ _BARE_TOOL = re.compile(
     r"\b([a-z][a-z0-9_]*__[a-z0-9_]+)\b",
     re.IGNORECASE,
 )
+# Tools that are commonly hallucinated or absent from MCP — omit from derivation.
+_DEPRECATED_TOOL_TAILS = frozenset({"ha_search_entities"})
+
+
+def _is_deprecated_tool_name(name: str) -> bool:
+    tail = name.split("__")[-1].lower()
+    return tail in _DEPRECATED_TOOL_TAILS
 
 
 def _coerce_tool_steps(raw: Any) -> list[dict[str, Any]]:
@@ -35,7 +42,7 @@ def _coerce_tool_steps(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("toolName") or item.get("name") or "").strip()
-        if not name:
+        if not name or _is_deprecated_tool_name(name):
             continue
         arguments = item.get("arguments")
         steps.append(
@@ -81,7 +88,7 @@ def derive_tool_steps_from_body(body: str) -> list[dict[str, Any]]:
     for pattern in (_BACKTICK_TOOL, _BARE_TOOL):
         for match in pattern.finditer(body):
             name = match.group(1).strip()
-            if not name or name in seen:
+            if not name or name in seen or _is_deprecated_tool_name(name):
                 continue
             seen.add(name)
             steps.append({"toolName": name, "arguments": {}})

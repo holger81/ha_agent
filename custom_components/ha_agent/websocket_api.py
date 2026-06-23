@@ -337,6 +337,24 @@ async def ws_skills_update(hass: HomeAssistant, connection, msg: dict) -> None:
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "ha_agent/skills/derive_tool_steps",
+        vol.Required("entry_id"): str,
+        vol.Required("body"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_skills_derive_tool_steps(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    steps = await skills_api.derive_skill_tool_steps(msg["body"])
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"tool_steps": steps})
+    )
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "ha_agent/skills/pending_get",
         vol.Required("entry_id"): str,
         vol.Required("conversation_id"): str,

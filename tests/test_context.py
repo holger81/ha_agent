@@ -140,6 +140,8 @@ def test_build_tool_context_adds_explicit_service_hint_for_match() -> None:
     assert "domain light" in tool_context
     assert "service turn_on" in tool_context
     assert "ha_call_service" in tool_context
+    assert "Do NOT call" in tool_context
+    assert "ha_search_entities" in tool_context
 
 
 def test_entity_matches_query() -> None:

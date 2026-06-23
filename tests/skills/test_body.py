@@ -106,6 +106,18 @@ def test_normalize_skill_respects_explicit_override() -> None:
     ]
 
 
+def test_derive_tool_steps_skips_deprecated_search_entities() -> None:
+    """Deprecated ha_search_entities is omitted from auto-derivation."""
+    body = (
+        "1. Search with `home_assistant__ha_search_entities`.\n"
+        "2. Turn off with `home_assistant__ha_call_service`."
+    )
+    steps = derive_tool_steps_from_body(body)
+    assert steps == [
+        {"toolName": "home_assistant__ha_call_service", "arguments": {}},
+    ]
+
+
 def test_resolve_tool_steps_prefers_derived_over_stale() -> None:
     """Without override, body-derived steps replace stale stored steps."""
     steps = resolve_tool_steps(

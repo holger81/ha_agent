@@ -287,11 +287,13 @@ def _device_action_hint(
     if matches:
         lines = [
             "DEVICE ACTION: a matching exposed-entity shortcut was found — use it "
-            "first. If the shortcut is wrong or insufficient, discover other "
-            "entities in domain smart-home before calling "
-            "home_assistant__ha_call_service. Always include domain, service, and "
-            f"entity_id in arguments. Derive domain from the entity_id prefix "
-            f"(light.* -> light). Suggested service: {service}. "
+            "directly with home_assistant__ha_call_service. Do NOT call "
+            "home_assistant__ha_search_entities (unavailable on most setups). "
+            "If the shortcut is wrong or insufficient, discover other entities "
+            "in domain smart-home with searchToolsForDomain before calling "
+            "home_assistant__ha_call_service. Always include domain, service, "
+            f"and entity_id in arguments. Derive domain from the entity_id "
+            f"prefix (light.* -> light). Suggested service: {service}. "
             f"Example: {call_example}",
         ]
         for entity in matches:
