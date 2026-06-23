@@ -1,4 +1,4 @@
-"""Unit tests for skill learning gate."""
+"""Unit tests for skill learning observer."""
 
 from __future__ import annotations
 
@@ -20,11 +20,18 @@ _MODULE_DEPS: dict[str, list[str]] = {
     "config_helpers": ["const"],
     "llm_client": ["const", "config_helpers"],
     "skills.models": [],
+    "skills.observer": [
+        "const",
+        "config_helpers",
+        "llm_client",
+        "skills.models",
+    ],
     "skills.learning_gate": [
         "const",
         "config_helpers",
         "llm_client",
         "skills.models",
+        "skills.observer",
     ],
 }
 
@@ -84,33 +91,82 @@ def _load_module(name: str):
 
 
 models_mod = _load_module("skills.models")
+observer_mod = _load_module("skills.observer")
 gate_mod = _load_module("skills.learning_gate")
 TurnTrace = models_mod.TurnTrace
-_parse_learn_gate_response = gate_mod._parse_learn_gate_response
+parse_observer_response = observer_mod.parse_observer_response
+observe_skill_candidate = observer_mod.observe_skill_candidate
+build_observer_payload = observer_mod.build_observer_payload
 assess_skill_worth_learning = gate_mod.assess_skill_worth_learning
 
 
-def test_parse_learn_gate_response_true() -> None:
-    assert _parse_learn_gate_response('{"learn": true, "reason": "workflow"}') is True
+def test_parse_observer_response_rejects() -> None:
+    parsed = parse_observer_response(
+        json.dumps({"learn": False, "reason": "one-off news summary"})
+    )
+    assert parsed is not None
+    assert parsed.learn is False
+    assert parsed.draft is None
 
 
-def test_parse_learn_gate_response_false() -> None:
-    assert _parse_learn_gate_response('{"learn": false, "reason": "one-off"}') is False
+def test_parse_observer_response_accepts_with_draft() -> None:
+    parsed = parse_observer_response(
+        json.dumps(
+            {
+                "learn": True,
+                "reason": "repeatable workflow",
+                "title": "Evening lights",
+                "description": "Turns off dining lights in the evening.",
+                "triggers": ["turn off dining lights"],
+                "body": "1. Call ha_call_service for dining lights.",
+                "tool_steps": [
+                    {
+                        "toolName": "home_assistant__ha_call_service",
+                        "arguments": {"domain": "light"},
+                    }
+                ],
+            }
+        )
+    )
+    assert parsed is not None
+    assert parsed.learn is True
+    assert parsed.draft is not None
+    assert parsed.draft.title == "Evening lights"
 
 
-def test_parse_learn_gate_response_invalid() -> None:
-    assert _parse_learn_gate_response("not json") is None
-    assert _parse_learn_gate_response('{"learn": "yes"}') is None
+def test_build_observer_payload_marks_discovery_tools() -> None:
+    trace = TurnTrace(
+        user_text="snapshot the door cam",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "mcp_proxy__searchToolsForDomain",
+                "arguments": {},
+                "succeeded": True,
+                "discovery": True,
+            },
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {"domain": "camera"},
+                "succeeded": True,
+                "discovery": False,
+            },
+        ],
+    )
+    payload = build_observer_payload(trace, [], manual_save=False)
+    assert payload["tools"][0]["discovery"] is True
+    assert payload["tools"][1]["discovery"] is False
 
 
 @pytest.mark.asyncio
-async def test_assess_skill_worth_learning_approves() -> None:
+async def test_observe_skill_candidate_approves() -> None:
     trace = TurnTrace(
         user_text="turn off dining lights every evening",
         history_len=0,
         tool_calls=[
-            {"toolName": "home_assistant__ha_call_service"},
-            {"toolName": "home_assistant__ha_get_state"},
+            {"toolName": "home_assistant__ha_call_service", "succeeded": True},
+            {"toolName": "home_assistant__ha_get_state", "succeeded": True},
         ],
         assistant_text="Dining lights are off.",
         iterations=2,
@@ -118,42 +174,28 @@ async def test_assess_skill_worth_learning_approves() -> None:
     llm = MagicMock()
     llm.chat = AsyncMock(
         return_value=MagicMock(
-            content=json.dumps({"learn": True, "reason": "repeatable workflow"}),
+            content=json.dumps(
+                {
+                    "learn": True,
+                    "reason": "repeatable workflow",
+                    "title": "Evening lights",
+                    "description": "Turns off dining lights.",
+                    "triggers": ["turn off dining lights"],
+                    "body": "Call ha_call_service.",
+                    "tool_steps": [],
+                }
+            ),
         ),
     )
-    backend = MagicMock()
 
-    assert await assess_skill_worth_learning(
+    result = await observe_skill_candidate(
         llm,
-        backend,
+        MagicMock(),
         trace=trace,
         history=[],
     )
-
-
-@pytest.mark.asyncio
-async def test_assess_skill_worth_learning_rejects() -> None:
-    trace = TurnTrace(
-        user_text="what are todays news",
-        history_len=2,
-        tool_calls=[{"toolName": "mcp_news__news_curate"}],
-        assistant_text="Here are today's headlines.",
-        iterations=1,
-    )
-    llm = MagicMock()
-    llm.chat = AsyncMock(
-        return_value=MagicMock(
-            content=json.dumps({"learn": False, "reason": "one-off news summary"}),
-        ),
-    )
-    backend = MagicMock()
-
-    assert not await assess_skill_worth_learning(
-        llm,
-        backend,
-        trace=trace,
-        history=[{"role": "user", "content": "hi"}],
-    )
+    assert result.learn is True
+    assert result.draft is not None
 
 
 @pytest.mark.asyncio
@@ -167,11 +209,10 @@ async def test_assess_skill_worth_learning_fails_closed() -> None:
     )
     llm = MagicMock()
     llm.chat = AsyncMock(side_effect=RuntimeError("offline"))
-    backend = MagicMock()
 
     assert not await assess_skill_worth_learning(
         llm,
-        backend,
+        MagicMock(),
         trace=trace,
         history=[],
     )

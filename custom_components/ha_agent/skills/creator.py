@@ -2,151 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import re
-
 from homeassistant.core import HomeAssistant
 
 from ..config_helpers import LlmBackend
-from ..const import LOGGER
 from ..llm_client import LlmClient
 from .models import Skill, SkillDraft, TurnTrace
+from .observer import observe_skill_candidate
 from .store import get_skill_store
-
-_DISTILL_PROMPT = (
-    "You distill successful Home Assistant assistant workflows into "
-    "reusable skills.\n"
-    "Return ONLY valid JSON with keys: title, description, triggers, body, "
-    "tool_steps.\n"
-    "- title: short human name (max 64 chars)\n"
-    "- description: third-person WHAT + WHEN for discovery (max 512 chars)\n"
-    "- triggers: list of 3-8 example user phrases that should match this skill\n"
-    "- body: markdown workflow the agent should follow (steps, entity notes)\n"
-    "- tool_steps: list of objects with toolName and arguments from the run\n"
-    "Do not invent entity_id values not present in the trace."
-)
-
-
-async def distill_skill_draft(
-    llm: LlmClient,
-    backend: LlmBackend,
-    *,
-    trace: TurnTrace,
-    history: list[dict[str, str]],
-) -> SkillDraft | None:
-    """Use the LLM to distill a skill from a successful turn trace."""
-    payload = {
-        "user_goal": trace.user_text,
-        "assistant_summary": trace.assistant_text,
-        "history": history[-10:],
-        "tool_calls": trace.tool_calls,
-        "controlled_entity_ids": trace.controlled_entity_ids,
-    }
-    messages = [
-        {"role": "system", "content": _DISTILL_PROMPT},
-        {
-            "role": "user",
-            "content": json.dumps(payload, ensure_ascii=True),
-        },
-    ]
-    try:
-        result = await llm.chat(messages, backend, tools=[])
-    except Exception as err:
-        LOGGER.warning("Skill distillation failed: %s", err)
-        return None
-
-    content = (result.content or "").strip()
-    if not content:
-        return None
-    return _parse_skill_draft(content)
-
-
-def _parse_skill_draft(content: str) -> SkillDraft | None:
-    """Parse LLM JSON output into a SkillDraft."""
-    text = content.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        LOGGER.debug("Skill distillation returned invalid JSON: %s", content[:200])
-        return None
-    if not isinstance(data, dict):
-        return None
-
-    title = str(data.get("title", "")).strip()
-    description = str(data.get("description", "")).strip()
-    body = str(data.get("body", "")).strip()
-    triggers_raw = data.get("triggers", [])
-    tool_steps_raw = data.get("tool_steps", [])
-    if not title or not description or not body:
-        return None
-
-    triggers = (
-        [str(item).strip() for item in triggers_raw if str(item).strip()]
-        if isinstance(triggers_raw, list)
-        else []
-    )
-    tool_steps = (
-        [item for item in tool_steps_raw if isinstance(item, dict)]
-        if isinstance(tool_steps_raw, list)
-        else []
-    )
-    if not triggers:
-        triggers = [title]
-
-    return SkillDraft(
-        title=title,
-        description=description,
-        triggers=triggers,
-        body=body,
-        tool_steps=tool_steps,
-    )
-
-
-def _fallback_skill_draft(trace: TurnTrace) -> SkillDraft | None:
-    """Build a minimal skill draft from trace data when LLM distillation fails."""
-    if not trace.tool_calls:
-        return None
-
-    goal = trace.user_text.strip()
-    title = (goal[:64] if goal else "Learned workflow").split("\n")[0].strip()
-    if not title:
-        title = "Learned workflow"
-
-    tool_steps = [
-        {
-            "toolName": str(call.get("toolName") or call.get("name") or "").strip(),
-            "arguments": call.get("arguments")
-            if isinstance(call.get("arguments"), dict)
-            else {},
-        }
-        for call in trace.tool_calls
-        if str(call.get("toolName") or call.get("name") or "").strip()
-    ]
-    if not tool_steps:
-        return None
-
-    step_lines = []
-    for index, step in enumerate(tool_steps, start=1):
-        args = json.dumps(step["arguments"], ensure_ascii=True, sort_keys=True)
-        step_lines.append(f"{index}. Call `{step['toolName']}` with `{args}`.")
-
-    body = f"Goal: {goal or title}\n\n" + "\n".join(step_lines)
-    if trace.assistant_text.strip():
-        body += f"\n\nExpected outcome:\n{trace.assistant_text.strip()}"
-
-    triggers = [goal[:120]] if goal else [title]
-    description = f"Handles requests like: {title}"
-
-    return SkillDraft(
-        title=title,
-        description=description,
-        triggers=triggers,
-        body=body,
-        tool_steps=tool_steps,
-    )
 
 
 async def save_skill_from_draft(
@@ -188,18 +50,21 @@ async def create_skill_from_trace(
     *,
     trace: TurnTrace,
     history: list[dict[str, str]],
+    manual_save: bool = False,
+    draft: SkillDraft | None = None,
 ) -> Skill | None:
-    """Distill and save a skill from a turn trace."""
-    draft = await distill_skill_draft(
-        llm,
-        backend,
-        trace=trace,
-        history=history,
-    )
+    """Observe, distill, and save a skill from a turn trace."""
     if draft is None:
-        draft = _fallback_skill_draft(trace)
-    if draft is None:
-        return None
+        observed = await observe_skill_candidate(
+            llm,
+            backend,
+            trace=trace,
+            history=history,
+            manual_save=manual_save,
+        )
+        if not observed.learn or observed.draft is None:
+            return None
+        draft = observed.draft
 
     store = get_skill_store(hass, entry_id)
 

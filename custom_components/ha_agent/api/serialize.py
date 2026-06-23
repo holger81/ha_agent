@@ -109,9 +109,19 @@ def turn_trace_to_dict(
 
 def pending_draft_to_dict(draft: PendingSkillDraft) -> dict[str, Any]:
     """Serialize a pending skill draft awaiting confirmation."""
-    return {
+    payload: dict[str, Any] = {
         "entry_id": draft.entry_id,
         "conversation_id": draft.conversation_id,
         "trace": turn_trace_to_dict(draft.trace),
         "history": list(draft.history),
+        "observer_reason": draft.observer_reason,
     }
+    if draft.skill_draft is not None:
+        payload["skill_draft"] = {
+            "title": draft.skill_draft.title,
+            "description": draft.skill_draft.description,
+            "triggers": list(draft.skill_draft.triggers),
+            "body": draft.skill_draft.body,
+            "tool_steps": list(draft.skill_draft.tool_steps),
+        }
+    return payload

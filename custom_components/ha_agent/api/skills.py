@@ -213,6 +213,8 @@ async def confirm_pending_draft(
         backend,
         trace=draft.trace,
         history=draft.history,
+        manual_save=True,
+        draft=draft.skill_draft,
     )
     if skill is None:
         raise HomeAssistantError(

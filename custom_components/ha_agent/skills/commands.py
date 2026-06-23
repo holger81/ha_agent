@@ -119,6 +119,8 @@ async def try_confirm_pending_save(
         backend,
         trace=draft.trace,
         history=draft.history,
+        manual_save=True,
+        draft=draft.skill_draft,
     )
     if skill is None:
         set_pending_draft(hass, draft)
@@ -133,6 +135,8 @@ def queue_pending_save(
     *,
     trace,
     history: list[dict[str, str]],
+    skill_draft=None,
+    observer_reason: str = "",
 ) -> None:
     """Queue a skill draft for user confirmation."""
     if not conversation_id:
@@ -144,6 +148,8 @@ def queue_pending_save(
             conversation_id=conversation_id,
             trace=trace,
             history=history,
+            skill_draft=skill_draft,
+            observer_reason=observer_reason,
         ),
     )
 

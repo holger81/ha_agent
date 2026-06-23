@@ -165,3 +165,44 @@ def test_learning_disabled() -> None:
         assistant_text="Done.",
     )
     assert should_offer_skill_creation(trace, learning_enabled=False) is False
+
+
+def test_should_not_offer_news_route() -> None:
+    """News summaries are not auto-learned."""
+    trace = TurnTrace(
+        user_text="what are today's headlines",
+        history_len=0,
+        route="news",
+        tool_calls=[{"toolName": "mcp_news__news_curate"}, {"toolName": "b"}],
+        assistant_text="Here are headlines.",
+        iterations=2,
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is False
+
+
+def test_manual_save_requires_successful_tools() -> None:
+    """Manual save still needs a successful tool workflow."""
+    trace = TurnTrace(
+        user_text="save this as a skill",
+        history_len=0,
+        tool_calls=[{"toolName": "a"}, {"toolName": "b"}],
+        assistant_text="Done.",
+    )
+    assert should_offer_skill_creation(
+        trace,
+        learning_enabled=False,
+        manual_save=True,
+    ) is True
+
+    failed = TurnTrace(
+        user_text="save this as a skill",
+        history_len=0,
+        tool_calls=[{"toolName": "a"}],
+        assistant_text="Done.",
+        tool_errors=1,
+    )
+    assert should_offer_skill_creation(
+        failed,
+        learning_enabled=False,
+        manual_save=True,
+    ) is False

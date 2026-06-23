@@ -1,4 +1,4 @@
-"""Tests for skill distillation helpers."""
+"""Tests for skill creation from observer drafts."""
 
 from __future__ import annotations
 
@@ -6,6 +6,9 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 COMPONENT = (
     Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
@@ -17,6 +20,12 @@ _MODULE_DEPS: dict[str, list[str]] = {
     "embedded_tools": [],
     "llm_client": ["const", "config_helpers", "embedded_tools"],
     "skills.models": [],
+    "skills.observer": [
+        "const",
+        "config_helpers",
+        "llm_client",
+        "skills.models",
+    ],
     "skills.store": ["const", "skills.models"],
     "skills.creator": [
         "const",
@@ -24,6 +33,7 @@ _MODULE_DEPS: dict[str, list[str]] = {
         "llm_client",
         "skills.models",
         "skills.store",
+        "skills.observer",
     ],
 }
 
@@ -86,45 +96,81 @@ def _load_module(name: str):
     return module
 
 
-def _fallback_skill_draft(trace):
-    creator = _load_module("skills.creator")
-    return creator._fallback_skill_draft(trace)
-
-
 def _turn_trace(**kwargs):
     models = _load_module("skills.models")
     return models.TurnTrace(**kwargs)
 
 
-def test_fallback_skill_draft_uses_upstream_tool_names() -> None:
+@pytest.mark.asyncio
+async def test_create_skill_from_trace_rejects_when_observer_declines() -> None:
+    creator = _load_module("skills.creator")
+    observer = _load_module("skills.observer")
+
     trace = _turn_trace(
-        user_text="check my new emails",
-        history_len=2,
-        assistant_text="You have 3 unread messages.",
-        tool_calls=[
-            {
-                "toolName": "mail_mcp_imap_mailbox_status",
-                "name": "mail_mcp_imap_mailbox_status",
-                "arguments": {"account_id": "default", "mailbox": "INBOX"},
-            },
-            {
-                "toolName": "mail_mcp_imap_search_messages",
-                "name": "mail_mcp_imap_search_messages",
-                "arguments": {"unread_only": True},
-            },
-        ],
+        user_text="today's news",
+        history_len=0,
+        tool_calls=[{"toolName": "mcp_news__news_curate"}],
+        assistant_text="Headlines.",
     )
 
-    draft = _fallback_skill_draft(trace)
+    with patch.object(
+        creator,
+        "observe_skill_candidate",
+        AsyncMock(
+            return_value=observer.SkillObserverResult(
+                learn=False,
+                reason="one-off",
+            )
+        ),
+    ):
+        result = await creator.create_skill_from_trace(
+            MagicMock(),
+            "entry",
+            MagicMock(),
+            MagicMock(),
+            trace=trace,
+            history=[],
+        )
 
-    assert draft is not None
-    assert draft.title == "check my new emails"
-    assert len(draft.tool_steps) == 2
-    assert draft.tool_steps[0]["toolName"] == "mail_mcp_imap_mailbox_status"
-    assert "mail_mcp_imap_search_messages" in draft.body
+    assert result is None
 
 
-def test_fallback_skill_draft_requires_tool_calls() -> None:
-    trace = _turn_trace(user_text="hello", history_len=0)
+@pytest.mark.asyncio
+async def test_create_skill_from_trace_uses_provided_draft() -> None:
+    creator = _load_module("skills.creator")
+    models = _load_module("skills.models")
+    SkillDraft = models.SkillDraft
 
-    assert _fallback_skill_draft(trace) is None
+    draft = SkillDraft(
+        title="Evening lights",
+        description="Turns off dining lights.",
+        triggers=["turn off dining lights"],
+        body="Call ha_call_service.",
+        tool_steps=[],
+    )
+    fake_skill = MagicMock(title="Evening lights")
+
+    class FakeStore:
+        def find_duplicate(self, _triggers):
+            return None
+
+        def insert_skill(self, **_kwargs):
+            return fake_skill
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(
+        side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)
+    )
+
+    with patch.object(creator, "get_skill_store", lambda _h, _e: FakeStore()):
+        result = await creator.create_skill_from_trace(
+            hass,
+            "entry",
+            MagicMock(),
+            MagicMock(),
+            trace=_turn_trace(user_text="x", history_len=0),
+            history=[],
+            draft=draft,
+        )
+
+    assert result is fake_skill

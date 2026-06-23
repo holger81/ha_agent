@@ -77,6 +77,8 @@ class PendingSkillDraft:
     conversation_id: str
     trace: TurnTrace
     history: list[dict[str, str]]
+    skill_draft: SkillDraft | None = None
+    observer_reason: str = ""
 
 
 @dataclass(slots=True)

@@ -73,8 +73,12 @@ def should_offer_skill_creation(
     trace: TurnTrace,
     *,
     learning_enabled: bool,
+    manual_save: bool = False,
 ) -> bool:
     """Return True when a turn passes local heuristics for skill learning."""
+    if manual_save:
+        return bool(trace.tool_calls) and not trace.fallback and trace.tool_errors == 0
+
     if not learning_enabled:
         return False
     if trace.fallback or trace.tool_errors > 0:
@@ -85,5 +89,10 @@ def should_offer_skill_creation(
         return False
     if not trace.assistant_text.strip():
         return False
+
+    route = (trace.route or "").lower()
+    if route in {"news", "email"}:
+        return False
+
     multi_step = len(trace.tool_calls) >= 2 or trace.iterations >= 2
     return multi_step

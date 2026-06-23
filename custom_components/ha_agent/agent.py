@@ -54,11 +54,11 @@ from .skills.commands import (
     try_confirm_pending_save,
     try_handle_skill_command,
 )
-from .skills.creator import create_skill_from_trace
+from .skills.creator import save_skill_from_draft
 from .skills.discovery import build_skill_hints
 from .skills.evaluator import evaluate_skill_use
-from .skills.learning_gate import assess_skill_worth_learning
 from .skills.models import TurnTrace
+from .skills.observer import is_discovery_tool, observe_skill_candidate
 from .skills.runtime import should_offer_skill_creation
 from .skills.selection import resolve_skills_for_turn
 from .skills.store import get_skill_store
@@ -156,6 +156,8 @@ def _record_tool_call(trace: TurnTrace, call: ToolCall, output: str) -> None:
             "toolName": tool_name,
             "name": tool_name,
             "arguments": arguments,
+            "succeeded": not output.startswith("Tool error:"),
+            "discovery": is_discovery_tool(tool_name),
         }
     )
     if output.startswith("Tool error:"):
@@ -402,6 +404,7 @@ async def _post_turn_skills(
     entry_id: str,
     llm: LlmClient,
     backend: LlmBackend,
+    observer_backend: LlmBackend,
     skills_config: SkillsConfig,
     trace: TurnTrace,
     history: list[dict[str, str]],
@@ -430,39 +433,56 @@ async def _post_turn_skills(
         hass.async_create_task(_evaluate())
 
     manual_save = bool(_MANUAL_SAVE.search(trace.user_text))
-    if not manual_save:
+    if manual_save:
         if not should_offer_skill_creation(
             trace,
             learning_enabled=skills_config.learning_enabled,
+            manual_save=True,
         ):
-            return suffix
-        if not await assess_skill_worth_learning(
-            llm,
-            backend,
-            trace=trace,
-            history=history,
-        ):
-            return suffix
+            return " I couldn't save that — this turn has no successful tool workflow."
+    elif not should_offer_skill_creation(
+        trace,
+        learning_enabled=skills_config.learning_enabled,
+    ):
+        return suffix
+
+    observed = await observe_skill_candidate(
+        llm,
+        observer_backend,
+        trace=trace,
+        history=history,
+        manual_save=manual_save,
+    )
+    if not observed.learn or observed.draft is None:
+        if manual_save:
+            return (
+                " I don't think this turn has a reusable workflow worth saving "
+                "as a skill."
+            )
+        return suffix
 
     if manual_save or skills_config.auto_save:
 
         async def _save() -> None:
             try:
-                await create_skill_from_trace(
+                store = get_skill_store(hass, entry_id)
+
+                def _find_dup():
+                    return store.find_duplicate(observed.draft.triggers)
+
+                duplicate = await hass.async_add_executor_job(_find_dup)
+                await save_skill_from_draft(
                     hass,
                     entry_id,
-                    llm,
-                    backend,
-                    trace=trace,
-                    history=history,
+                    observed.draft,
+                    update_existing=duplicate,
                 )
                 await _update_skill_status(hass, entry_id)
             except Exception as err:
                 LOGGER.warning("Skill creation failed: %s", err)
 
-        if skills_config.auto_save or manual_save:
-            hass.async_create_task(_save())
-            suffix = " Saving this as a skill."
+        hass.async_create_task(_save())
+        suffix = f" Saving skill: {observed.draft.title}."
         return suffix
 
     queue_pending_save(
@@ -471,8 +491,10 @@ async def _post_turn_skills(
         trace.conversation_id,
         trace=trace,
         history=history,
+        skill_draft=observed.draft,
+        observer_reason=observed.reason,
     )
-    return " Save this as a skill?"
+    return f" Save skill “{observed.draft.title}”?"
 
 
 async def run_agent(
@@ -870,6 +892,7 @@ async def run_agent(
             entry_id=entry_id,
             llm=llm,
             backend=backend,
+            observer_backend=router_config.classifier_backend or backend,
             skills_config=skills_config,
             trace=trace,
             history=history,

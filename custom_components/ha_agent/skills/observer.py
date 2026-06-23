@@ -1,0 +1,202 @@
+"""Merged LLM observer for skill learning: gate + distillation in one pass."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from ..config_helpers import LlmBackend
+from ..const import LOGGER
+from ..llm_client import LlmClient
+from .models import SkillDraft, TurnTrace
+
+_DISCOVERY_TOOL = re.compile(
+    r"(searchToolsForDomain|searchTool|tools/list|tools_list)",
+    re.IGNORECASE,
+)
+
+_OBSERVER_PROMPT = (
+    "You are an observer for a Home Assistant voice assistant. Decide whether a "
+    "completed turn should become a reusable skill, and if so extract ONLY the "
+    "durable workflow — not one-off facts, email bodies, news text, or discovery "
+    "noise.\n"
+    "Return ONLY valid JSON with keys:\n"
+    "- learn (boolean)\n"
+    "- reason (short string)\n"
+    "When learn=true, also include:\n"
+    "- title (max 64 chars)\n"
+    "- description (third-person WHAT + WHEN, max 512 chars)\n"
+    "- triggers (3-8 example user phrases)\n"
+    "- body (markdown workflow steps; omit incidental content)\n"
+    "- tool_steps (list of {toolName, arguments} for reusable execution steps)\n"
+    "Rules for learn=true:\n"
+    "- Repeatable procedure the user may ask again (device control, email check "
+    "workflow, etc.), not a single factual answer.\n"
+    "- tool_steps must list only execution tools that should run again; EXCLUDE "
+    "discovery/searchToolsForDomain/searchTool calls unless they are the core "
+    "workflow.\n"
+    "- Do not copy email bodies, headlines, or assistant reply text into body.\n"
+    "- Use entity_id values only from controlled_entity_ids or tool arguments.\n"
+    "Rules for learn=false:\n"
+    "- One-off Q&A, chit-chat, news/email summaries (unless manual_save_requested "
+    "and a clear reusable procedure exists).\n"
+    "- Single lookup with no durable workflow.\n"
+    "- Failed or empty runs with nothing reusable."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SkillObserverResult:
+    """Outcome of the skill-learning observer."""
+
+    learn: bool
+    reason: str
+    draft: SkillDraft | None = None
+
+
+def is_discovery_tool(tool_name: str) -> bool:
+    """Return True for MCP discovery/list tools."""
+    return bool(_DISCOVERY_TOOL.search(tool_name or ""))
+
+
+def build_observer_payload(
+    trace: TurnTrace,
+    history: list[dict[str, str]],
+    *,
+    manual_save: bool = False,
+) -> dict[str, Any]:
+    """Build structured trace for the skill observer."""
+    tools: list[dict[str, Any]] = []
+    for call in trace.tool_calls:
+        name = str(call.get("toolName") or call.get("name") or "").strip()
+        if not name:
+            continue
+        tools.append(
+            {
+                "toolName": name,
+                "arguments": call.get("arguments")
+                if isinstance(call.get("arguments"), dict)
+                else {},
+                "succeeded": bool(call.get("succeeded", True)),
+                "discovery": bool(
+                    call.get("discovery") or is_discovery_tool(name)
+                ),
+            }
+        )
+
+    return {
+        "user_goal": trace.user_text,
+        "route": trace.route,
+        "manual_save_requested": manual_save,
+        "assistant_summary": (trace.assistant_text or "")[:1500],
+        "history": history[-6:],
+        "tools": tools,
+        "tool_errors": trace.tool_errors,
+        "iterations": trace.iterations,
+        "outcome": trace.outcome,
+        "controlled_entity_ids": trace.controlled_entity_ids,
+        "matched_existing_skills": bool(trace.matched_skill_ids),
+    }
+
+
+def _strip_json_fence(content: str) -> str:
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text
+
+
+def parse_observer_response(content: str) -> SkillObserverResult | None:
+    """Parse observer JSON. None when unusable."""
+    try:
+        data = json.loads(_strip_json_fence(content))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    learn = data.get("learn")
+    if not isinstance(learn, bool):
+        return None
+    reason = str(data.get("reason", "")).strip() or (
+        "Approved for learning." if learn else "Not worth learning."
+    )
+
+    if not learn:
+        return SkillObserverResult(learn=False, reason=reason)
+
+    title = str(data.get("title", "")).strip()
+    description = str(data.get("description", "")).strip()
+    body = str(data.get("body", "")).strip()
+    if not title or not description or not body:
+        return SkillObserverResult(
+            learn=True,
+            reason=f"{reason} (distillation incomplete)",
+            draft=None,
+        )
+
+    triggers_raw = data.get("triggers", [])
+    tool_steps_raw = data.get("tool_steps", [])
+    triggers = (
+        [str(item).strip() for item in triggers_raw if str(item).strip()]
+        if isinstance(triggers_raw, list)
+        else []
+    )
+    tool_steps = (
+        [
+            item
+            for item in tool_steps_raw
+            if isinstance(item, dict)
+            and str(item.get("toolName") or item.get("name") or "").strip()
+        ]
+        if isinstance(tool_steps_raw, list)
+        else []
+    )
+    if not triggers:
+        triggers = [title]
+
+    return SkillObserverResult(
+        learn=True,
+        reason=reason,
+        draft=SkillDraft(
+            title=title,
+            description=description,
+            triggers=triggers,
+            body=body,
+            tool_steps=tool_steps,
+        ),
+    )
+
+
+async def observe_skill_candidate(
+    llm: LlmClient,
+    backend: LlmBackend,
+    *,
+    trace: TurnTrace,
+    history: list[dict[str, str]],
+    manual_save: bool = False,
+) -> SkillObserverResult:
+    """Run the merged observer (gate + distillation) on a turn trace."""
+    payload = build_observer_payload(trace, history, manual_save=manual_save)
+    messages = [
+        {"role": "system", "content": _OBSERVER_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+    ]
+    try:
+        result = await llm.chat(messages, backend, tools=[])
+    except Exception as err:
+        LOGGER.warning("Skill observer failed: %s", err)
+        return SkillObserverResult(learn=False, reason="observer unavailable")
+
+    content = (result.content or "").strip()
+    if not content:
+        return SkillObserverResult(learn=False, reason="empty observer response")
+
+    parsed = parse_observer_response(content)
+    if parsed is None:
+        LOGGER.debug("Skill observer returned invalid JSON: %s", content[:200])
+        return SkillObserverResult(learn=False, reason="invalid observer response")
+    return parsed
