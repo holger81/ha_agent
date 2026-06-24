@@ -40,9 +40,11 @@ from ..eval.server_apply import server_apply_mode, verify_settings_applied
 from ..eval.store import get_eval_store
 from ..llm_server import (
     apply_props_settings,
+    delete_model_from_router,
     load_model,
     preload_models,
     probe_server,
+    router_supports_hf_download,
     unload_model,
 )
 from .config import set_config
@@ -283,6 +285,37 @@ async def unload_eval_model(
     return {"result": result, "capabilities": caps.to_dict()}
 
 
+async def delete_eval_model(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_id: str,
+) -> dict[str, Any]:
+    """Unload and delete a cached model from the llama.cpp router."""
+    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
+    registry = get_model_registry(hass, entry_id)
+    async with aiohttp.ClientSession() as session:
+        caps = await probe_server(session, backend)
+        unload_result = await unload_model(session, backend, model_id)
+        delete_result: dict[str, Any] = {
+            "ok": False,
+            "skipped": True,
+            "reason": "Router cache delete API not available.",
+        }
+        if router_supports_hf_download(caps):
+            delete_result = await delete_model_from_router(session, backend, model_id)
+        caps_after = await probe_server(session, backend)
+    if delete_result.get("ok"):
+        registry.mark_deleted(
+            model_id,
+            notes="Deleted from llama.cpp cache via eval API.",
+        )
+    return {
+        "unload": unload_result,
+        "delete": delete_result,
+        "capabilities": caps_after.to_dict(),
+    }
+
+
 async def preload_eval_models(
     hass: HomeAssistant,
     entry_id: str,
@@ -460,10 +493,17 @@ async def mark_model_for_cleanup(
     *,
     notes: str | None = None,
 ) -> dict[str, Any]:
-    """Record that a superseded model was deleted to free disk space."""
-    registry = get_model_registry(hass, entry_id)
-    registry.mark_deleted(model_id, notes=notes)
-    return {"model_id": model_id, "status": "deleted"}
+    """Unload and delete a model from the llama.cpp router cache."""
+    result = await delete_eval_model(hass, entry_id, model_id)
+    deleted = bool(result.get("delete", {}).get("ok"))
+    if not deleted and notes:
+        get_model_registry(hass, entry_id).mark_deleted(model_id, notes=notes)
+    return {
+        "model_id": model_id,
+        "status": "deleted" if deleted else "failed",
+        "notes": notes,
+        **result,
+    }
 
 
 async def list_eval_cases_api(

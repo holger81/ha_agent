@@ -153,3 +153,13 @@ def test_parse_sse_event_block() -> None:
     assert data is not None
     assert data["event"] == "download_progress"
     assert data["progress"] == 0.5
+
+
+def test_models_delete_url_encodes_model_id() -> None:
+    url = llm_server.models_delete_url(
+        "http://192.168.10.31:9292",
+        "LiquidAI/LFM2.2-2.6B-Exp-GGUF:Q4_K_M",
+    )
+    assert url.startswith("http://192.168.10.31:9292/models?model=")
+    assert "LiquidAI" in url
+    assert "Q4_K_M" in url

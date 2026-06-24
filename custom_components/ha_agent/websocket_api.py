@@ -81,6 +81,10 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_eval_probe)
     websocket_api.async_register_command(hass, ws_eval_apply)
     websocket_api.async_register_command(hass, ws_eval_apply_settings)
+    websocket_api.async_register_command(hass, ws_eval_load_model)
+    websocket_api.async_register_command(hass, ws_eval_unload_model)
+    websocket_api.async_register_command(hass, ws_eval_delete_model)
+    websocket_api.async_register_command(hass, ws_eval_preload_models)
     websocket_api.async_register_command(hass, ws_eval_discover)
     websocket_api.async_register_command(hass, ws_eval_discover_start)
     websocket_api.async_register_command(hass, ws_eval_discover_approve_download)
@@ -1039,6 +1043,23 @@ async def ws_eval_load_model(hass: HomeAssistant, connection, msg: dict) -> None
 async def ws_eval_unload_model(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     result = await eval_api.unload_eval_model(
+        hass,
+        msg["entry_id"],
+        msg["model_id"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/delete_model",
+        **_entry_id_schema({vol.Required("model_id"): str}),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_delete_model(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await eval_api.delete_eval_model(
         hass,
         msg["entry_id"],
         msg["model_id"],

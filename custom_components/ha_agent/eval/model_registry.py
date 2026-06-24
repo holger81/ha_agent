@@ -23,6 +23,7 @@ class ModelProposal:
     hf_filename: str = ""
     skip_download: bool = False
     local_path: str | None = None
+    download_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -34,6 +35,7 @@ class ModelProposal:
             "hf_filename": self.hf_filename,
             "skip_download": self.skip_download,
             "local_path": self.local_path,
+            "download_mode": self.download_mode,
         }
 
 

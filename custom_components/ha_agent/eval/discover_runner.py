@@ -15,6 +15,7 @@ from ..config_helpers import get_llm_backend
 from ..const import DATA_KEY, LOGGER
 from ..llm_client import LlmClient
 from ..llm_server import (
+    delete_model_from_router,
     download_model_on_router,
     load_model,
     probe_server,
@@ -162,6 +163,60 @@ def _mean_task_score(task_scores: list) -> float:
     return sum(item.score for item in task_scores) / len(task_scores)
 
 
+_DELETABLE_DOWNLOAD_MODES = frozenset(
+    {"server", "local", "poll", "webhook", "webhook_poll"},
+)
+
+
+async def _cleanup_rejected_model(
+    session: aiohttp.ClientSession,
+    backend,
+    registry,
+    proposal: ModelProposal,
+    *,
+    capabilities,
+    local_path: str | None,
+) -> None:
+    """Unload and remove a rejected trial model from RAM and disk/cache."""
+    model_id = proposal.model_id
+    await unload_model(session, backend, model_id)
+
+    if proposal.download_mode == "existing":
+        return
+
+    if local_path:
+        if delete_local_model_file(local_path):
+            registry.mark_deleted(
+                model_id,
+                notes="Deleted local file after eval did not beat incumbent.",
+            )
+        return
+
+    if proposal.download_mode not in _DELETABLE_DOWNLOAD_MODES:
+        return
+    if not router_supports_hf_download(capabilities):
+        return
+
+    result = await delete_model_from_router(session, backend, model_id)
+    if result.get("ok"):
+        registry.mark_deleted(
+            model_id,
+            notes="Deleted from llama.cpp model cache after rejected trial.",
+        )
+        return
+    if result.get("preset_model"):
+        LOGGER.info(
+            "Skipped router cache delete for preset model %s",
+            model_id,
+        )
+        return
+    LOGGER.warning(
+        "Could not delete %s from llama.cpp cache: %s",
+        model_id,
+        result.get("error"),
+    )
+
+
 async def _ensure_model_available(
     session: aiohttp.ClientSession,
     state: DiscoverRunState,
@@ -181,6 +236,7 @@ async def _ensure_model_available(
     model_id = proposal.model_id
     caps = await probe_server(session, backend)
     if model_id in caps.models:
+        proposal.download_mode = "existing"
         return True, proposal.local_path
 
     if router_supports_hf_download(caps):
@@ -240,6 +296,7 @@ async def _ensure_model_available(
                     f"({result.get('via') or result.get('request_path') or 'server'})."
                 ),
             )
+            proposal.download_mode = "server"
             return True, None
         if not result.get("unsupported"):
             LOGGER.warning(
@@ -296,6 +353,7 @@ async def _ensure_model_available(
             source_url=proposal.source_url,
             notes=f"Downloaded to {dest}",
         )
+        proposal.download_mode = "local"
         return True, str(dest)
 
     if webhook_url:
@@ -364,6 +422,7 @@ async def _ensure_model_available(
             source_url=proposal.source_url,
             notes="Model appeared on llama.cpp server.",
         )
+        proposal.download_mode = "poll" if not webhook_url else "webhook_poll"
         return True, None
     return False, None
 
@@ -655,14 +714,17 @@ async def run_discover_pipeline(
                     message=f"Cleaning up {proposal.model_id}…",
                     model_id=proposal.model_id,
                 )
-                await unload_model(session, chat_backend, proposal.model_id)
-                if not accepted and local_path:
-                    deleted = delete_local_model_file(local_path)
-                    if deleted:
-                        registry.mark_deleted(
-                            proposal.model_id,
-                            notes="Deleted after eval did not beat incumbent.",
-                        )
+                if accepted:
+                    await unload_model(session, chat_backend, proposal.model_id)
+                else:
+                    await _cleanup_rejected_model(
+                        session,
+                        chat_backend,
+                        registry,
+                        proposal,
+                        capabilities=capabilities,
+                        local_path=local_path,
+                    )
 
             run.status = "completed"
             accepted_count = sum(

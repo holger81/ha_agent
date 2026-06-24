@@ -501,6 +501,27 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  async _deleteEvalModel(modelId) {
+    if (!this._entryId || !modelId) return;
+    if (
+      !confirm(
+        `Delete ${modelId} from llama.cpp cache? This removes the downloaded GGUF (preset models cannot be deleted).`,
+      )
+    ) {
+      return;
+    }
+    const data = await this._call("ha_agent/eval/delete_model", {
+      entry_id: this._entryId,
+      model_id: modelId,
+    });
+    this._evalCapabilities = data.capabilities || null;
+    const ok = data.delete?.ok;
+    this._evalNotice = ok
+      ? `Deleted ${modelId} from router cache.`
+      : `Could not delete ${modelId}: ${data.delete?.error || data.delete?.reason || "unknown error"}`;
+    this._render();
+  }
+
   async _applyEvalRecommendations() {
     if (!this._entryId) return;
     if (!confirm("Apply recommended chat, action, email, news, and classifier models from the latest eval?")) {
@@ -2387,7 +2408,7 @@ class HaAgentPanel extends HTMLElement {
     const loadedList = loadedModels
       .map(
         (modelId) =>
-          `<li>${this._escape(modelId)} <button data-action="eval-unload-model" data-model-id="${this._escape(modelId)}">Unload</button></li>`,
+          `<li>${this._escape(modelId)} <button data-action="eval-unload-model" data-model-id="${this._escape(modelId)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(modelId)}">Delete</button></li>`,
       )
       .join("");
     const promotedCases = (this._evalCases || []).filter((item) => item.source === "promoted");
@@ -2487,6 +2508,11 @@ class HaAgentPanel extends HTMLElement {
     this.shadowRoot.querySelectorAll('[data-action="eval-unload-model"]').forEach((button) => {
       button.addEventListener("click", async () => {
         await this._unloadEvalModel(button.getAttribute("data-model-id"));
+      });
+    });
+    this.shadowRoot.querySelectorAll('[data-action="eval-delete-model"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this._deleteEvalModel(button.getAttribute("data-model-id"));
       });
     });
     this.shadowRoot

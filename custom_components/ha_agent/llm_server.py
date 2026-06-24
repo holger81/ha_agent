@@ -584,6 +584,52 @@ async def unload_model(
         }
 
 
+def models_delete_url(server_root: str, model_id: str) -> str:
+    """Build DELETE /models?model=... for router cache removal."""
+    return f"{server_root.rstrip('/')}/models?model={quote(model_id, safe='')}"
+
+
+async def delete_model_from_router(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+) -> dict[str, Any]:
+    """Delete a cached Hugging Face model from a llama.cpp router server."""
+    root = server_root_from_base_url(backend.base_url)
+    url = models_delete_url(root, model_id)
+    headers = _headers(backend)
+    timeout = aiohttp.ClientTimeout(total=120)
+    try:
+        async with session.delete(url, headers=headers, timeout=timeout) as response:
+            body = await response.text()
+            parsed: dict[str, Any] = {}
+            if body.strip():
+                try:
+                    loaded = json.loads(body)
+                    if isinstance(loaded, dict):
+                        parsed = loaded
+                except json.JSONDecodeError:
+                    parsed = {"raw": body[:500]}
+            ok = response.status in {200, 204} or bool(parsed.get("success"))
+            preset = response.status == 400 and "preset" in body.lower()
+            return {
+                "model": model_id,
+                "ok": ok,
+                "status": response.status,
+                "response": parsed,
+                "preset_model": preset,
+                "error": None if ok else body[:300],
+            }
+    except (TimeoutError, aiohttp.ClientError) as err:
+        return {
+            "model": model_id,
+            "ok": False,
+            "status": None,
+            "response": {},
+            "error": str(err),
+        }
+
+
 async def preload_models(
     session: aiohttp.ClientSession,
     backend: LlmBackend,
