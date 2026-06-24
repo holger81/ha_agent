@@ -313,6 +313,19 @@ def test_reasoning_execution_mismatch_detects_wrong_tool() -> None:
     assert "mail_mcp__imap_search_messages" in mismatch
 
 
+def test_reasoning_execution_mismatch_allows_discovery_tools() -> None:
+    """MCP discovery/search tools are never blocked by reasoning mismatch."""
+    policy = _load_loop_policy()
+    reasoning = "I will call `mcp_news__news_local`."
+    assert (
+        policy.reasoning_execution_mismatch(
+            reasoning,
+            ["searchToolsForDomain", "searchTool"],
+        )
+        is None
+    )
+
+
 def test_reasoning_execution_mismatch_allows_matching_tool() -> None:
     """Aligned reasoning and execution do not produce a mismatch."""
     policy = _load_loop_policy()

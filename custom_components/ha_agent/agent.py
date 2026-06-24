@@ -67,6 +67,7 @@ from .status import record_route, update_agent_status
 from .tools import (
     execute_tool,
     ha_service_entity_id,
+    is_discovery_tool_name,
     memory_assistant_text,
     parse_tool_arguments,
     tool_result_message,
@@ -267,12 +268,16 @@ async def _process_tool_calls(
     reasoning: str = "",
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run tool calls and yield chat progress deltas."""
+    blocked_ids: set[str] = set()
     if calls and reasoning.strip():
         execution_names = [_tool_call_payload(call)[0] for call in calls]
         if mismatch := reasoning_execution_mismatch(reasoning, execution_names):
             for call in calls:
                 tool_name, arguments = _tool_call_payload(call)
+                if is_discovery_tool_name(tool_name):
+                    continue
                 blocked = f"Tool error: {mismatch}"
+                blocked_ids.add(call.id)
                 yield AgentDelta(
                     tool=_tool_event(
                         call,
@@ -295,9 +300,10 @@ async def _process_tool_calls(
                 messages.append(tool_result_message(call, blocked))
                 if trace is not None:
                     _record_tool_call(trace, call, blocked)
-            return
 
     for call in calls:
+        if call.id in blocked_ids:
+            continue
         tool_name, arguments = _tool_call_payload(call)
         if stuck_msg := check_stuck(loop_state, tool_name, arguments):
             loop_state.iteration_had_duplicate_block = True

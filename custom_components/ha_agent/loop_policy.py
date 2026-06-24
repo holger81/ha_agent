@@ -268,16 +268,24 @@ def reasoning_execution_mismatch(
     execution_tools: list[str],
 ) -> str | None:
     """Return guidance when reasoning names different tools than execution."""
+    from .tools import is_discovery_tool_name
+
     intended = extract_intended_tools_from_reasoning(reasoning)
     if not intended or not execution_tools:
         return None
 
-    for actual in execution_tools:
+    actionable = [
+        name for name in execution_tools if not is_discovery_tool_name(name)
+    ]
+    if not actionable:
+        return None
+
+    for actual in actionable:
         if any(_tool_names_match(intent, actual) for intent in intended):
             return None
 
     primary = intended[-1]
-    actual = execution_tools[0]
+    actual = actionable[0]
     return (
         "REASONING / EXECUTION MISMATCH (internal — not from the user):\n"
         f"Your reasoning selected `{primary}` but the tool payload used "
