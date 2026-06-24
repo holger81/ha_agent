@@ -276,6 +276,19 @@ async def test_news_route_does_not_select_email_only_skill(monkeypatch) -> None:
     llm.chat.assert_not_called()
 
 
+def test_filter_tool_steps_for_route_drops_email_on_news() -> None:
+    """Email tool steps are not seeded into a news-route plan."""
+    selection = _load("skills.selection")
+    steps = selection.filter_tool_steps_for_route(
+        [
+            {"toolName": "mail_mcp__imap_search_messages", "arguments": {}},
+            {"toolName": "mcp_news__news_curate", "arguments": {}},
+        ],
+        "news",
+    )
+    assert steps == [{"toolName": "mcp_news__news_curate", "arguments": {}}]
+
+
 def test_skill_matches_route_rejects_email_on_news() -> None:
     """Email-only skills must not match the news route."""
     selection = _load("skills.selection")

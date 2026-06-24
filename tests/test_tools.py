@@ -245,3 +245,12 @@ def test_compact_tool_output_truncates_large_non_discovery_results() -> None:
 
     assert "[truncated" in output
     assert len(output) < 20_000
+
+
+def test_classify_tool_output_marks_deserialize_failures() -> None:
+    """MCP parameter errors are normalized to Tool error responses."""
+    output = tools.classify_tool_output(
+        "failed to deserialize parameters: missing field `mailbox`"
+    )
+    assert output.startswith("Tool error:")
+    assert "mailbox" in output

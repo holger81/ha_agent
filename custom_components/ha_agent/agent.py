@@ -35,6 +35,7 @@ from .loop_policy import (
     initialize_loop_plan,
     inject_loop_context,
     mark_iteration_outcome,
+    reasoning_execution_mismatch,
     record_iteration_failure,
     record_mcp_guidance,
     record_plan_tool_result,
@@ -60,7 +61,7 @@ from .skills.evaluator import evaluate_skill_use
 from .skills.models import TurnTrace
 from .skills.observer import is_discovery_tool, observe_skill_candidate
 from .skills.runtime import should_offer_skill_creation
-from .skills.selection import resolve_skills_for_turn
+from .skills.selection import filter_tool_steps_for_route, resolve_skills_for_turn
 from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
 from .tools import (
@@ -263,8 +264,39 @@ async def _process_tool_calls(
     loop_state: LoopState,
     trace: TurnTrace | None = None,
     hint_rules: list[Any] | None = None,
+    reasoning: str = "",
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run tool calls and yield chat progress deltas."""
+    if calls and reasoning.strip():
+        execution_names = [_tool_call_payload(call)[0] for call in calls]
+        if mismatch := reasoning_execution_mismatch(reasoning, execution_names):
+            for call in calls:
+                tool_name, arguments = _tool_call_payload(call)
+                blocked = f"Tool error: {mismatch}"
+                yield AgentDelta(
+                    tool=_tool_event(
+                        call,
+                        "error",
+                        detail="Blocked: conflicts with reasoning.",
+                    )
+                )
+                record_iteration_failure(
+                    loop_state,
+                    tool_name,
+                    arguments,
+                    blocked,
+                )
+                record_plan_tool_result(
+                    loop_state,
+                    tool_name,
+                    arguments,
+                    succeeded=False,
+                )
+                messages.append(tool_result_message(call, blocked))
+                if trace is not None:
+                    _record_tool_call(trace, call, blocked)
+            return
+
     for call in calls:
         tool_name, arguments = _tool_call_payload(call)
         if stuck_msg := check_stuck(loop_state, tool_name, arguments):
@@ -352,6 +384,7 @@ async def _process_embedded_tool_calls(
     loop_state: LoopState,
     trace: TurnTrace | None = None,
     hint_rules: list[Any] | None = None,
+    reasoning: str = "",
 ) -> AsyncGenerator[AgentDelta, None]:
     """Parse embedded tool markup, run tools, and yield progress deltas."""
     embedded = parse_embedded_tool_calls(content)
@@ -378,6 +411,7 @@ async def _process_embedded_tool_calls(
         loop_state=loop_state,
         trace=trace,
         hint_rules=hint_rules,
+        reasoning=reasoning,
     ):
         yield delta
 
@@ -661,11 +695,16 @@ async def run_agent(
     use_chat_backend = route != TaskRoute.HA_ACTION
     controlled_entity_ids: list[str] = []
     loop_state = LoopState()
+    skill_steps = (
+        filter_tool_steps_for_route(matched_skills[0].tool_steps, route.value)
+        if matched_skills
+        else None
+    )
     initialize_loop_plan(
         loop_state,
         goal=user_text,
         route=route.value,
-        tool_steps=matched_skills[0].tool_steps if matched_skills else None,
+        tool_steps=skill_steps,
         skill_title=matched_skills[0].title if matched_skills else "",
     )
 
@@ -726,6 +765,7 @@ async def run_agent(
                     loop_state=loop_state,
                     trace=trace,
                     hint_rules=hint_rules,
+                    reasoning=session.reasoning_content,
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)
@@ -758,6 +798,7 @@ async def run_agent(
                     loop_state=loop_state,
                     trace=trace,
                     hint_rules=hint_rules,
+                    reasoning=session.reasoning_content,
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)
@@ -797,6 +838,7 @@ async def run_agent(
                     loop_state=loop_state,
                     trace=trace,
                     hint_rules=hint_rules,
+                    reasoning=result.reasoning_content or "",
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)
@@ -829,6 +871,7 @@ async def run_agent(
                     loop_state=loop_state,
                     trace=trace,
                     hint_rules=hint_rules,
+                    reasoning=result.reasoning_content or "",
                 ):
                     yield delta
                 mark_iteration_outcome(loop_state)

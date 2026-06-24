@@ -18,6 +18,7 @@ from .mcp_session import (
     format_mcp_session_prompt,
     mcp_tools_to_openai_schemas,
 )
+from .tools import classify_tool_output
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
@@ -282,20 +283,21 @@ class McpProxyClient:
         if result is None:
             return ""
         if isinstance(result, str):
-            return result
+            return classify_tool_output(result)
 
         if isinstance(result, dict):
             if result.get("isError"):
                 content = result.get("content") or []
-                return self._content_blocks_to_text(content) or "Tool returned an error"
+                text = self._content_blocks_to_text(content) or "Tool returned an error"
+                return classify_tool_output(text)
             content = result.get("content")
             if content is not None:
                 text = self._content_blocks_to_text(content)
                 if text:
-                    return text
+                    return classify_tool_output(text)
             return json.dumps(result, ensure_ascii=False)
 
-        return json.dumps(result, ensure_ascii=False)
+        return classify_tool_output(json.dumps(result, ensure_ascii=False))
 
     @staticmethod
     def _content_blocks_to_text(content: Any) -> str:

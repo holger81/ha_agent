@@ -20,6 +20,13 @@ _DISCOVERY_TOOL = re.compile(
 _TOOL_OUTPUT_MAX_CHARS = 10_000
 _DISCOVERY_OUTPUT_MAX_CHARS = 6_000
 _DISCOVERY_MAX_TOOLS = 40
+_FAILED_OUTPUT_PATTERN = re.compile(
+    r"(?i)\b("
+    r"failed to deserialize|missing field [\w']+|unknown tool|"
+    r"tool returned an error|invalid (?:argument|parameter)|"
+    r"deserialization error|unexpected token"
+    r")\b"
+)
 
 
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
@@ -276,8 +283,20 @@ async def execute_tool(
         return f"Tool error: {err}"
 
     if isinstance(result, str):
-        return result
-    return json.dumps(result, ensure_ascii=False)
+        return classify_tool_output(result)
+    return classify_tool_output(json.dumps(result, ensure_ascii=False))
+
+
+def classify_tool_output(output: str) -> str:
+    """Normalize MCP tool text so failures are treated as tool errors."""
+    text = (output or "").strip()
+    if not text:
+        return text
+    if text.startswith("Tool error:"):
+        return text
+    if _FAILED_OUTPUT_PATTERN.search(text):
+        return f"Tool error: {text}"
+    return text
 
 
 def tool_result_message(call: ToolCall, output: str) -> dict[str, str]:

@@ -296,6 +296,36 @@ def test_record_and_inject_mcp_guidance() -> None:
     assert state.mcp_guidance == []
 
 
+def test_reasoning_execution_mismatch_detects_wrong_tool() -> None:
+    """Reasoning that commits to news_curate blocks mail tool execution."""
+    policy = _load_loop_policy()
+    reasoning = (
+        "The user asked for news. I will call `mcp_news__news_curate` with no "
+        "arguments."
+    )
+    mismatch = policy.reasoning_execution_mismatch(
+        reasoning,
+        ["mail_mcp__imap_search_messages"],
+    )
+
+    assert mismatch is not None
+    assert "mcp_news__news_curate" in mismatch
+    assert "mail_mcp__imap_search_messages" in mismatch
+
+
+def test_reasoning_execution_mismatch_allows_matching_tool() -> None:
+    """Aligned reasoning and execution do not produce a mismatch."""
+    policy = _load_loop_policy()
+    reasoning = "I will call `mcp_news__news_curate`."
+    assert (
+        policy.reasoning_execution_mismatch(
+            reasoning,
+            ["mcp_news__news_curate"],
+        )
+        is None
+    )
+
+
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:
     """Unknown ha_search_entities steers the model to ha_call_service."""
     policy = _load_loop_policy()

@@ -87,6 +87,14 @@ _ROUTE_NEXT_HINTS: dict[str, str] = {
 }
 _REASONING_REPEAT_MARKER = 60
 _MAX_UNPRODUCTIVE_ITERATIONS = 2
+_REASONING_WILL_CALL = re.compile(
+    r"\b(?:will|should|i'?ll|going to)\s+call\s+`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?",
+    re.IGNORECASE,
+)
+_REASONING_TOOL_BACKTICK = re.compile(
+    r"`([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`",
+    re.IGNORECASE,
+)
 
 
 def tool_call_signature(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -238,6 +246,44 @@ def _tool_names_match(plan_tool: str, actual_tool: str) -> bool:
     plan_tail = plan_tool.split("__")[-1]
     actual_tail = actual_tool.split("__")[-1]
     return plan_tail == actual_tail or actual_tool.endswith(plan_tool)
+
+
+def extract_intended_tools_from_reasoning(reasoning: str) -> list[str]:
+    """Return tool names the model committed to in streamed reasoning."""
+    text = reasoning.strip()
+    if not text:
+        return []
+    tail = text[-1200:]
+    will_calls = [match.group(1) for match in _REASONING_WILL_CALL.finditer(tail)]
+    if will_calls:
+        return list(dict.fromkeys(will_calls))
+    backticks = [match.group(1) for match in _REASONING_TOOL_BACKTICK.finditer(tail)]
+    if backticks:
+        return list(dict.fromkeys(backticks))
+    return []
+
+
+def reasoning_execution_mismatch(
+    reasoning: str,
+    execution_tools: list[str],
+) -> str | None:
+    """Return guidance when reasoning names different tools than execution."""
+    intended = extract_intended_tools_from_reasoning(reasoning)
+    if not intended or not execution_tools:
+        return None
+
+    for actual in execution_tools:
+        if any(_tool_names_match(intent, actual) for intent in intended):
+            return None
+
+    primary = intended[-1]
+    actual = execution_tools[0]
+    return (
+        "REASONING / EXECUTION MISMATCH (internal — not from the user):\n"
+        f"Your reasoning selected `{primary}` but the tool payload used "
+        f"`{actual}`. Do NOT call `{actual}`. "
+        f"Call `{primary}` with the arguments from your reasoning instead."
+    )
 
 
 def _next_incomplete_plan_step(loop_state: LoopState) -> int | None:

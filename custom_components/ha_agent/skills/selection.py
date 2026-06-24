@@ -57,6 +57,15 @@ _ROUTE_SEARCH_HINTS: dict[str, str] = {
     "news": "news headlines briefing curate",
 }
 
+_ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
+    "email": re.compile(r"mail|imap|inbox|email|mailbox", re.IGNORECASE),
+    "news": re.compile(r"news|curate|headline|rss", re.IGNORECASE),
+    "action": re.compile(
+        r"ha_call_service|turn_on|turn_off|snapshot|open_cover|close_cover",
+        re.IGNORECASE,
+    ),
+}
+
 _CATALOG_LIMIT = 30
 
 
@@ -95,6 +104,41 @@ def skill_matches_route(skill: Skill, route: str | None) -> bool:
 def _filter_by_route(skills: list[Skill], route: str | None) -> list[Skill]:
     """Drop skills whose domain conflicts with the active route."""
     return [skill for skill in skills if skill_matches_route(skill, route)]
+
+
+def tool_step_matches_route(tool_name: str, route: str | None) -> bool:
+    """Return True when a structured tool step fits the active route."""
+    route_key = (route or "").lower()
+    if route_key not in _SPECIALIZED_ROUTES:
+        return True
+
+    name_lower = tool_name.lower()
+    target = _ROUTE_TOOL_MARKERS[route_key]
+    if target.search(name_lower):
+        return True
+
+    for other_route, other_pattern in _ROUTE_TOOL_MARKERS.items():
+        if other_route == route_key:
+            continue
+        if other_pattern.search(name_lower):
+            return False
+
+    return False
+
+
+def filter_tool_steps_for_route(
+    steps: list[dict[str, Any]] | None,
+    route: str | None,
+) -> list[dict[str, Any]] | None:
+    """Drop skill tool steps that conflict with the router's active route."""
+    if not steps:
+        return None
+    filtered = [
+        step
+        for step in steps
+        if tool_step_matches_route(str(step.get("toolName") or ""), route)
+    ]
+    return filtered or None
 
 
 def parse_skill_selection(content: str) -> list[str]:
