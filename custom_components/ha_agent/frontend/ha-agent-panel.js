@@ -697,7 +697,7 @@ class HaAgentPanel extends HTMLElement {
           <thead><tr><th>Model</th><th>Score</th><th>Incumbent</th><th>Outcome</th><th>Notes</th></tr></thead>
           <tbody>${trialRows}</tbody>
         </table>` : ""}
-      <p class="activity-hint">Default: download on the llama Docker host (HA polls until the model appears). Optional webhook automates host download. Shared models dir only if Home Assistant can write that path.</p>`;
+      <p class="activity-hint">Router llama.cpp servers download via POST /models (HA tracks /models/sse progress). Fallbacks: optional webhook, shared models dir, or manual host download with polling.</p>`;
   }
 
   async _copyEvalPreset() {

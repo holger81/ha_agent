@@ -112,3 +112,44 @@ def test_discover_run_to_dict_includes_message() -> None:
     state = eval_models.DiscoverRunState(run=run)
     payload = discover_runner.discover_run_to_dict(state)
     assert payload["progress"]["message"] == "Searching…"
+
+
+def test_router_supports_hf_download() -> None:
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        router_role="router",
+        models_download_via_api=True,
+    )
+    assert llm_server.router_supports_hf_download(caps)
+    caps.models_download_via_api = False
+    assert not llm_server.router_supports_hf_download(caps)
+
+
+def test_sse_download_outcome_finished() -> None:
+    outcome = llm_server._sse_download_outcome(
+        "download_finished",
+        {"model": "org/repo:Q4_K_M"},
+        model_id="org/repo:Q4_K_M",
+    )
+    assert outcome is not None
+    assert outcome["ok"] is True
+
+
+def test_sse_download_outcome_failed() -> None:
+    outcome = llm_server._sse_download_outcome(
+        "download_failed",
+        {"model_id": "org/repo:Q4_K_M", "error": "network"},
+        model_id="org/repo:Q4_K_M",
+    )
+    assert outcome is not None
+    assert outcome["ok"] is False
+
+
+def test_parse_sse_event_block() -> None:
+    data = llm_server._parse_sse_event_block(
+        "download_progress",
+        'data: {"model": "org/repo:Q4_K_M", "progress": 0.5}',
+    )
+    assert data is not None
+    assert data["event"] == "download_progress"
+    assert data["progress"] == 0.5

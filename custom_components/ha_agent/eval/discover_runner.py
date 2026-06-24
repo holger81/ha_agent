@@ -15,8 +15,10 @@ from ..config_helpers import get_llm_backend
 from ..const import DATA_KEY, LOGGER
 from ..llm_client import LlmClient
 from ..llm_server import (
+    download_model_on_router,
     load_model,
     probe_server,
+    router_supports_hf_download,
     unload_model,
     wait_for_model_on_server,
 )
@@ -180,6 +182,71 @@ async def _ensure_model_available(
     caps = await probe_server(session, backend)
     if model_id in caps.models:
         return True, proposal.local_path
+
+    if router_supports_hf_download(caps):
+
+        def _server_download_progress(
+            data: dict[str, Any],
+            *,
+            _model_id=model_id,
+            _index=index,
+            _total=total,
+        ) -> None:
+            bytes_done = data.get("bytes_done")
+            bytes_total = data.get("bytes_total")
+            if bytes_done is not None and bytes_total:
+                pct = int((bytes_done / bytes_total) * 100)
+                message = f"Downloading {_model_id} on llama.cpp ({pct}%)…"
+            else:
+                wait_seconds = data.get("wait_seconds")
+                message = (
+                    f"Downloading {_model_id} on llama.cpp "
+                    f"({wait_seconds or 0}s)…"
+                )
+            _set_progress(
+                state,
+                phase="downloading",
+                message=message,
+                model_id=_model_id,
+                current=_index,
+                total=_total,
+                download_mode="server",
+                **data,
+            )
+
+        _set_progress(
+            state,
+            phase="downloading",
+            message=f"Requesting llama.cpp download for {model_id}…",
+            model_id=model_id,
+            current=index,
+            total=total,
+            download_mode="server",
+        )
+        result = await download_model_on_router(
+            session,
+            backend,
+            model_id,
+            capabilities=caps,
+            cancel_check=lambda: state.cancel_requested,
+            on_progress=_server_download_progress,
+        )
+        if result.get("ok"):
+            registry.record_download(
+                model_id,
+                source_url=proposal.source_url,
+                notes=(
+                    "Downloaded via llama.cpp router API "
+                    f"({result.get('via') or result.get('request_path') or 'server'})."
+                ),
+            )
+            return True, None
+        if not result.get("unsupported"):
+            LOGGER.warning(
+                "Router download failed for %s: %s — trying fallback paths.",
+                model_id,
+                result.get("error"),
+            )
 
     if models_dir:
         dest = Path(models_dir) / proposal.hf_filename

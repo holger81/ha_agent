@@ -88,6 +88,7 @@ class ServerCapabilities:
     router_role: str | None = None
     max_instances: int | None = None
     models_autoload: bool | None = None
+    models_download_via_api: bool = False
     props_writable: bool = False
     health: ServerHealth | None = None
     props: ServerProps | None = None
@@ -109,6 +110,7 @@ class ServerCapabilities:
             "router_role": self.router_role,
             "max_instances": self.max_instances,
             "models_autoload": self.models_autoload,
+            "models_download_via_api": self.models_download_via_api,
             "props_writable": self.props_writable,
             "health": self.health.raw if self.health else None,
             "props": self.props.raw if self.props else None,
@@ -131,6 +133,7 @@ class ServerCapabilities:
             "router_role": self.router_role,
             "max_instances": self.max_instances,
             "models_autoload": self.models_autoload,
+            "models_download_via_api": self.models_download_via_api,
             "props_writable": self.props_writable,
             "total_slots": props.total_slots if props else None,
             "n_ctx": props.n_ctx if props else None,
@@ -206,6 +209,7 @@ class LlmServerProbe:
 
         await self._enrich_router_model_details(root, headers, timeout, caps)
         await self._probe_props_writable(root, headers, timeout, caps)
+        await self._probe_models_download_api(root, headers, timeout, caps)
         return caps
 
     async def _fetch_models(
@@ -298,6 +302,31 @@ class LlmServerProbe:
                 caps.props_writable = response.status in {200, 204}
         except (TimeoutError, aiohttp.ClientError):
             caps.props_writable = False
+
+    async def _probe_models_download_api(
+        self,
+        root: str,
+        headers: dict[str, str],
+        timeout: aiohttp.ClientTimeout,
+        caps: ServerCapabilities,
+    ) -> None:
+        """Detect router HF download support via GET /models/sse."""
+        if caps.router_role != "router":
+            return
+        url = f"{root}/models/sse"
+        try:
+            async with self._session.get(
+                url,
+                headers={**headers, "Accept": "text/event-stream"},
+                timeout=aiohttp.ClientTimeout(total=5, sock_connect=5),
+            ) as response:
+                if response.status == 200:
+                    caps.models_download_via_api = True
+                    if "/models/sse" not in caps.endpoints_available:
+                        caps.endpoints_available.append("/models/sse")
+        except (TimeoutError, aiohttp.ClientError):
+            # Router builds without SSE may still accept POST /models.
+            caps.models_download_via_api = True
 
     async def _try_endpoint(
         self,
@@ -593,6 +622,297 @@ async def model_available_on_server(
     probe = LlmServerProbe(session)
     caps = await probe.probe(backend)
     return model_id in caps.models
+
+
+def router_supports_hf_download(capabilities: ServerCapabilities) -> bool:
+    """Return True when the server can download HF models via router HTTP API."""
+    return (
+        capabilities.router_role == "router"
+        and capabilities.models_download_via_api
+    )
+
+
+def _catalog_status_ready(status: str) -> bool:
+    """Return True when a model is present and not actively downloading."""
+    return status in {"unloaded", "loaded", "sleeping", "unknown"}
+
+
+def _parse_sse_event_block(event_name: str, data_line: str) -> dict[str, Any] | None:
+    payload = data_line[5:].strip() if data_line.startswith("data:") else data_line
+    if not payload or payload == "[DONE]":
+        return None
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if event_name:
+        data.setdefault("event", event_name)
+    return data
+
+
+def _sse_download_outcome(
+    event_name: str,
+    data: dict[str, Any],
+    *,
+    model_id: str,
+) -> dict[str, Any] | None:
+    target = str(
+        data.get("model")
+        or data.get("model_id")
+        or data.get("id")
+        or model_id
+    )
+    if target != model_id:
+        return None
+    name = (event_name or str(data.get("event") or data.get("type") or "")).lower()
+    if name in {"download_finished", "download_complete", "finished"}:
+        return {"ok": True, "model": model_id, "via": "sse", "event": name}
+    if name in {"download_failed", "download_error", "failed"}:
+        return {
+            "ok": False,
+            "model": model_id,
+            "via": "sse",
+            "error": str(data.get("error") or data.get("message") or name),
+        }
+    return None
+
+
+async def request_model_download(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+) -> dict[str, Any]:
+    """Ask a llama.cpp router to download a Hugging Face model by id."""
+    root = server_root_from_base_url(backend.base_url)
+    headers = _headers(backend)
+    headers["Content-Type"] = "application/json"
+    payload = {"model": model_id}
+    timeout = aiohttp.ClientTimeout(total=120)
+    last_error = "Router download endpoint unavailable."
+    for path in ("/models", "/models/download"):
+        url = f"{root}{path}"
+        try:
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+            ) as response:
+                body = await response.text()
+                parsed: dict[str, Any] = {}
+                if body.strip():
+                    try:
+                        loaded = json.loads(body)
+                        if isinstance(loaded, dict):
+                            parsed = loaded
+                    except json.JSONDecodeError:
+                        parsed = {"raw": body[:500]}
+                if response.status == 404:
+                    last_error = f"{path} returned HTTP 404"
+                    continue
+                ok = response.status in {200, 204} or bool(parsed.get("success"))
+                return {
+                    "model": model_id,
+                    "ok": ok,
+                    "path": path,
+                    "status": response.status,
+                    "response": parsed,
+                    "error": None if ok else body[:300],
+                }
+        except (TimeoutError, aiohttp.ClientError) as err:
+            last_error = str(err)
+    return {
+        "model": model_id,
+        "ok": False,
+        "status": None,
+        "response": {},
+        "error": last_error,
+    }
+
+
+async def _model_catalog_status(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+) -> str | None:
+    probe = LlmServerProbe(session)
+    caps = await probe.probe(backend)
+    if model_id not in caps.models:
+        return None
+    for item in caps.model_details:
+        if item.model_id == model_id:
+            return item.status
+    return "unknown"
+
+
+async def wait_for_model_download(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+    poll_interval: float = 10.0,
+    timeout: float = 7200.0,
+    use_sse: bool = True,
+) -> dict[str, Any]:
+    """Wait for a router HF download to finish via SSE and/or catalog polling."""
+    started = time.monotonic()
+    root = server_root_from_base_url(backend.base_url)
+    headers = _headers(backend)
+    headers["Accept"] = "text/event-stream"
+
+    if use_sse:
+        url = f"{root}/models/sse"
+        try:
+            sse_timeout = aiohttp.ClientTimeout(
+                total=None,
+                sock_connect=30,
+                sock_read=90,
+            )
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=sse_timeout,
+            ) as response:
+                if response.status == 200:
+                    current_event = ""
+                    buffer = ""
+                    async for chunk in response.content.iter_any():
+                        if cancel_check and cancel_check():
+                            return {
+                                "ok": False,
+                                "cancelled": True,
+                                "model": model_id,
+                            }
+                        elapsed = time.monotonic() - started
+                        if elapsed > timeout:
+                            break
+                        buffer += chunk.decode("utf-8", errors="ignore")
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            stripped = line.strip()
+                            if stripped.startswith("event:"):
+                                current_event = stripped[6:].strip()
+                                continue
+                            if not stripped.startswith("data:"):
+                                if not stripped:
+                                    current_event = ""
+                                continue
+                            data = _parse_sse_event_block(current_event, stripped)
+                            if data is None:
+                                continue
+                            outcome = _sse_download_outcome(
+                                current_event,
+                                data,
+                                model_id=model_id,
+                            )
+                            if outcome is not None:
+                                if outcome.get("ok"):
+                                    outcome["wait_seconds"] = int(elapsed)
+                                return outcome
+                            event_name = (
+                                current_event
+                                or str(data.get("event") or data.get("type") or "")
+                            ).lower()
+                            if event_name in {
+                                "download_progress",
+                                "progress",
+                                "downloading",
+                            } and on_progress:
+                                on_progress(
+                                    {
+                                        **data,
+                                        "model": model_id,
+                                        "via": "sse",
+                                        "wait_seconds": int(elapsed),
+                                    }
+                                )
+        except (TimeoutError, aiohttp.ClientError) as err:
+            LOGGER.debug("models/sse stream ended, polling catalog: %s", err)
+
+    while True:
+        if cancel_check and cancel_check():
+            return {"ok": False, "cancelled": True, "model": model_id}
+        elapsed = time.monotonic() - started
+        if elapsed > timeout:
+            return {
+                "ok": False,
+                "model": model_id,
+                "error": (
+                    f"Timed out after {int(timeout)}s waiting for download."
+                ),
+            }
+        status = await _model_catalog_status(session, backend, model_id)
+        if status is not None and _catalog_status_ready(status):
+            return {
+                "ok": True,
+                "model": model_id,
+                "wait_seconds": int(elapsed),
+                "via": "catalog",
+                "status": status,
+            }
+        if on_progress:
+            on_progress(
+                {
+                    "model": model_id,
+                    "wait_seconds": int(elapsed),
+                    "poll_interval": poll_interval,
+                    "status": status,
+                    "via": "catalog",
+                }
+            )
+        await asyncio.sleep(poll_interval)
+
+
+async def download_model_on_router(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    capabilities: ServerCapabilities | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+    timeout: float = 7200.0,
+) -> dict[str, Any]:
+    """Download a Hugging Face model through llama.cpp router HTTP APIs."""
+    caps = capabilities or await probe_server(session, backend)
+    if not router_supports_hf_download(caps):
+        return {
+            "ok": False,
+            "model": model_id,
+            "unsupported": True,
+            "error": "Router HF download API not available.",
+        }
+
+    if model_id in caps.models:
+        for item in caps.model_details:
+            if item.model_id == model_id and _catalog_status_ready(item.status):
+                return {
+                    "ok": True,
+                    "model": model_id,
+                    "already_present": True,
+                    "status": item.status,
+                }
+
+    request = await request_model_download(session, backend, model_id)
+    if not request.get("ok"):
+        return request
+
+    wait = await wait_for_model_download(
+        session,
+        backend,
+        model_id,
+        cancel_check=cancel_check,
+        on_progress=on_progress,
+        timeout=timeout,
+        use_sse=caps.models_download_via_api,
+    )
+    if wait.get("ok"):
+        wait["request_path"] = request.get("path")
+    return wait
 
 
 async def wait_for_model_on_server(
