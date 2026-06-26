@@ -46,6 +46,7 @@ class HaAgentPanel extends HTMLElement {
     this._evalNotice = null;
     this._evalCases = [];
     this._evalPollTimer = null;
+    this._evalStatusFingerprint = "";
     this._activityNotice = null;
     this._discoverRequireDownloadApproval = true;
     this._discoverRequireTrialApproval = true;
@@ -362,6 +363,7 @@ class HaAgentPanel extends HTMLElement {
       entry_id: this._entryId,
     });
     this._evalStatus = data;
+    this._evalStatusFingerprint = this._evalStatusFingerprintFor(data);
     const discover = data.discover || {};
     const discoverMsg = discover.progress?.message;
     if (discoverMsg && (data.pipeline === "discover" || discover.status === "awaiting_approval")) {
@@ -413,6 +415,30 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  _evalStatusFingerprintFor(data) {
+    if (!data) return "";
+    const discover = data.discover || {};
+    const run = data.run || {};
+    const progress = discover.progress || {};
+    const runProgress = run.progress || {};
+    return JSON.stringify({
+      running: data.running,
+      pipeline: data.pipeline,
+      discoverStatus: discover.status,
+      discoverPhase: progress.phase,
+      discoverMessage: progress.message,
+      discoverPending: discover.pending_approval,
+      proposalsLen: (discover.proposals || []).length,
+      trialLen: (discover.trial_results || []).length,
+      runStatus: run.status,
+      runPhase: runProgress.phase,
+      runModel: runProgress.model,
+      runCase: runProgress.case_id,
+      runTask: runProgress.task,
+      taskScoresLen: (run.task_scores || []).length,
+    });
+  }
+
   _clearEvalPoll() {
     if (this._evalPollTimer) {
       clearInterval(this._evalPollTimer);
@@ -424,8 +450,12 @@ class HaAgentPanel extends HTMLElement {
     this._clearEvalPoll();
     this._evalPollTimer = setInterval(async () => {
       try {
+        const previous = this._evalStatusFingerprint;
         await this._loadEvalStatus();
-        this._render();
+        const fingerprint = this._evalStatusFingerprintFor(this._evalStatus);
+        if (fingerprint !== previous) {
+          this._render();
+        }
       } catch (_err) {
         this._clearEvalPoll();
       }
@@ -1067,6 +1097,24 @@ class HaAgentPanel extends HTMLElement {
     });
   }
 
+  _capturePanelScroll() {
+    const el = this.shadowRoot?.querySelector(".panel");
+    if (!el || this._tab === "chat") return null;
+    return { scrollTop: el.scrollTop };
+  }
+
+  _restorePanelScroll(saved) {
+    if (!saved) return;
+    const el = this.shadowRoot?.querySelector(".panel");
+    if (!el) return;
+    const apply = () => {
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = Math.min(saved.scrollTop, maxScroll);
+    };
+    apply();
+    requestAnimationFrame(apply);
+  }
+
   _captureMessagesScroll() {
     const el = this.shadowRoot?.querySelector(".messages");
     if (!el) {
@@ -1203,7 +1251,7 @@ class HaAgentPanel extends HTMLElement {
         cursor: pointer;
       }
       .tab.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      .panel { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
+      .panel { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
       .activity-hint { margin-top: 10px; opacity: 0.75; font-size: 0.9rem; }
       .skill-notice {
         padding: 10px 12px;
@@ -2803,7 +2851,7 @@ class HaAgentPanel extends HTMLElement {
       .join("");
 
     const savedScroll =
-      this._tab === "chat" ? this._captureMessagesScroll() : null;
+      this._tab === "chat" ? this._captureMessagesScroll() : this._capturePanelScroll();
 
     let body = "";
     if (this._bootstrapError) {
@@ -2831,7 +2879,11 @@ class HaAgentPanel extends HTMLElement {
       </div>`;
 
     if (savedScroll) {
-      this._restoreMessagesScroll(savedScroll);
+      if (this._tab === "chat") {
+        this._restoreMessagesScroll(savedScroll);
+      } else {
+        this._restorePanelScroll(savedScroll);
+      }
     }
     if (this._tab === "chat") {
       const messagesEl = this.shadowRoot?.querySelector(".messages");
