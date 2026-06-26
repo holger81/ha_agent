@@ -91,6 +91,8 @@ class EvalRunState:
 
     run: EvalRun
     cancel_requested: bool = False
+    active_model_id: str | None = None
+    cancellable_phase: str | None = None
 
 
 @dataclass(slots=True)
@@ -119,3 +121,5 @@ class DiscoverRunState:
     trial_approval_ready: bool = False
     trial_approved: bool | None = None
     pending_trial_model_id: str | None = None
+    active_model_id: str | None = None
+    cancellable_phase: str | None = None

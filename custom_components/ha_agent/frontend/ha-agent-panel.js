@@ -2401,10 +2401,35 @@ class HaAgentPanel extends HTMLElement {
     const statusDetail =
       pipeline === "discover" && discover?.progress?.message
         ? discover.progress.message
-        : progress.phase
-          ? `${progress.phase}${progress.model ? ` · ${progress.model}` : ""}`
-          : "";
+        : progress.message
+          ? progress.message
+          : progress.phase
+            ? `${progress.phase}${progress.model ? ` · ${progress.model}` : ""}${this._formatCatalogProgress(progress.progress || progress.payload) !== "—" ? ` · ${this._formatCatalogProgress(progress.progress || progress.payload)}` : ""}`
+            : "";
     const loadedModels = caps.loaded_models || [];
+    const modelDetails = caps.model_details || [];
+    const catalogRows = modelDetails
+      .map((item) => {
+        const source = item.is_preset ? "preset" : item.source || "—";
+        const progressText = this._formatCatalogProgress(item.progress);
+        const loaded = loadedModels.includes(item.model_id);
+        const actions = loaded
+          ? `<button data-action="eval-unload-model" data-model-id="${this._escape(item.model_id)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`
+          : item.is_preset
+            ? ""
+            : `<button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`;
+        return `<tr>
+          <td>${this._escape(item.model_id)}</td>
+          <td>${this._escape(item.status || "—")}</td>
+          <td>${this._escape(source)}</td>
+          <td>${this._escape(this._formatModalities(item.input_modalities))}</td>
+          <td>${this._escape(this._formatModalities(item.output_modalities))}</td>
+          <td>${this._escape(progressText)}</td>
+          <td>${item.failed ? "failed" : "—"}</td>
+          <td>${actions}</td>
+        </tr>`;
+      })
+      .join("");
     const loadedList = loadedModels
       .map(
         (modelId) =>
@@ -2449,12 +2474,17 @@ class HaAgentPanel extends HTMLElement {
           <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
         </table>
         <p class="activity-hint">Eval benchmarks loaded models by default. Use preload or pass explicit models via API to benchmark catalog entries on a router server.</p>
+        <h4>Model catalog</h4>
+        <table>
+          <thead><tr><th>Model</th><th>Status</th><th>Source</th><th>Input</th><th>Output</th><th>Progress</th><th>Failed</th><th></th></tr></thead>
+          <tbody>${catalogRows || '<tr><td colspan="8">Probe the server to load the model catalog.</td></tr>'}</tbody>
+        </table>
         <h4>Promoted cases (from Activity)</h4>
         <table>
           <thead><tr><th>ID</th><th>Task</th><th>Prompt</th><th>Expectations</th><th></th></tr></thead>
           <tbody>${promotedRows || '<tr><td colspan="5">No promoted cases yet — use Activity → Promote.</td></tr>'}</tbody>
         </table>
-        ${loadedList ? `<h4>Loaded models</h4><ul>${loadedList}</ul>` : ""}
+        ${loadedList ? `<h4>Loaded models (summary)</h4><ul>${loadedList}</ul>` : ""}
         ${this._renderDiscoverSection(discover)}
       </div>`;
   }
@@ -2576,6 +2606,25 @@ class HaAgentPanel extends HTMLElement {
       ?.addEventListener("input", (event) => {
         this._discoverWebhookUrl = event.target.value;
       });
+  }
+
+  _formatCatalogProgress(progress) {
+    if (!progress || typeof progress !== "object") return "—";
+    if (progress.percent != null) {
+      const value = Number(progress.percent);
+      return Number.isFinite(value)
+        ? `${Math.round(value <= 1 ? value * 100 : value)}%`
+        : "—";
+    }
+    if (progress.bytes_done != null && progress.bytes_total) {
+      return `${Math.round((progress.bytes_done / progress.bytes_total) * 100)}%`;
+    }
+    return "—";
+  }
+
+  _formatModalities(modalities) {
+    if (!Array.isArray(modalities) || !modalities.length) return "—";
+    return modalities.join(", ");
   }
 
   _escape(text) {

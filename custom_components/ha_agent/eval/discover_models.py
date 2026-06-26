@@ -11,7 +11,11 @@ import aiohttp
 from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..llm_client import LlmClient
-from ..llm_server import ServerCapabilities
+from ..llm_server import (
+    ServerCapabilities,
+    hf_repo_suitable_for_voice_agent,
+    model_suitable_for_voice_agent,
+)
 from .host_context import build_host_context
 from .model_registry import ModelProposal
 
@@ -179,7 +183,7 @@ async def enrich_hf_candidates(
     enriched: list[dict[str, Any]] = []
     for item in candidates:
         repo_id = str(item.get("repo_id") or "")
-        if not repo_id:
+        if not repo_id or not hf_repo_suitable_for_voice_agent(repo_id):
             continue
         files = await list_gguf_files(session, repo_id)
         filename = _pick_quant_file(files)
@@ -207,7 +211,13 @@ def _fallback_proposals(
     proposals: list[ModelProposal] = []
     for item in candidates:
         model_id = str(item.get("router_model_id") or "")
-        if not model_id or model_id in existing_models or model_id in skip_ids:
+        hf_repo = str(item.get("hf_repo") or "")
+        if (
+            not model_id
+            or model_id in existing_models
+            or model_id in skip_ids
+            or not hf_repo_suitable_for_voice_agent(hf_repo)
+        ):
             continue
         proposals.append(
             ModelProposal(
@@ -235,7 +245,12 @@ async def propose_models_from_web(
 ) -> list[ModelProposal]:
     """Search Hugging Face and rank candidate models for this setup."""
     skip_ids = set(skip_model_ids or [])
-    existing_models = set(capabilities.models)
+    unsuitable_catalog = {
+        detail.model_id
+        for detail in capabilities.model_details
+        if not model_suitable_for_voice_agent(detail)
+    }
+    existing_models = set(capabilities.models) | unsuitable_catalog
     search_terms = ("gguf agent", "gguf instruct", "gguf tool")
     raw_candidates: list[dict[str, Any]] = []
     seen_repos: set[str] = set()
@@ -302,7 +317,12 @@ async def propose_models_from_web(
         model_id = str(item.get("model_id") or "").strip()
         hf_repo = str(item.get("hf_repo") or "").strip()
         hf_filename = str(item.get("hf_filename") or "").strip()
-        if not model_id or not hf_repo or not hf_filename:
+        if (
+            not model_id
+            or not hf_repo
+            or not hf_filename
+            or not hf_repo_suitable_for_voice_agent(hf_repo)
+        ):
             continue
         if model_id in existing_models or model_id in skip_ids:
             continue

@@ -163,3 +163,52 @@ def test_models_delete_url_encodes_model_id() -> None:
     assert url.startswith("http://192.168.10.31:9292/models?model=")
     assert "LiquidAI" in url
     assert "Q4_K_M" in url
+
+
+def test_model_suitable_for_voice_agent() -> None:
+    text_only = llm_server.ModelInfo(
+        model_id="org/chat",
+        input_modalities=["text"],
+        output_modalities=["text"],
+    )
+    assert llm_server.model_suitable_for_voice_agent(text_only)
+    vision = llm_server.ModelInfo(
+        model_id="org/vl",
+        input_modalities=["image", "text"],
+        output_modalities=["text"],
+    )
+    assert not llm_server.model_suitable_for_voice_agent(vision)
+
+
+def test_hf_repo_suitable_for_voice_agent() -> None:
+    assert llm_server.hf_repo_suitable_for_voice_agent("unsloth/gemma-3-it-GGUF")
+    assert not llm_server.hf_repo_suitable_for_voice_agent(
+        "org/model-vl-vision-GGUF"
+    )
+
+
+def test_sse_model_event_outcome_load_finished() -> None:
+    outcome = llm_server._sse_model_event_outcome(
+        "model_status",
+        {"model": "org/repo:Q4_K_M", "data": {"status": "loaded"}},
+        model_id="org/repo:Q4_K_M",
+        wait_kind="load",
+    )
+    assert outcome is not None
+    assert outcome["ok"] is True
+
+
+def test_model_info_to_dict_includes_metadata() -> None:
+    info = llm_server.ModelInfo(
+        model_id="org/repo:Q4",
+        status="unloaded",
+        source="preset",
+        is_preset=True,
+        input_modalities=["text"],
+        output_modalities=["text"],
+        progress={"percent": 0.5},
+    )
+    payload = llm_server.model_info_to_dict(info)
+    assert payload["is_preset"] is True
+    assert payload["source"] == "preset"
+    assert payload["progress"]["percent"] == 0.5

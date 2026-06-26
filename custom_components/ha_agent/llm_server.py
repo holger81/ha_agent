@@ -74,7 +74,45 @@ class ModelInfo:
 
     model_id: str
     status: str = "unknown"
+    source: str = "unknown"
+    is_preset: bool = False
+    path: str | None = None
+    input_modalities: list[str] = field(default_factory=list)
+    output_modalities: list[str] = field(default_factory=list)
+    progress: dict[str, Any] = field(default_factory=dict)
+    failed: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+def model_info_to_dict(info: ModelInfo) -> dict[str, Any]:
+    """Serialize one catalog model for API responses."""
+    return {
+        "model_id": info.model_id,
+        "status": info.status,
+        "source": info.source,
+        "is_preset": info.is_preset,
+        "path": info.path,
+        "input_modalities": list(info.input_modalities),
+        "output_modalities": list(info.output_modalities),
+        "progress": dict(info.progress),
+        "failed": info.failed,
+    }
+
+
+def model_suitable_for_voice_agent(info: ModelInfo) -> bool:
+    """Return False for multimodal-only models unsuitable for text/voice eval."""
+    inputs = {item.lower() for item in info.input_modalities}
+    outputs = {item.lower() for item in info.output_modalities}
+    if inputs.intersection({"image", "audio"}):
+        return False
+    return not (outputs and "text" not in outputs)
+
+
+def hf_repo_suitable_for_voice_agent(repo_id: str) -> bool:
+    """Heuristic filter for HF repos before they appear in the catalog."""
+    lowered = repo_id.lower()
+    skip_markers = ("-vl-", "-audio-", "/vl-", "vision", "mmproj", "-audio")
+    return not any(marker in lowered for marker in skip_markers)
 
 
 @dataclass(slots=True)
@@ -104,8 +142,7 @@ class ServerCapabilities:
             "models": list(self.models),
             "loaded_models": list(self.loaded_models),
             "model_details": [
-                {"model_id": item.model_id, "status": item.status}
-                for item in self.model_details
+                model_info_to_dict(item) for item in self.model_details
             ],
             "router_role": self.router_role,
             "max_instances": self.max_instances,
@@ -218,8 +255,12 @@ class LlmServerProbe:
         headers: dict[str, str],
         timeout: aiohttp.ClientTimeout,
         caps: ServerCapabilities,
+        *,
+        reload: bool = False,
     ) -> None:
         url = f"{backend.base_url.rstrip('/')}/models"
+        if reload:
+            url = f"{url}?reload=1"
         try:
             async with self._session.get(
                 url, headers=headers, timeout=timeout
@@ -239,14 +280,13 @@ class LlmServerProbe:
         for item in data.get("data", []):
             if not isinstance(item, dict):
                 continue
-            model_id = item.get("id")
-            if not isinstance(model_id, str) or not model_id:
+            parsed = _parse_model_entry(item)
+            if parsed is None:
                 continue
-            status = _model_status(item)
-            models.append(model_id)
-            details.append(ModelInfo(model_id=model_id, status=status, raw=item))
-            if status == "loaded":
-                loaded.append(model_id)
+            models.append(parsed.model_id)
+            details.append(parsed)
+            if parsed.status == "loaded":
+                loaded.append(parsed.model_id)
         caps.models = sorted(models)
         caps.loaded_models = sorted(loaded)
         caps.model_details = details
@@ -449,6 +489,70 @@ def _model_status(item: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _parse_model_entry(item: dict[str, Any]) -> ModelInfo | None:
+    model_id = item.get("id")
+    if not isinstance(model_id, str) or not model_id:
+        return None
+    status_obj = item.get("status")
+    status_dict = status_obj if isinstance(status_obj, dict) else {}
+    status = _model_status(item)
+    architecture = item.get("architecture")
+    arch = architecture if isinstance(architecture, dict) else {}
+    input_modalities = [
+        str(value)
+        for value in arch.get("input_modalities", [])
+        if isinstance(value, str)
+    ]
+    output_modalities = [
+        str(value)
+        for value in arch.get("output_modalities", [])
+        if isinstance(value, str)
+    ]
+    is_preset = bool(status_dict.get("preset"))
+    source = "preset" if is_preset else ("cache" if item.get("path") else "unknown")
+    progress = status_dict.get("progress")
+    return ModelInfo(
+        model_id=model_id,
+        status=status,
+        source=source,
+        is_preset=is_preset,
+        path=item.get("path") if isinstance(item.get("path"), str) else None,
+        input_modalities=input_modalities,
+        output_modalities=output_modalities,
+        progress=progress if isinstance(progress, dict) else {},
+        failed=bool(status_dict.get("failed")),
+        raw=item,
+    )
+
+
+async def fetch_models_catalog(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    *,
+    reload: bool = False,
+) -> ServerCapabilities:
+    """Fetch the llama.cpp model catalog, optionally forcing a disk reload."""
+    probe = LlmServerProbe(session)
+    root = server_root_from_base_url(backend.base_url)
+    caps = ServerCapabilities(server_root=root)
+    await probe._fetch_models(
+        backend,
+        _headers(backend),
+        aiohttp.ClientTimeout(total=30),
+        caps,
+        reload=reload,
+    )
+    return caps
+
+
+async def refresh_models_catalog(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+) -> ServerCapabilities:
+    """Reload and return the llama.cpp model catalog."""
+    return await fetch_models_catalog(session, backend, reload=True)
+
+
 def eval_candidate_models(
     capabilities: ServerCapabilities,
     *,
@@ -612,7 +716,7 @@ async def delete_model_from_router(
                     parsed = {"raw": body[:500]}
             ok = response.status in {200, 204} or bool(parsed.get("success"))
             preset = response.status == 400 and "preset" in body.lower()
-            return {
+            result = {
                 "model": model_id,
                 "ok": ok,
                 "status": response.status,
@@ -620,6 +724,9 @@ async def delete_model_from_router(
                 "preset_model": preset,
                 "error": None if ok else body[:300],
             }
+            if ok:
+                await refresh_models_catalog(session, backend)
+            return result
     except (TimeoutError, aiohttp.ClientError) as err:
         return {
             "model": model_id,
@@ -636,11 +743,25 @@ async def preload_models(
     model_ids: list[str],
     *,
     loaded_models: list[str] | None = None,
+    capabilities: ServerCapabilities | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+    abort_on_cancel: bool = False,
 ) -> list[dict[str, Any]]:
     """Load models that are not already resident on the router."""
-    already_loaded = set(loaded_models or [])
+    caps = capabilities or await probe_server(session, backend)
+    already_loaded = set(loaded_models or caps.loaded_models)
     results: list[dict[str, Any]] = []
     for model_id in model_ids:
+        if cancel_check and cancel_check():
+            results.append(
+                {
+                    "model": model_id,
+                    "ok": False,
+                    "cancelled": True,
+                }
+            )
+            break
         if model_id in already_loaded:
             results.append(
                 {
@@ -651,7 +772,24 @@ async def preload_models(
                 }
             )
             continue
-        result = await load_model(session, backend, model_id)
+
+        def _progress(
+            data: dict[str, Any],
+            *,
+            _model_id: str = model_id,
+        ) -> None:
+            if on_progress:
+                on_progress({**data, "model": _model_id, "phase": "load"})
+
+        result = await load_model_with_progress(
+            session,
+            backend,
+            model_id,
+            capabilities=caps,
+            cancel_check=cancel_check,
+            on_progress=_progress if on_progress else None,
+            abort_on_cancel=abort_on_cancel,
+        )
         result["skipped"] = False
         results.append(result)
         if result.get("ok"):
@@ -698,31 +836,87 @@ def _parse_sse_event_block(event_name: str, data_line: str) -> dict[str, Any] | 
     return data
 
 
-def _sse_download_outcome(
+def _sse_model_event_outcome(
     event_name: str,
     data: dict[str, Any],
     *,
     model_id: str,
+    wait_kind: str,
 ) -> dict[str, Any] | None:
+    """Parse one models/sse event for download or load waits."""
     target = str(
         data.get("model")
         or data.get("model_id")
         or data.get("id")
         or model_id
     )
-    if target != model_id:
+    if target not in {model_id, "*"}:
         return None
+    inner = data.get("data") if isinstance(data.get("data"), dict) else data
     name = (event_name or str(data.get("event") or data.get("type") or "")).lower()
-    if name in {"download_finished", "download_complete", "finished"}:
+    status = str(inner.get("status") or inner.get("value") or "").lower()
+
+    if (
+        name in {"download_finished", "download_complete", "finished"}
+        and wait_kind == "download"
+    ):
         return {"ok": True, "model": model_id, "via": "sse", "event": name}
     if name in {"download_failed", "download_error", "failed"}:
         return {
             "ok": False,
             "model": model_id,
             "via": "sse",
-            "error": str(data.get("error") or data.get("message") or name),
+            "error": str(data.get("error") or inner.get("error") or name),
         }
+    if name in {"download_progress", "progress", "downloading"}:
+        return {
+            "progress": True,
+            "model": model_id,
+            "via": "sse",
+            "event": name,
+            "payload": inner or data,
+        }
+    if name == "model_status":
+        if wait_kind == "load" and status == "loaded":
+            return {"ok": True, "model": model_id, "via": "sse", "event": name}
+        if wait_kind == "download" and status in {"unloaded", "loaded"}:
+            return {"ok": True, "model": model_id, "via": "sse", "event": name}
+        if status in {"loading", "downloading"}:
+            progress = inner.get("progress")
+            return {
+                "progress": True,
+                "model": model_id,
+                "via": "sse",
+                "event": name,
+                "status": status,
+                "payload": progress if isinstance(progress, dict) else inner,
+            }
+        if status == "failed" or inner.get("failed"):
+            return {
+                "ok": False,
+                "model": model_id,
+                "via": "sse",
+                "error": "model_status failed",
+            }
     return None
+
+
+def _sse_download_outcome(
+    event_name: str,
+    data: dict[str, Any],
+    *,
+    model_id: str,
+) -> dict[str, Any] | None:
+    """Backward-compatible wrapper for download SSE parsing."""
+    outcome = _sse_model_event_outcome(
+        event_name,
+        data,
+        model_id=model_id,
+        wait_kind="download",
+    )
+    if outcome is None or outcome.get("progress"):
+        return None
+    return outcome
 
 
 async def request_model_download(
@@ -778,19 +972,195 @@ async def request_model_download(
     }
 
 
+async def _get_catalog_model(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    reload: bool = False,
+) -> ModelInfo | None:
+    caps = await fetch_models_catalog(session, backend, reload=reload)
+    for item in caps.model_details:
+        if item.model_id == model_id:
+            return item
+    return None
+
+
 async def _model_catalog_status(
     session: aiohttp.ClientSession,
     backend: LlmBackend,
     model_id: str,
+    *,
+    reload: bool = False,
 ) -> str | None:
-    probe = LlmServerProbe(session)
-    caps = await probe.probe(backend)
-    if model_id not in caps.models:
-        return None
-    for item in caps.model_details:
-        if item.model_id == model_id:
-            return item.status
-    return "unknown"
+    entry = await _get_catalog_model(session, backend, model_id, reload=reload)
+    return None if entry is None else entry.status
+
+
+async def _consume_models_sse(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    wait_kind: str,
+    cancel_check: Callable[[], bool] | None,
+    on_progress: Callable[[dict[str, Any]], None] | None,
+    started: float,
+    timeout: float,
+) -> dict[str, Any] | None:
+    root = server_root_from_base_url(backend.base_url)
+    headers = _headers(backend)
+    headers["Accept"] = "text/event-stream"
+    url = f"{root}/models/sse"
+    sse_timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=90)
+    try:
+        async with session.get(url, headers=headers, timeout=sse_timeout) as response:
+            if response.status != 200:
+                return None
+            current_event = ""
+            buffer = ""
+            async for chunk in response.content.iter_any():
+                if cancel_check and cancel_check():
+                    return {"ok": False, "cancelled": True, "model": model_id}
+                elapsed = time.monotonic() - started
+                if elapsed > timeout:
+                    return None
+                buffer += chunk.decode("utf-8", errors="ignore")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    stripped = line.strip()
+                    if stripped.startswith("event:"):
+                        current_event = stripped[6:].strip()
+                        continue
+                    if not stripped.startswith("data:"):
+                        if not stripped:
+                            current_event = ""
+                        continue
+                    data = _parse_sse_event_block(current_event, stripped)
+                    if data is None:
+                        continue
+                    outcome = _sse_model_event_outcome(
+                        current_event,
+                        data,
+                        model_id=model_id,
+                        wait_kind=wait_kind,
+                    )
+                    if outcome is None:
+                        continue
+                    if outcome.get("progress"):
+                        if on_progress:
+                            on_progress(
+                                {
+                                    **outcome,
+                                    "wait_seconds": int(elapsed),
+                                }
+                            )
+                        continue
+                    if outcome.get("ok"):
+                        outcome["wait_seconds"] = int(elapsed)
+                    return outcome
+    except (TimeoutError, aiohttp.ClientError) as err:
+        LOGGER.debug("models/sse stream ended: %s", err)
+    return None
+
+
+async def _wait_for_router_model(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    wait_kind: str,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+    poll_interval: float = 10.0,
+    timeout: float = 7200.0,
+    use_sse: bool = True,
+    abort_on_cancel: bool = False,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    if use_sse:
+        outcome = await _consume_models_sse(
+            session,
+            backend,
+            model_id,
+            wait_kind=wait_kind,
+            cancel_check=cancel_check,
+            on_progress=on_progress,
+            started=started,
+            timeout=timeout,
+        )
+        if outcome is not None:
+            if outcome.get("cancelled") and abort_on_cancel:
+                await unload_model(session, backend, model_id)
+            return outcome
+
+    reload_next = False
+    while True:
+        if cancel_check and cancel_check():
+            if abort_on_cancel:
+                await unload_model(session, backend, model_id)
+            return {"ok": False, "cancelled": True, "model": model_id}
+        elapsed = time.monotonic() - started
+        if elapsed > timeout:
+            return {
+                "ok": False,
+                "model": model_id,
+                "error": f"Timed out after {int(timeout)}s waiting for {wait_kind}.",
+            }
+        entry = await _get_catalog_model(
+            session,
+            backend,
+            model_id,
+            reload=reload_next,
+        )
+        reload_next = False
+        if entry is not None:
+            if entry.failed:
+                return {
+                    "ok": False,
+                    "model": model_id,
+                    "error": "Model entered failed state.",
+                    "status": entry.status,
+                }
+            if wait_kind == "download" and _catalog_status_ready(entry.status):
+                return {
+                    "ok": True,
+                    "model": model_id,
+                    "wait_seconds": int(elapsed),
+                    "via": "catalog",
+                    "status": entry.status,
+                    "info": model_info_to_dict(entry),
+                }
+            if wait_kind == "load" and entry.status in {"loaded", "sleeping"}:
+                return {
+                    "ok": True,
+                    "model": model_id,
+                    "wait_seconds": int(elapsed),
+                    "via": "catalog",
+                    "status": entry.status,
+                    "info": model_info_to_dict(entry),
+                }
+            if entry.progress and on_progress:
+                on_progress(
+                    {
+                        "model": model_id,
+                        "via": "catalog",
+                        "wait_seconds": int(elapsed),
+                        "status": entry.status,
+                        "progress": entry.progress,
+                    }
+                )
+        if on_progress:
+            on_progress(
+                {
+                    "model": model_id,
+                    "wait_seconds": int(elapsed),
+                    "poll_interval": poll_interval,
+                    "status": entry.status if entry else None,
+                    "via": "catalog",
+                }
+            )
+        await asyncio.sleep(poll_interval)
 
 
 async def wait_for_model_download(
@@ -803,114 +1173,84 @@ async def wait_for_model_download(
     poll_interval: float = 10.0,
     timeout: float = 7200.0,
     use_sse: bool = True,
+    abort_on_cancel: bool = False,
 ) -> dict[str, Any]:
     """Wait for a router HF download to finish via SSE and/or catalog polling."""
-    started = time.monotonic()
-    root = server_root_from_base_url(backend.base_url)
-    headers = _headers(backend)
-    headers["Accept"] = "text/event-stream"
+    return await _wait_for_router_model(
+        session,
+        backend,
+        model_id,
+        wait_kind="download",
+        cancel_check=cancel_check,
+        on_progress=on_progress,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        use_sse=use_sse,
+        abort_on_cancel=abort_on_cancel,
+    )
 
-    if use_sse:
-        url = f"{root}/models/sse"
-        try:
-            sse_timeout = aiohttp.ClientTimeout(
-                total=None,
-                sock_connect=30,
-                sock_read=90,
-            )
-            async with session.get(
-                url,
-                headers=headers,
-                timeout=sse_timeout,
-            ) as response:
-                if response.status == 200:
-                    current_event = ""
-                    buffer = ""
-                    async for chunk in response.content.iter_any():
-                        if cancel_check and cancel_check():
-                            return {
-                                "ok": False,
-                                "cancelled": True,
-                                "model": model_id,
-                            }
-                        elapsed = time.monotonic() - started
-                        if elapsed > timeout:
-                            break
-                        buffer += chunk.decode("utf-8", errors="ignore")
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            stripped = line.strip()
-                            if stripped.startswith("event:"):
-                                current_event = stripped[6:].strip()
-                                continue
-                            if not stripped.startswith("data:"):
-                                if not stripped:
-                                    current_event = ""
-                                continue
-                            data = _parse_sse_event_block(current_event, stripped)
-                            if data is None:
-                                continue
-                            outcome = _sse_download_outcome(
-                                current_event,
-                                data,
-                                model_id=model_id,
-                            )
-                            if outcome is not None:
-                                if outcome.get("ok"):
-                                    outcome["wait_seconds"] = int(elapsed)
-                                return outcome
-                            event_name = (
-                                current_event
-                                or str(data.get("event") or data.get("type") or "")
-                            ).lower()
-                            if event_name in {
-                                "download_progress",
-                                "progress",
-                                "downloading",
-                            } and on_progress:
-                                on_progress(
-                                    {
-                                        **data,
-                                        "model": model_id,
-                                        "via": "sse",
-                                        "wait_seconds": int(elapsed),
-                                    }
-                                )
-        except (TimeoutError, aiohttp.ClientError) as err:
-            LOGGER.debug("models/sse stream ended, polling catalog: %s", err)
 
-    while True:
-        if cancel_check and cancel_check():
-            return {"ok": False, "cancelled": True, "model": model_id}
-        elapsed = time.monotonic() - started
-        if elapsed > timeout:
-            return {
-                "ok": False,
-                "model": model_id,
-                "error": (
-                    f"Timed out after {int(timeout)}s waiting for download."
-                ),
-            }
-        status = await _model_catalog_status(session, backend, model_id)
-        if status is not None and _catalog_status_ready(status):
-            return {
-                "ok": True,
-                "model": model_id,
-                "wait_seconds": int(elapsed),
-                "via": "catalog",
-                "status": status,
-            }
-        if on_progress:
-            on_progress(
-                {
-                    "model": model_id,
-                    "wait_seconds": int(elapsed),
-                    "poll_interval": poll_interval,
-                    "status": status,
-                    "via": "catalog",
-                }
-            )
-        await asyncio.sleep(poll_interval)
+async def wait_for_model_load(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+    poll_interval: float = 5.0,
+    timeout: float = 1200.0,
+    use_sse: bool = True,
+    abort_on_cancel: bool = False,
+) -> dict[str, Any]:
+    """Wait for a router model load to finish via SSE and/or catalog polling."""
+    return await _wait_for_router_model(
+        session,
+        backend,
+        model_id,
+        wait_kind="load",
+        cancel_check=cancel_check,
+        on_progress=on_progress,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        use_sse=use_sse,
+        abort_on_cancel=abort_on_cancel,
+    )
+
+
+async def load_model_with_progress(
+    session: aiohttp.ClientSession,
+    backend: LlmBackend,
+    model_id: str,
+    *,
+    capabilities: ServerCapabilities | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+    timeout: float = 1200.0,
+    abort_on_cancel: bool = False,
+) -> dict[str, Any]:
+    """Load a model and wait for loaded status with SSE/catalog progress."""
+    caps = capabilities or await probe_server(session, backend)
+    if model_id in caps.loaded_models:
+        return {
+            "model": model_id,
+            "ok": True,
+            "skipped": True,
+            "reason": "already loaded",
+        }
+    result = await load_model(session, backend, model_id)
+    if not result.get("ok"):
+        return result
+    wait = await wait_for_model_load(
+        session,
+        backend,
+        model_id,
+        cancel_check=cancel_check,
+        on_progress=on_progress,
+        timeout=timeout,
+        use_sse=caps.models_download_via_api,
+        abort_on_cancel=abort_on_cancel,
+    )
+    return {**result, **wait}
 
 
 async def download_model_on_router(
@@ -922,6 +1262,7 @@ async def download_model_on_router(
     cancel_check: Callable[[], bool] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     timeout: float = 7200.0,
+    abort_on_cancel: bool = False,
 ) -> dict[str, Any]:
     """Download a Hugging Face model through llama.cpp router HTTP APIs."""
     caps = capabilities or await probe_server(session, backend)
@@ -955,9 +1296,11 @@ async def download_model_on_router(
         on_progress=on_progress,
         timeout=timeout,
         use_sse=caps.models_download_via_api,
+        abort_on_cancel=abort_on_cancel,
     )
     if wait.get("ok"):
         wait["request_path"] = request.get("path")
+        await refresh_models_catalog(session, backend)
     return wait
 
 

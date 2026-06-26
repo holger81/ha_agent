@@ -17,7 +17,7 @@ from ..llm_client import LlmClient
 from ..llm_server import (
     delete_model_from_router,
     download_model_on_router,
-    load_model,
+    load_model_with_progress,
     probe_server,
     router_supports_hf_download,
     unload_model,
@@ -102,6 +102,27 @@ def _set_progress(
     **extra: Any,
 ) -> None:
     state.run.progress = {"phase": phase, "message": message, **extra}
+    model_id = extra.get("model_id")
+    if phase in _CANCELLABLE_PHASES and model_id:
+        state.active_model_id = str(model_id)
+        state.cancellable_phase = phase
+    elif phase not in _CANCELLABLE_PHASES:
+        state.active_model_id = None
+        state.cancellable_phase = None
+
+
+async def _abort_cancellable_model(
+    session: aiohttp.ClientSession,
+    backend,
+    state: DiscoverRunState,
+) -> None:
+    """Unload an in-flight router download/load when the pipeline is cancelled."""
+    model_id = state.active_model_id
+    if not model_id:
+        return
+    state.active_model_id = None
+    state.cancellable_phase = None
+    await unload_model(session, backend, model_id)
 
 
 def _check_cancel(state: DiscoverRunState) -> None:
@@ -165,6 +186,10 @@ def _mean_task_score(task_scores: list) -> float:
 
 _DELETABLE_DOWNLOAD_MODES = frozenset(
     {"server", "local", "poll", "webhook", "webhook_poll"},
+)
+
+_CANCELLABLE_PHASES = frozenset(
+    {"downloading", "waiting_for_model", "loading"},
 )
 
 
@@ -286,6 +311,7 @@ async def _ensure_model_available(
             capabilities=caps,
             cancel_check=lambda: state.cancel_requested,
             on_progress=_server_download_progress,
+            abort_on_cancel=True,
         )
         if result.get("ok"):
             registry.record_download(
@@ -609,7 +635,49 @@ async def run_discover_pipeline(
                     current=index,
                     total=total,
                 )
-                load_result = await load_model(session, chat_backend, proposal.model_id)
+
+                def _load_progress(
+                    data: dict[str, Any],
+                    *,
+                    _model_id=proposal.model_id,
+                    _index=index,
+                    _total=total,
+                ) -> None:
+                    progress = data.get("payload") or data.get("progress") or {}
+                    if not isinstance(progress, dict):
+                        progress = data
+                    bytes_done = progress.get("bytes_done")
+                    bytes_total = progress.get("bytes_total")
+                    if bytes_done is not None and bytes_total:
+                        pct = int((bytes_done / bytes_total) * 100)
+                        message = f"Loading {_model_id} on llama.cpp ({pct}%)…"
+                    elif data.get("status") == "loading":
+                        message = f"Loading {_model_id} on llama.cpp…"
+                    else:
+                        wait_seconds = data.get("wait_seconds")
+                        message = (
+                            f"Loading {_model_id} on llama.cpp "
+                            f"({wait_seconds or 0}s)…"
+                        )
+                    _set_progress(
+                        state,
+                        phase="loading",
+                        message=message,
+                        model_id=_model_id,
+                        current=_index,
+                        total=_total,
+                        **data,
+                    )
+
+                load_result = await load_model_with_progress(
+                    session,
+                    chat_backend,
+                    proposal.model_id,
+                    capabilities=capabilities,
+                    cancel_check=lambda: state.cancel_requested,
+                    on_progress=_load_progress,
+                    abort_on_cancel=True,
+                )
                 _check_cancel(state)
                 if not load_result.get("ok"):
                     run.trial_results.append(
@@ -742,6 +810,11 @@ async def run_discover_pipeline(
     except DiscoverCancelled:
         run.status = "cancelled"
         _set_progress(state, phase="cancelled", message="Discover pipeline cancelled.")
+        try:
+            async with aiohttp.ClientSession() as abort_session:
+                await _abort_cancellable_model(abort_session, chat_backend, state)
+        except Exception as err:
+            LOGGER.debug("Discover cancel cleanup failed: %s", err)
     except Exception as err:
         LOGGER.exception("Discover pipeline failed for %s: %s", entry_id, err)
         run.status = "failed"

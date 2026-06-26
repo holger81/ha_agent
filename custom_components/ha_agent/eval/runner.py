@@ -192,13 +192,26 @@ async def run_eval_suite(
                 )
 
             if preload_models_flag and candidate_models:
-                run.progress = {"phase": "preload"}
+                state.cancellable_phase = "preload"
+
+                def _preload_progress(data: dict[str, Any]) -> None:
+                    model_id = data.get("model")
+                    if isinstance(model_id, str) and model_id:
+                        state.active_model_id = model_id
+                    run.progress = {"phase": "preload", **data}
+
                 preload_results = await preload_models(
                     session,
                     chat_backend,
                     candidate_models,
                     loaded_models=capabilities.loaded_models,
+                    capabilities=capabilities,
+                    cancel_check=lambda: state.cancel_requested,
+                    on_progress=_preload_progress,
+                    abort_on_cancel=True,
                 )
+                state.active_model_id = None
+                state.cancellable_phase = None
                 failed_preload = [
                     item
                     for item in preload_results
