@@ -115,6 +115,60 @@ def hf_repo_suitable_for_voice_agent(repo_id: str) -> bool:
     return not any(marker in lowered for marker in skip_markers)
 
 
+def normalize_download_progress(data: dict[str, Any]) -> dict[str, Any]:
+    """Extract byte/percent progress from SSE, catalog, or nested payloads."""
+    if not isinstance(data, dict):
+        return {}
+    layers: list[dict[str, Any]] = [data]
+    for key in ("payload", "progress", "data"):
+        inner = data.get(key)
+        if isinstance(inner, dict):
+            layers.append(inner)
+    bytes_done: int | None = None
+    bytes_total: int | None = None
+    percent: float | None = None
+    for layer in layers:
+        for done_key, total_key in (
+            ("bytes_done", "bytes_total"),
+            ("n_done", "n_total"),
+            ("downloaded", "total"),
+        ):
+            done = layer.get(done_key)
+            total = layer.get(total_key)
+            if done is not None and total:
+                bytes_done = int(done)
+                bytes_total = int(total)
+        raw_percent = layer.get("percent")
+        if raw_percent is None:
+            raw_percent = layer.get("progress")
+        if isinstance(raw_percent, (int, float)):
+            percent = float(raw_percent)
+    result: dict[str, Any] = {}
+    if bytes_done is not None and bytes_total:
+        result["bytes_done"] = bytes_done
+        result["bytes_total"] = bytes_total
+    if percent is not None:
+        result["percent"] = percent
+    return result
+
+
+def download_progress_percent(data: dict[str, Any] | None) -> int | None:
+    """Return an integer 0-100 download percent when progress data is available."""
+    if not data:
+        return None
+    percent = data.get("percent")
+    if isinstance(percent, (int, float)):
+        value = float(percent)
+        if value <= 1:
+            value *= 100
+        return max(0, min(100, int(value)))
+    bytes_done = data.get("bytes_done")
+    bytes_total = data.get("bytes_total")
+    if bytes_done is not None and bytes_total:
+        return max(0, min(100, int((bytes_done / bytes_total) * 100)))
+    return None
+
+
 @dataclass(slots=True)
 class ServerCapabilities:
     """Aggregated llama.cpp server probe for eval and tuning."""

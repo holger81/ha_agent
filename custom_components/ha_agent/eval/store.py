@@ -272,6 +272,12 @@ class EvalStore:
         )
         conn.commit()
 
+    def clear_model_download_record(self, model_id: str) -> None:
+        """Remove registry history so a model can be downloaded and trialed again."""
+        conn = self._connection()
+        conn.execute("DELETE FROM model_downloads WHERE model_id = ?", (model_id,))
+        conn.commit()
+
     def should_skip_download(self, model_id: str) -> bool:
         """Return True when a model was already downloaded and benchmarked."""
         row = self._connection().execute(

@@ -17,14 +17,16 @@ from ..llm_client import LlmClient
 from ..llm_server import (
     delete_model_from_router,
     download_model_on_router,
+    download_progress_percent,
     load_model_with_progress,
+    normalize_download_progress,
     probe_server,
     router_supports_hf_download,
     unload_model,
     wait_for_model_on_server,
 )
 from .discover_config import DiscoverConfig, get_discover_config
-from .discover_models import propose_models_from_web
+from .discover_models import proposal_from_model_id, propose_models_from_web
 from .model_download import (
     delete_local_model_file,
     download_hf_gguf,
@@ -288,10 +290,9 @@ async def _ensure_model_available(
             _index=index,
             _total=total,
         ) -> None:
-            bytes_done = data.get("bytes_done")
-            bytes_total = data.get("bytes_total")
-            if bytes_done is not None and bytes_total:
-                pct = int((bytes_done / bytes_total) * 100)
+            norm = normalize_download_progress(data)
+            pct = download_progress_percent(norm)
+            if pct is not None:
                 message = f"Downloading {_model_id} on llama.cpp ({pct}%)…"
             else:
                 wait_seconds = data.get("wait_seconds")
@@ -307,6 +308,8 @@ async def _ensure_model_available(
                 current=_index,
                 total=_total,
                 download_mode="server",
+                progress_percent=pct,
+                **norm,
                 **data,
             )
 
@@ -840,6 +843,276 @@ async def run_discover_pipeline(
         state_store[entry_id] = state
 
     return run
+
+
+def _proposal_for_retry(
+    state: DiscoverRunState | None,
+    model_id: str,
+    proposal_data: dict[str, Any] | None,
+) -> ModelProposal:
+    if proposal_data:
+        return proposal_from_model_id(model_id, source=proposal_data)
+    if state is not None:
+        for item in state.run.proposals:
+            if item.get("model_id") == model_id:
+                return proposal_from_model_id(model_id, source=item)
+    return proposal_from_model_id(model_id)
+
+
+async def run_discover_retry(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_id: str,
+    *,
+    proposal_data: dict[str, Any] | None = None,
+    config: DiscoverConfig | None = None,
+) -> DiscoverRun:
+    """Re-download, load, and benchmark one discover candidate."""
+    prior_state = get_discover_state(hass, entry_id)
+    proposal = _proposal_for_retry(prior_state, model_id, proposal_data)
+    if not proposal.hf_repo:
+        raise ValueError(
+            f"Cannot retry {model_id}: missing Hugging Face repo metadata."
+        )
+
+    entry = hass.config_entries.async_get_entry(entry_id)
+    config = config or get_discover_config(entry)
+    chat_backend = get_llm_backend(entry)
+    store = get_eval_store(hass, entry_id)
+    registry = get_model_registry(hass, entry_id)
+    incumbent_model = chat_backend.model
+    incumbent_score = _incumbent_baseline(store, incumbent_model)
+    models_dir = (config.models_dir or "").strip() or None
+    webhook_url = (config.download_webhook_url or "").strip() or None
+
+    state_store = _state_store(hass)
+    if prior_state and prior_state.run.status in {
+        "completed",
+        "cancelled",
+        "failed",
+    }:
+        run = prior_state.run
+        state = prior_state
+    else:
+        run = DiscoverRun(
+            id=str(uuid.uuid4()),
+            entry_id=entry_id,
+            status="running",
+            started_at=time.time(),
+            proposals=[proposal.to_dict()],
+        )
+        state = DiscoverRunState(run=run)
+    run.status = "running"
+    run.finished_at = None
+    run.error = None
+    run.proposals = [proposal.to_dict()]
+    state.cancel_requested = False
+    state_store[entry_id] = state
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            registry.clear_for_retry(model_id)
+            capabilities = await probe_server(session, chat_backend)
+            await unload_model(session, chat_backend, model_id)
+            if router_supports_hf_download(capabilities):
+                await delete_model_from_router(session, chat_backend, model_id)
+
+            _set_progress(
+                state,
+                phase="retrying",
+                message=f"Retrying download and trial for {model_id}…",
+                model_id=model_id,
+                current=1,
+                total=1,
+            )
+            ready, local_path = await _ensure_model_available(
+                session,
+                state,
+                chat_backend,
+                registry,
+                proposal,
+                index=1,
+                total=1,
+                models_dir=models_dir,
+                webhook_url=webhook_url,
+            )
+            _check_cancel(state)
+            run.trial_results = [
+                item
+                for item in run.trial_results
+                if item.get("model_id") != model_id
+            ]
+            if not ready:
+                run.trial_results.append(
+                    {
+                        "model_id": model_id,
+                        "accepted": False,
+                        "skipped": True,
+                        "reason": (
+                            state.run.progress.get("message")
+                            or "Model not available on llama.cpp."
+                        ),
+                    }
+                )
+                run.status = "completed"
+                return run
+
+            _set_progress(
+                state,
+                phase="loading",
+                message=f"Loading {model_id} on llama.cpp…",
+                model_id=model_id,
+                current=1,
+                total=1,
+            )
+            load_result = await load_model_with_progress(
+                session,
+                chat_backend,
+                model_id,
+                capabilities=capabilities,
+                cancel_check=lambda: state.cancel_requested,
+                abort_on_cancel=True,
+            )
+            _check_cancel(state)
+            if not load_result.get("ok"):
+                run.trial_results.append(
+                    {
+                        "model_id": model_id,
+                        "accepted": False,
+                        "skipped": True,
+                        "reason": load_result.get("error") or "Load failed.",
+                    }
+                )
+                run.status = "completed"
+                return run
+
+            _set_progress(
+                state,
+                phase="benchmarking",
+                message=f"Running eval suite for {model_id}…",
+                model_id=model_id,
+                current=1,
+                total=1,
+            )
+            _case_scores, task_scores = await benchmark_single_model(
+                hass,
+                entry_id,
+                model_id,
+                cancel_check=lambda: state.cancel_requested,
+            )
+            _check_cancel(state)
+
+            mean_score = _mean_task_score(task_scores)
+            baseline = incumbent_score if incumbent_score is not None else 0.55
+            accepted = mean_score >= baseline
+            registry.record_eval_result(
+                model_id,
+                eval_score=mean_score,
+                eval_run_id=run.id,
+                accepted=accepted,
+                notes=(
+                    f"retry mean={mean_score:.3f} incumbent={baseline:.3f}"
+                    if incumbent_score is not None
+                    else f"retry mean={mean_score:.3f}"
+                ),
+            )
+            run.trial_results.append(
+                {
+                    "model_id": model_id,
+                    "mean_score": mean_score,
+                    "incumbent_score": baseline,
+                    "accepted": accepted,
+                    "retried": True,
+                    "task_scores": [
+                        {
+                            "task": item.task,
+                            "score": item.score,
+                            "passed_count": item.passed_count,
+                            "case_count": item.case_count,
+                        }
+                        for item in task_scores
+                    ],
+                }
+            )
+            _set_progress(
+                state,
+                phase="cleanup",
+                message=f"Cleaning up {model_id}…",
+                model_id=model_id,
+            )
+            if accepted:
+                await unload_model(session, chat_backend, model_id)
+            else:
+                await _cleanup_rejected_model(
+                    session,
+                    chat_backend,
+                    registry,
+                    proposal,
+                    capabilities=capabilities,
+                    local_path=local_path,
+                )
+            run.status = "completed"
+            _set_progress(
+                state,
+                phase="completed",
+                message=(
+                    f"Retry finished for {model_id} — "
+                    f"{'accepted' if accepted else 'rejected'}."
+                ),
+                model_id=model_id,
+            )
+    except DiscoverCancelled:
+        run.status = "cancelled"
+        _set_progress(state, phase="cancelled", message="Discover retry cancelled.")
+    except Exception as err:
+        LOGGER.exception("Discover retry failed for %s: %s", model_id, err)
+        run.status = "failed"
+        run.error = str(err)
+        _set_progress(state, phase="failed", message=str(err))
+    finally:
+        run.finished_at = time.time()
+        state_store[entry_id] = state
+
+    return run
+
+
+async def start_discover_retry_background(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_id: str,
+    *,
+    proposal_data: dict[str, Any] | None = None,
+) -> DiscoverRun:
+    """Schedule a single-model discover retry."""
+    if _pipeline_busy(hass, entry_id):
+        raise RuntimeError("An eval or discover pipeline is already running.")
+
+    entry = hass.config_entries.async_get_entry(entry_id)
+    config = get_discover_config(entry)
+    placeholder = DiscoverRun(
+        id="pending",
+        entry_id=entry_id,
+        status="running",
+        started_at=time.time(),
+        progress={
+            "phase": "retrying",
+            "message": f"Retrying {model_id}…",
+            "model_id": model_id,
+        },
+    )
+    _state_store(hass)[entry_id] = DiscoverRunState(run=placeholder)
+
+    async def _run() -> None:
+        await run_discover_retry(
+            hass,
+            entry_id,
+            model_id,
+            proposal_data=proposal_data,
+            config=config,
+        )
+
+    hass.async_create_task(_run())
+    return placeholder
 
 
 async def start_discover_background(

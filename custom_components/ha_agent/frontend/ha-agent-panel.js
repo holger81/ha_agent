@@ -427,6 +427,7 @@ class HaAgentPanel extends HTMLElement {
       discoverStatus: discover.status,
       discoverPhase: progress.phase,
       discoverMessage: progress.message,
+      discoverProgressPct: progress.progress_percent ?? null,
       discoverPending: discover.pending_approval,
       proposalsLen: (discover.proposals || []).length,
       trialLen: (discover.trial_results || []).length,
@@ -619,6 +620,7 @@ class HaAgentPanel extends HTMLElement {
 
   async _startDiscoverPipeline() {
     if (!this._entryId) return;
+    this._discoverSelectedModels = new Set();
     this._evalNotice = "Starting model discover pipeline…";
     this._render();
     const payload = {
@@ -641,9 +643,22 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  _selectedDiscoverModelIds() {
+    return [
+      ...this.shadowRoot.querySelectorAll('[data-action="discover-select-model"]:checked'),
+    ]
+      .map((input) => input.getAttribute("data-model-id"))
+      .filter(Boolean);
+  }
+
   async _approveDiscoverDownloads(modelIds = null) {
     if (!this._entryId) return;
-    const ids = modelIds ?? [...this._discoverSelectedModels];
+    const ids =
+      modelIds ??
+      (() => {
+        const selected = this._selectedDiscoverModelIds();
+        return selected.length ? selected : [...this._discoverSelectedModels];
+      })();
     if (!ids.length && modelIds === null) {
       this._evalNotice = "Select at least one model to download.";
       this._render();
@@ -674,6 +689,34 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  _shortModelId(modelId) {
+    if (!modelId || modelId.length <= 64) return modelId || "";
+    return `${modelId.slice(0, 44)}…${modelId.slice(-16)}`;
+  }
+
+  _discoverProgressBar(progress) {
+    const pctValue = progress?.progress_percent;
+    const pct =
+      pctValue != null
+        ? Number(pctValue)
+        : this._discoverProgressValue(progress);
+    if (pct == null || Number.isNaN(pct)) return "";
+    const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+    return `<div class="discover-progress" aria-label="Download progress">
+      <div class="discover-progress-bar" style="width:${clamped}%"></div>
+      <span class="discover-progress-label">${clamped}%</span>
+    </div>`;
+  }
+
+  _discoverProgressValue(progress) {
+    if (!progress || typeof progress !== "object") return null;
+    if (progress.progress_percent != null) return Number(progress.progress_percent);
+    const nested = progress.progress || progress.payload || progress;
+    const text = this._formatCatalogProgress(nested);
+    if (text === "—" || !text.endsWith("%")) return null;
+    return Number(text.replace("%", ""));
+  }
+
   _renderDiscoverSection(discover) {
     const state = discover || {
       status: "idle",
@@ -702,58 +745,102 @@ class HaAgentPanel extends HTMLElement {
     const trialRows = trialResults
       .map(
         (item) => `<tr>
-          <td>${this._escape(item.model_id || "")}</td>
+          <td class="model-id-short">${this._escape(this._shortModelId(item.model_id || ""))}</td>
           <td>${item.mean_score != null ? Number(item.mean_score).toFixed(2) : "—"}</td>
           <td>${item.incumbent_score != null ? Number(item.incumbent_score).toFixed(2) : "—"}</td>
           <td>${item.accepted ? "accepted" : item.skipped ? "skipped" : "rejected"}</td>
           <td>${this._escape(item.reason || "")}</td>
+          <td>${
+            !item.accepted
+              ? `<button data-action="discover-retry" data-model-id="${this._escape(item.model_id || "")}">Retry</button>`
+              : ""
+          }</td>
         </tr>`,
       )
       .join("");
     const trialModel =
       state.pending_trial_model_id || progress.model_id || null;
     const manual = progress.manual_download || {};
+    const statusMessage =
+      progress.message ||
+      "Search Hugging Face, download candidates, and trial them against your incumbent model.";
+    const shortStatusMessage = progress.model_id
+      ? statusMessage.replace(progress.model_id, this._shortModelId(progress.model_id))
+      : statusMessage;
+    const showApproval = pending === "download" && proposals.length > 0;
+    const showProposalSummary =
+      proposals.length > 0 && !showApproval && state.status !== "idle";
+    const progressBar =
+      progress.phase === "downloading" || progress.phase === "loading"
+        ? this._discoverProgressBar(progress)
+        : "";
     return `
-      <hr />
+      <section class="discover-section form-grid">
       <h3>Phase 3 — Discover models</h3>
-      <p><strong>${this._escape(state.status || "idle")}</strong> — ${this._escape(progress.message || "Search Hugging Face, download candidates, and trial them against your incumbent model.")}</p>
+      <p class="discover-status"><strong>${this._escape(state.status || "idle")}</strong> — ${this._escape(shortStatusMessage)}</p>
+      ${progressBar}
       ${manual.hf_url ? `<p class="activity-hint">Download URL: <a href="${this._escape(manual.hf_url)}" target="_blank" rel="noopener">${this._escape(manual.hf_url)}</a></p>` : ""}
       ${manual.docker_hint ? `<p class="activity-hint">${this._escape(manual.docker_hint)}</p>` : ""}
       ${manual.llama_cli_hint ? `<p class="activity-hint">${this._escape(manual.llama_cli_hint)}</p>` : ""}
       ${state.error ? `<p class="banner">${this._escape(state.error)}</p>` : ""}
-      <label><input type="checkbox" data-action="discover-require-download" ${this._discoverRequireDownloadApproval ? "checked" : ""} /> Require approval before download</label>
-      <label><input type="checkbox" data-action="discover-require-trial" ${this._discoverRequireTrialApproval ? "checked" : ""} /> Require approval before trial eval</label>
-      <label>Download webhook (optional — runs on llama host)
+      <div class="discover-options">
+        <label class="checkbox-inline"><input type="checkbox" data-action="discover-require-download" ${this._discoverRequireDownloadApproval ? "checked" : ""} /> Wait for my approval before downloading</label>
+        <label class="checkbox-inline"><input type="checkbox" data-action="discover-require-trial" ${this._discoverRequireTrialApproval ? "checked" : ""} /> Wait for my approval before trial eval</label>
+        <p class="activity-hint">When download approval is off, every proposed model downloads automatically. When on, check the models you want and click Download selected.</p>
+      </div>
+      <label class="stacked-field">Download webhook <span class="field-hint">optional — runs on llama host</span>
         <input data-field="discover-webhook-url" value="${this._escape(this._discoverWebhookUrl || this._config?.eval_download_webhook_url || "")}" placeholder="http://192.168.10.31:9999/ha-agent/download" />
       </label>
-      <label>Shared models dir (optional — only if HA can write the llama volume)
-        <input data-field="discover-models-dir" value="${this._escape(this._discoverModelsDir || this._config?.eval_models_dir || "")}" placeholder="/path/to/llama/models volume" />
+      <label class="stacked-field">Shared models dir <span class="field-hint">optional — only if HA can write the llama volume</span>
+        <input data-field="discover-models-dir" value="${this._escape(this._discoverModelsDir || this._config?.eval_models_dir || "")}" placeholder="/path/to/llama/models" />
       </label>
       <div class="row">
         <button data-action="discover-start">Start discover pipeline</button>
         <button data-action="eval-cancel">Cancel pipeline</button>
       </div>
-      ${pending === "download" && proposals.length ? `
+      ${showApproval ? `
         <h4>Approve downloads</h4>
-        <ul>${proposalChecks}</ul>
+        <ul class="discover-proposals">${proposalChecks}</ul>
         <div class="row">
           <button data-action="discover-approve-download">Download selected</button>
           <button data-action="discover-approve-download-none">Skip all downloads</button>
         </div>` : ""}
       ${pending === "trial" && trialModel ? `
         <h4>Approve trial</h4>
-        <p>Benchmark <strong>${this._escape(trialModel)}</strong> against your incumbent model?</p>
+        <p>Benchmark <strong class="model-id-short">${this._escape(this._shortModelId(trialModel))}</strong> against your incumbent model?</p>
         <div class="row">
           <button data-action="discover-approve-trial" data-model-id="${this._escape(trialModel)}" data-approved="true">Run trial eval</button>
           <button data-action="discover-approve-trial" data-model-id="${this._escape(trialModel)}" data-approved="false">Skip this model</button>
         </div>` : ""}
-      ${proposals.length && pending !== "download" ? `<h4>Proposals</h4><ul>${proposalChecks.replace(/<input[^>]+>/g, "")}</ul>` : ""}
+      ${showProposalSummary ? `<h4>Proposals</h4><ul class="discover-proposals">${proposalChecks.replace(/<input[^>]+>/g, "")}</ul>` : ""}
       ${trialRows ? `<h4>Trial results</h4>
         <table>
-          <thead><tr><th>Model</th><th>Score</th><th>Incumbent</th><th>Outcome</th><th>Notes</th></tr></thead>
+          <thead><tr><th>Model</th><th>Score</th><th>Incumbent</th><th>Outcome</th><th>Notes</th><th></th></tr></thead>
           <tbody>${trialRows}</tbody>
         </table>` : ""}
-      <p class="activity-hint">Router llama.cpp servers download via POST /models (HA tracks /models/sse progress). Fallbacks: optional webhook, shared models dir, or manual host download with polling.</p>`;
+      <p class="activity-hint">Router llama.cpp servers download via POST /models (HA tracks /models/sse progress). Fallbacks: optional webhook, shared models dir, or manual host download with polling.</p>
+      </section>`;
+  }
+
+  async _retryDiscoverModel(modelId) {
+    if (!this._entryId || !modelId) return;
+    if (
+      !confirm(
+        `Retry download and trial eval for ${modelId}? This unloads any partial copy and downloads again.`,
+      )
+    ) {
+      return;
+    }
+    this._evalNotice = `Retrying ${modelId}…`;
+    this._render();
+    await this._call("ha_agent/eval/discover/retry", {
+      entry_id: this._entryId,
+      model_id: modelId,
+    });
+    await this._loadEvalStatus();
+    this._evalNotice =
+      this._evalStatus?.discover?.progress?.message || `Retry started for ${modelId}.`;
+    this._render();
   }
 
   async _copyEvalPreset() {
@@ -1580,6 +1667,73 @@ class HaAgentPanel extends HTMLElement {
       .banner { padding: 10px; border-radius: 8px; background: #fff4d6; margin-bottom: 12px; }
       .form-grid { display: grid; gap: 10px; }
       .form-grid label { display: grid; gap: 4px; }
+      .discover-section {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--divider-color, #ccc);
+      }
+      .discover-section .stacked-field {
+        display: grid;
+        gap: 6px;
+      }
+      .discover-section .stacked-field input {
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .discover-options {
+        display: grid;
+        gap: 8px;
+      }
+      .checkbox-inline {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .field-hint {
+        opacity: 0.7;
+        font-size: 0.85rem;
+        font-weight: normal;
+      }
+      .discover-proposals {
+        margin: 0;
+        padding-left: 0;
+        list-style: none;
+      }
+      .discover-proposals li {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 8px;
+      }
+      .discover-proposals label {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 8px;
+        align-items: start;
+      }
+      .model-id-short,
+      .discover-proposals strong {
+        word-break: break-all;
+        font-size: 0.92rem;
+      }
+      .discover-progress {
+        position: relative;
+        height: 10px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+        overflow: hidden;
+      }
+      .discover-progress-bar {
+        height: 100%;
+        background: var(--primary-color);
+        transition: width 0.3s ease;
+      }
+      .discover-progress-label {
+        display: block;
+        margin-top: 4px;
+        font-size: 0.85rem;
+        opacity: 0.8;
+      }
       textarea { min-height: 120px; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .thread-sidebar.hidden { display: none; }
@@ -2466,11 +2620,18 @@ class HaAgentPanel extends HTMLElement {
         const source = item.is_preset ? "preset" : item.source || "—";
         const progressText = this._formatCatalogProgress(item.progress);
         const loaded = loadedModels.includes(item.model_id);
+        const canRetry =
+          item.failed ||
+          item.status === "downloading" ||
+          (item.status === "unloaded" && !item.is_preset && item.source !== "preset");
+        const retryBtn = canRetry
+          ? `<button data-action="discover-retry" data-model-id="${this._escape(item.model_id)}">Retry</button> `
+          : "";
         const actions = loaded
-          ? `<button data-action="eval-unload-model" data-model-id="${this._escape(item.model_id)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`
+          ? `${retryBtn}<button data-action="eval-unload-model" data-model-id="${this._escape(item.model_id)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`
           : item.is_preset
-            ? ""
-            : `<button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`;
+            ? retryBtn
+            : `${retryBtn}<button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`;
         return `<tr>
           <td>${this._escape(item.model_id)}</td>
           <td>${this._escape(item.status || "—")}</td>
@@ -2633,6 +2794,11 @@ class HaAgentPanel extends HTMLElement {
         if (!modelId) return;
         if (input.checked) this._discoverSelectedModels.add(modelId);
         else this._discoverSelectedModels.delete(modelId);
+      });
+    });
+    this.shadowRoot.querySelectorAll('[data-action="discover-retry"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this._retryDiscoverModel(button.getAttribute("data-model-id"));
       });
     });
     this.shadowRoot

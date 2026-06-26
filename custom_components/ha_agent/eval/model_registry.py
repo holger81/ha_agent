@@ -89,6 +89,10 @@ class ModelRegistry:
     def mark_deleted(self, model_id: str, *, notes: str | None = None) -> None:
         self._store.mark_model_deleted(model_id, notes=notes)
 
+    def clear_for_retry(self, model_id: str) -> None:
+        """Forget prior reject/skip so discover can download this model again."""
+        self._store.clear_model_download_record(model_id)
+
 
 async def propose_models_from_web(
     hass: HomeAssistant,

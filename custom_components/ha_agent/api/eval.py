@@ -27,6 +27,7 @@ from ..eval.discover_runner import (
     discover_status_dict,
     get_discover_state,
     start_discover_background,
+    start_discover_retry_background,
 )
 from ..eval.model_registry import get_model_registry
 from ..eval.preset import recommendations_to_preset
@@ -482,6 +483,27 @@ async def approve_discover_trial_run(
         "model_id": model_id,
         "approved": approved,
         "discover": discover_run_to_dict(state) if state else None,
+    }
+
+
+async def retry_discover_model(
+    hass: HomeAssistant,
+    entry_id: str,
+    model_id: str,
+) -> dict[str, Any]:
+    """Re-download, load, and benchmark one discover candidate."""
+    model_id = str(model_id or "").strip()
+    if not model_id:
+        raise HomeAssistantError("No model_id specified for retry.")
+    try:
+        await start_discover_retry_background(hass, entry_id, model_id)
+    except RuntimeError as err:
+        raise HomeAssistantError(str(err)) from err
+    state = get_discover_state(hass, entry_id)
+    return {
+        "started": True,
+        "model_id": model_id,
+        "discover": discover_status_dict(state),
     }
 
 

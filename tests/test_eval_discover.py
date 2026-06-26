@@ -101,6 +101,34 @@ def test_manual_download_hint() -> None:
     assert "huggingface.co" in hints["hf_url"]
 
 
+def test_proposal_from_model_id() -> None:
+    proposal = discover_models.proposal_from_model_id(
+        "deadbydawn101/gemma-4-E4B-GGUF:gemma4-e4b-opus-Q4_K_M",
+    )
+    assert proposal.hf_repo == "deadbydawn101/gemma-4-E4B-GGUF"
+    assert proposal.hf_filename == "gemma4-e4b-opus-Q4_K_M.gguf"
+
+
+def test_download_progress_percent_from_bytes() -> None:
+    pct = llm_server.download_progress_percent(
+        {"bytes_done": 512, "bytes_total": 1024},
+    )
+    assert pct == 50
+
+
+def test_download_progress_percent_from_nested_payload() -> None:
+    norm = llm_server.normalize_download_progress(
+        {
+            "payload": {"bytes_done": 250, "bytes_total": 1000},
+        }
+    )
+    assert llm_server.download_progress_percent(norm) == 25
+
+
+def test_download_progress_percent_from_fraction() -> None:
+    assert llm_server.download_progress_percent({"percent": 0.61}) == 61
+
+
 def test_discover_status_dict_idle_when_no_state() -> None:
     payload = discover_runner.discover_status_dict(None)
     assert payload["status"] == "idle"
