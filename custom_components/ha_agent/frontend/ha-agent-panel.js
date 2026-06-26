@@ -645,11 +645,16 @@ class HaAgentPanel extends HTMLElement {
   }
 
   _renderDiscoverSection(discover) {
-    if (!discover) return "";
-    const progress = discover.progress || {};
-    const proposals = discover.proposals || [];
-    const trialResults = discover.trial_results || [];
-    const pending = discover.pending_approval;
+    const state = discover || {
+      status: "idle",
+      progress: {},
+      proposals: [],
+      trial_results: [],
+    };
+    const progress = state.progress || {};
+    const proposals = state.proposals || [];
+    const trialResults = state.trial_results || [];
+    const pending = state.pending_approval;
     const proposalChecks = proposals
       .map((item) => {
         const id = item.model_id || "";
@@ -676,16 +681,16 @@ class HaAgentPanel extends HTMLElement {
       )
       .join("");
     const trialModel =
-      discover.pending_trial_model_id || progress.model_id || null;
+      state.pending_trial_model_id || progress.model_id || null;
     const manual = progress.manual_download || {};
     return `
       <hr />
       <h3>Phase 3 — Discover models</h3>
-      <p><strong>${this._escape(discover.status || "idle")}</strong> — ${this._escape(progress.message || "")}</p>
+      <p><strong>${this._escape(state.status || "idle")}</strong> — ${this._escape(progress.message || "Search Hugging Face, download candidates, and trial them against your incumbent model.")}</p>
       ${manual.hf_url ? `<p class="activity-hint">Download URL: <a href="${this._escape(manual.hf_url)}" target="_blank" rel="noopener">${this._escape(manual.hf_url)}</a></p>` : ""}
       ${manual.docker_hint ? `<p class="activity-hint">${this._escape(manual.docker_hint)}</p>` : ""}
       ${manual.llama_cli_hint ? `<p class="activity-hint">${this._escape(manual.llama_cli_hint)}</p>` : ""}
-      ${discover.error ? `<p class="banner">${this._escape(discover.error)}</p>` : ""}
+      ${state.error ? `<p class="banner">${this._escape(state.error)}</p>` : ""}
       <label><input type="checkbox" data-action="discover-require-download" ${this._discoverRequireDownloadApproval ? "checked" : ""} /> Require approval before download</label>
       <label><input type="checkbox" data-action="discover-require-trial" ${this._discoverRequireTrialApproval ? "checked" : ""} /> Require approval before trial eval</label>
       <label>Download webhook (optional — runs on llama host)
@@ -2458,6 +2463,7 @@ class HaAgentPanel extends HTMLElement {
           <button data-action="eval-start">Run eval suite</button>
           <button data-action="eval-start-preload">Run eval + preload models</button>
           <button data-action="eval-preload">Preload recommended models</button>
+          <button data-action="discover-start">Discover models</button>
           <button data-action="eval-apply">Apply model picks</button>
           <button data-action="eval-apply-settings">${applyMode === "preset" ? "Copy preset + instructions" : "Apply server settings"}</button>
           <button data-action="eval-copy-preset">Copy preset</button>

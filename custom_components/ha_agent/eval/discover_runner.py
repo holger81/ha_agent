@@ -71,6 +71,21 @@ def discover_run_to_dict(state: DiscoverRunState) -> dict[str, Any]:
     }
 
 
+def discover_status_dict(state: DiscoverRunState | None) -> dict[str, Any]:
+    """Serialize discover state, or an idle placeholder when none exists yet."""
+    if state is None:
+        return {
+            "status": "idle",
+            "progress": {},
+            "proposals": [],
+            "trial_results": [],
+            "cancel_requested": False,
+            "pending_approval": None,
+            "pending_trial_model_id": None,
+        }
+    return discover_run_to_dict(state)
+
+
 def _pending_approval(state: DiscoverRunState) -> str | None:
     if state.run.status != "awaiting_approval":
         return None

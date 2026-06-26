@@ -101,6 +101,12 @@ def test_manual_download_hint() -> None:
     assert "huggingface.co" in hints["hf_url"]
 
 
+def test_discover_status_dict_idle_when_no_state() -> None:
+    payload = discover_runner.discover_status_dict(None)
+    assert payload["status"] == "idle"
+    assert payload["proposals"] == []
+
+
 def test_discover_run_to_dict_includes_message() -> None:
     run = eval_models.DiscoverRun(
         id="1",

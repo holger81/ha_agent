@@ -24,6 +24,7 @@ from ..eval.discover_runner import (
     approve_discover_download,
     approve_discover_trial,
     discover_run_to_dict,
+    discover_status_dict,
     get_discover_state,
     start_discover_background,
 )
@@ -69,9 +70,7 @@ async def get_eval_status(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
             if discover_active
             else ("eval" if eval_active else None)
         ),
-        "discover": discover_run_to_dict(discover_state)
-        if discover_state
-        else None,
+        "discover": discover_status_dict(discover_state),
         "run": eval_run_to_dict(eval_state)
         if eval_active and eval_state
         else latest,
