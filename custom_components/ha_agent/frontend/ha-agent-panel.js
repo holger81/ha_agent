@@ -775,9 +775,9 @@ class HaAgentPanel extends HTMLElement {
         ? this._discoverProgressBar(progress)
         : "";
     return `
-      <section class="discover-section form-grid">
-      <h3>Phase 3 — Discover models</h3>
-      <p class="discover-status"><strong>${this._escape(state.status || "idle")}</strong> — ${this._escape(shortStatusMessage)}</p>
+      <section class="eval-section discover-section form-grid">
+      <h3>Discover models</h3>
+      <p class="discover-status eval-status-line"><strong>${this._escape(state.status || "idle")}</strong> — ${this._escape(shortStatusMessage)}</p>
       ${progressBar}
       ${manual.hf_url ? `<p class="activity-hint">Download URL: <a href="${this._escape(manual.hf_url)}" target="_blank" rel="noopener">${this._escape(manual.hf_url)}</a></p>` : ""}
       ${manual.docker_hint ? `<p class="activity-hint">${this._escape(manual.docker_hint)}</p>` : ""}
@@ -794,30 +794,32 @@ class HaAgentPanel extends HTMLElement {
       <label class="stacked-field">Shared models dir <span class="field-hint">optional — only if HA can write the llama volume</span>
         <input data-field="discover-models-dir" value="${this._escape(this._discoverModelsDir || this._config?.eval_models_dir || "")}" placeholder="/path/to/llama/models" />
       </label>
-      <div class="row">
+      <div class="eval-action-row">
         <button data-action="discover-start">Start discover pipeline</button>
         <button data-action="eval-cancel">Cancel pipeline</button>
       </div>
       ${showApproval ? `
         <h4>Approve downloads</h4>
         <ul class="discover-proposals">${proposalChecks}</ul>
-        <div class="row">
+        <div class="eval-action-row">
           <button data-action="discover-approve-download">Download selected</button>
           <button data-action="discover-approve-download-none">Skip all downloads</button>
         </div>` : ""}
       ${pending === "trial" && trialModel ? `
         <h4>Approve trial</h4>
         <p>Benchmark <strong class="model-id-short">${this._escape(this._shortModelId(trialModel))}</strong> against your incumbent model?</p>
-        <div class="row">
+        <div class="eval-action-row">
           <button data-action="discover-approve-trial" data-model-id="${this._escape(trialModel)}" data-approved="true">Run trial eval</button>
           <button data-action="discover-approve-trial" data-model-id="${this._escape(trialModel)}" data-approved="false">Skip this model</button>
         </div>` : ""}
       ${showProposalSummary ? `<h4>Proposals</h4><ul class="discover-proposals">${proposalChecks.replace(/<input[^>]+>/g, "")}</ul>` : ""}
       ${trialRows ? `<h4>Trial results</h4>
+        <div class="eval-table-wrap">
         <table>
           <thead><tr><th>Model</th><th>Score</th><th>Incumbent</th><th>Outcome</th><th>Notes</th><th></th></tr></thead>
           <tbody>${trialRows}</tbody>
-        </table>` : ""}
+        </table>
+        </div>` : ""}
       <p class="activity-hint">Router llama.cpp servers download via POST /models (HA tracks /models/sse progress). Fallbacks: optional webhook, shared models dir, or manual host download with polling.</p>
       </section>`;
   }
@@ -1668,9 +1670,7 @@ class HaAgentPanel extends HTMLElement {
       .form-grid { display: grid; gap: 10px; }
       .form-grid label { display: grid; gap: 4px; }
       .discover-section {
-        margin-top: 16px;
-        padding-top: 12px;
-        border-top: 1px solid var(--divider-color, #ccc);
+        gap: 12px;
       }
       .discover-section .stacked-field {
         display: grid;
@@ -1733,6 +1733,80 @@ class HaAgentPanel extends HTMLElement {
         margin-top: 4px;
         font-size: 0.85rem;
         opacity: 0.8;
+      }
+      .eval-page {
+        display: grid;
+        gap: 16px;
+      }
+      .eval-section {
+        padding: 14px 16px;
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--card-background-color, #111) 92%, transparent);
+      }
+      .eval-section > h3 {
+        margin: 0 0 12px;
+        font-size: 1rem;
+      }
+      .eval-section > h4 {
+        margin: 16px 0 8px;
+        font-size: 0.95rem;
+      }
+      .eval-section > h4:first-child {
+        margin-top: 0;
+      }
+      .eval-status-line {
+        margin: 0 0 8px;
+      }
+      .eval-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .eval-stat {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: var(--secondary-background-color, #222);
+        font-size: 0.85rem;
+      }
+      .eval-action-groups {
+        display: grid;
+        gap: 12px;
+      }
+      .eval-action-group {
+        display: grid;
+        gap: 8px;
+      }
+      .eval-action-label {
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.65;
+      }
+      .eval-action-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .eval-action-row button {
+        margin: 0;
+      }
+      .eval-table-wrap {
+        overflow-x: auto;
+      }
+      .eval-table-wrap table {
+        min-width: 640px;
+      }
+      .eval-section .activity-hint {
+        margin-top: 0;
+        margin-bottom: 8px;
+      }
+      .eval-section.discover-section {
+        margin-top: 0;
+        padding-top: 14px;
+        border-top: none;
       }
       textarea { min-height: 120px; }
       .actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -2633,7 +2707,7 @@ class HaAgentPanel extends HTMLElement {
             ? retryBtn
             : `${retryBtn}<button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`;
         return `<tr>
-          <td>${this._escape(item.model_id)}</td>
+          <td class="model-id-short">${this._escape(this._shortModelId(item.model_id))}</td>
           <td>${this._escape(item.status || "—")}</td>
           <td>${this._escape(source)}</td>
           <td>${this._escape(this._formatModalities(item.input_modalities))}</td>
@@ -2643,12 +2717,6 @@ class HaAgentPanel extends HTMLElement {
           <td>${actions}</td>
         </tr>`;
       })
-      .join("");
-    const loadedList = loadedModels
-      .map(
-        (modelId) =>
-          `<li>${this._escape(modelId)} <button data-action="eval-unload-model" data-model-id="${this._escape(modelId)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(modelId)}">Delete</button></li>`,
-      )
       .join("");
     const promotedCases = (this._evalCases || []).filter((item) => item.source === "promoted");
     const promotedRows = promotedCases
@@ -2662,44 +2730,99 @@ class HaAgentPanel extends HTMLElement {
         </tr>`,
       )
       .join("");
+    const serverStats = [
+      ["Models", summary.model_count ?? caps.models?.length ?? "—"],
+      ["Loaded", summary.loaded_model_count ?? loadedModels.length ?? "—"],
+      ["Slots", summary.total_slots ?? summary.max_instances ?? "—"],
+      ["n_ctx", summary.n_ctx && summary.n_ctx > 0 ? summary.n_ctx : "—"],
+      ["Apply", applyMode],
+    ];
+    if (summary.router_role) {
+      serverStats.push(["Router", summary.router_role]);
+    }
+    const statChips = serverStats
+      .map(
+        ([label, value]) =>
+          `<span class="eval-stat"><strong>${this._escape(label)}</strong> ${this._escape(String(value))}</span>`,
+      )
+      .join("");
     return `
-      <div class="settings-grid">
-        <p class="activity-hint">${this._escape(this._evalNotice || "")}</p>
-        <p>Status: <strong>${this._escape(running)}</strong> ${statusDetail ? `(${this._escape(statusDetail)})` : ""}</p>
-        ${run.error ? `<p class="banner">${this._escape(run.error)}</p>` : ""}
-        <div class="row">
-          <button data-action="eval-probe">Probe server</button>
-          <button data-action="eval-start">Run eval suite</button>
-          <button data-action="eval-start-preload">Run eval + preload models</button>
-          <button data-action="eval-preload">Preload recommended models</button>
-          <button data-action="discover-start">Discover models</button>
-          <button data-action="eval-apply">Apply model picks</button>
-          <button data-action="eval-apply-settings">${applyMode === "preset" ? "Copy preset + instructions" : "Apply server settings"}</button>
-          <button data-action="eval-copy-preset">Copy preset</button>
-          <button data-action="eval-cancel">Cancel pipeline</button>
-        </div>
-        <p>Models on server: ${this._escape(String(summary.model_count ?? caps.models?.length ?? "—"))} · Loaded: ${this._escape(String(summary.loaded_model_count ?? loadedModels.length ?? "—"))} · Slots: ${this._escape(String(summary.total_slots ?? summary.max_instances ?? "—"))} · n_ctx: ${this._escape(String(summary.n_ctx && summary.n_ctx > 0 ? summary.n_ctx : "—"))} · Apply mode: <strong>${this._escape(applyMode)}</strong>${summary.router_role ? ` · ${this._escape(summary.router_role)}` : ""}</p>
-        ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
-        ${applyMode === "preset" ? `<p class="activity-hint">Router/Docker: edit the preset file on the llama volume, then restart the container. Live POST /props is not available.</p>` : ""}
-        ${presetIni ? `<label>llama.cpp preset<textarea readonly rows="8">${this._escape(presetIni)}</textarea></label>` : ""}
-        ${assignments ? `<h4>Recommended models per task</h4><ul>${assignments}</ul>` : ""}
-        ${recommendation.summary ? `<p>${this._escape(recommendation.summary)}</p>` : ""}
-        <table>
-          <thead><tr><th>Task</th><th>Model</th><th>Score</th><th>Passed</th><th>Latency ms</th></tr></thead>
-          <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
-        </table>
-        <p class="activity-hint">Eval benchmarks loaded models by default. Use preload or pass explicit models via API to benchmark catalog entries on a router server.</p>
-        <h4>Model catalog</h4>
-        <table>
-          <thead><tr><th>Model</th><th>Status</th><th>Source</th><th>Input</th><th>Output</th><th>Progress</th><th>Failed</th><th></th></tr></thead>
-          <tbody>${catalogRows || '<tr><td colspan="8">Probe the server to load the model catalog.</td></tr>'}</tbody>
-        </table>
-        <h4>Promoted cases (from Activity)</h4>
-        <table>
-          <thead><tr><th>ID</th><th>Task</th><th>Prompt</th><th>Expectations</th><th></th></tr></thead>
-          <tbody>${promotedRows || '<tr><td colspan="5">No promoted cases yet — use Activity → Promote.</td></tr>'}</tbody>
-        </table>
-        ${loadedList ? `<h4>Loaded models (summary)</h4><ul>${loadedList}</ul>` : ""}
+      <div class="eval-page">
+        <section class="eval-section eval-section-status">
+          ${this._evalNotice ? `<p class="activity-hint">${this._escape(this._evalNotice)}</p>` : ""}
+          <p class="eval-status-line">Status: <strong>${this._escape(running)}</strong>${statusDetail ? ` — ${this._escape(statusDetail)}` : ""}</p>
+          ${run.error ? `<p class="banner">${this._escape(run.error)}</p>` : ""}
+          <div class="eval-stats">${statChips}</div>
+        </section>
+
+        <section class="eval-section">
+          <h3>Actions</h3>
+          <div class="eval-action-groups">
+            <div class="eval-action-group">
+              <span class="eval-action-label">Benchmark</span>
+              <div class="eval-action-row">
+                <button data-action="eval-probe">Probe server</button>
+                <button data-action="eval-start">Run eval suite</button>
+                <button data-action="eval-start-preload">Run eval + preload</button>
+                <button data-action="eval-cancel">Cancel pipeline</button>
+              </div>
+            </div>
+            <div class="eval-action-group">
+              <span class="eval-action-label">Models</span>
+              <div class="eval-action-row">
+                <button data-action="eval-preload">Preload recommended</button>
+                <button data-action="discover-start">Discover models</button>
+              </div>
+            </div>
+            <div class="eval-action-group">
+              <span class="eval-action-label">Apply results</span>
+              <div class="eval-action-row">
+                <button data-action="eval-apply">Apply model picks</button>
+                <button data-action="eval-apply-settings">${applyMode === "preset" ? "Copy preset + instructions" : "Apply server settings"}</button>
+                <button data-action="eval-copy-preset">Copy preset</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="eval-section">
+          <h3>Eval results</h3>
+          <p class="activity-hint">Benchmarks loaded models by default. Preload or Discover to try catalog models on your router.</p>
+          ${recommendation.summary ? `<p>${this._escape(recommendation.summary)}</p>` : ""}
+          ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
+          ${applyMode === "preset" ? `<p class="activity-hint">Router/Docker: edit the preset file on the llama volume, then restart the container.</p>` : ""}
+          ${presetIni ? `<label>llama.cpp preset<textarea readonly rows="8">${this._escape(presetIni)}</textarea></label>` : ""}
+          ${assignments ? `<h4>Recommended models per task</h4><ul>${assignments}</ul>` : ""}
+          <div class="eval-table-wrap">
+            <table>
+              <thead><tr><th>Task</th><th>Model</th><th>Score</th><th>Passed</th><th>Latency ms</th></tr></thead>
+              <tbody>${scoreRows || '<tr><td colspan="5">No eval results yet.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="eval-section">
+          <h3>Model catalog</h3>
+          <p class="activity-hint">All models known to the llama.cpp router. Use Retry for failed or stuck downloads.</p>
+          <div class="eval-table-wrap">
+            <table>
+              <thead><tr><th>Model</th><th>Status</th><th>Source</th><th>Input</th><th>Output</th><th>Progress</th><th>Failed</th><th></th></tr></thead>
+              <tbody>${catalogRows || '<tr><td colspan="8">Probe the server to load the model catalog.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="eval-section">
+          <h3>Promoted cases</h3>
+          <p class="activity-hint">From Activity → Promote. Run with the built-in suite on the next eval.</p>
+          <div class="eval-table-wrap">
+            <table>
+              <thead><tr><th>ID</th><th>Task</th><th>Prompt</th><th>Expectations</th><th></th></tr></thead>
+              <tbody>${promotedRows || '<tr><td colspan="5">No promoted cases yet.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+
         ${this._renderDiscoverSection(discover)}
       </div>`;
   }
