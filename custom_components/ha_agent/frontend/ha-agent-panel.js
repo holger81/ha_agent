@@ -491,6 +491,28 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
+  async _evalCatalogModel(modelId, needsPreload = false) {
+    if (!this._entryId || !modelId) return;
+    const label = this._shortModelId(modelId);
+    this._evalNotice = needsPreload
+      ? `Starting eval for ${label} (preload first)…`
+      : `Starting eval for ${label}…`;
+    this._render();
+    try {
+      await this._call("ha_agent/eval/start", {
+        entry_id: this._entryId,
+        models: [modelId],
+        include_settings: false,
+        preload_models: needsPreload,
+      });
+      await this._loadEvalStatus();
+      this._evalNotice = `Eval running for ${label}.`;
+    } catch (err) {
+      this._evalNotice = err?.message || `Could not start eval for ${label}.`;
+    }
+    this._render();
+  }
+
   async _preloadEvalModels() {
     if (!this._entryId) return;
     const assignments = this._evalStatus?.run?.settings_recommendation?.model_assignments || {};
@@ -2701,11 +2723,16 @@ class HaAgentPanel extends HTMLElement {
         const retryBtn = canRetry
           ? `<button data-action="discover-retry" data-model-id="${this._escape(item.model_id)}">Retry</button> `
           : "";
-        const actions = loaded
-          ? `${retryBtn}<button data-action="eval-unload-model" data-model-id="${this._escape(item.model_id)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`
+        const downloading = item.status === "downloading";
+        const evalBtn = downloading
+          ? `<button disabled title="Wait for download to finish">Eval</button> `
+          : `<button data-action="eval-model" data-model-id="${this._escape(item.model_id)}" data-needs-preload="${loaded ? "false" : "true"}">Eval</button> `;
+        const manageBtns = loaded
+          ? `<button data-action="eval-unload-model" data-model-id="${this._escape(item.model_id)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`
           : item.is_preset
-            ? retryBtn
-            : `${retryBtn}<button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`;
+            ? ""
+            : `<button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`;
+        const actions = `${evalBtn}${retryBtn}${manageBtns}`;
         return `<tr>
           <td class="model-id-short">${this._escape(this._shortModelId(item.model_id))}</td>
           <td>${this._escape(item.status || "—")}</td>
@@ -2803,7 +2830,7 @@ class HaAgentPanel extends HTMLElement {
 
         <section class="eval-section">
           <h3>Model catalog</h3>
-          <p class="activity-hint">All models known to the llama.cpp router. Use Retry for failed or stuck downloads.</p>
+          <p class="activity-hint">All models known to the llama.cpp router. Use Eval to benchmark one model; Retry for failed downloads.</p>
           <div class="eval-table-wrap">
             <table>
               <thead><tr><th>Model</th><th>Status</th><th>Source</th><th>Input</th><th>Output</th><th>Progress</th><th>Failed</th><th></th></tr></thead>
@@ -2873,6 +2900,14 @@ class HaAgentPanel extends HTMLElement {
       ?.addEventListener("click", async () => {
         await this._copyEvalPreset();
       });
+    this.shadowRoot.querySelectorAll('[data-action="eval-model"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this._evalCatalogModel(
+          button.getAttribute("data-model-id"),
+          button.getAttribute("data-needs-preload") === "true",
+        );
+      });
+    });
     this.shadowRoot.querySelectorAll('[data-action="eval-unload-model"]').forEach((button) => {
       button.addEventListener("click", async () => {
         await this._unloadEvalModel(button.getAttribute("data-model-id"));
