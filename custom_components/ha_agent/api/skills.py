@@ -435,6 +435,7 @@ async def sync_skill_files(hass: HomeAssistant, entry_id: str) -> dict[str, Any]
         "directory": result.directory,
         "imported": result.imported,
         "written": result.written,
+        "repaired": result.repaired,
         "skipped": result.skipped,
     }
 

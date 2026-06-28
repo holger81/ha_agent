@@ -1770,6 +1770,17 @@ class HaAgentPanel extends HTMLElement {
         border-radius: 8px;
         background: color-mix(in srgb, var(--primary-text-color, #fff) 4%, transparent);
       }
+      .skill-markdown {
+        white-space: pre-wrap;
+        line-height: 1.45;
+        margin: 10px 0;
+        padding: 10px;
+        border-radius: 8px;
+        font-family: var(--code-font-family, monospace);
+        font-size: 0.9em;
+        overflow-x: auto;
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 6%, transparent);
+      }
       .skill-triggers { margin: 8px 0 0; padding-left: 1.2em; }
       .skill-tool-steps {
         margin-top: 10px;
@@ -2385,10 +2396,8 @@ class HaAgentPanel extends HTMLElement {
   _renderSkillDetail() {
     const skill = this._viewingSkill;
     if (!skill) return "";
-    const triggers = (skill.triggers || [])
-      .map((t) => `<li>${this._escape(t)}</li>`)
-      .join("");
     const toolStepCount = (skill.tool_steps || []).length;
+    const markdown = skill.markdown || "";
     const revisions = (this._skillRevisions || [])
       .map(
         (rev) =>
@@ -2407,12 +2416,11 @@ class HaAgentPanel extends HTMLElement {
           ${toolStepCount ? ` · ${toolStepCount} tool step(s)` : ""}
         </div>
         ${skill.file_path ? `<div class="hint">File: ${this._escape(skill.file_path)}</div>` : ""}
-        <p>${this._escape(skill.description || "")}</p>
-        <div class="skill-body">${this._escape(skill.body || "")}</div>
-        ${triggers ? `<ul class="skill-triggers">${triggers}</ul>` : ""}
+        ${markdown ? `<pre class="skill-markdown">${this._escape(markdown)}</pre>` : `<p class="hint">No markdown preview available.</p>`}
         ${revisions ? `<div class="skill-revisions"><h4>Revision history</h4><ul>${revisions}</ul></div>` : ""}
         <div class="actions">
           <button data-action="skill-detail-edit">Edit</button>
+          ${markdown ? '<button data-action="skill-detail-export-md">Download .md</button>' : ""}
           <button data-action="skill-detail-delete">Delete</button>
           <button data-action="skill-detail-close">Close</button>
         </div>
@@ -2470,6 +2478,7 @@ class HaAgentPanel extends HTMLElement {
         <button data-action="skill-search">Search</button>
         <button data-action="skill-new">New skill</button>
         <button data-action="skill-sync">Sync from disk</button>
+        <button data-action="skill-export-md">Export MD</button>
         <button data-action="skill-export">Export JSON</button>
         <button data-action="skill-import">Import</button>
       </div>
@@ -2989,42 +2998,14 @@ class HaAgentPanel extends HTMLElement {
     }
   }
 
-  async _deriveSkillToolSteps() {
-    const editor = this.shadowRoot.querySelector(".skill-editor");
-    if (!editor) return;
-    const body = editor.querySelector("#skill-body")?.value || "";
-    try {
-      const data = await this._call("ha_agent/skills/derive_tool_steps", {
-        entry_id: this._entryId,
-        body,
-      });
-      const steps = data.tool_steps || [];
-      const stepsField = editor.querySelector("#skill-tool-steps");
-      const override = editor.querySelector("#skill-tool-steps-override");
-      const advanced = editor.querySelector(".skill-advanced");
-      if (stepsField) {
-        stepsField.value = JSON.stringify(steps, null, 2);
-      }
-      if (override) {
-        override.checked = true;
-      }
-      if (advanced) {
-        advanced.open = true;
-      }
-      this._skillNotice =
-        steps.length > 0
-          ? `Recreated ${steps.length} tool step(s) from workflow. Review and save.`
-          : "No tool names found in workflow — add tools in backticks, then try again.";
-      const notice = this.shadowRoot.querySelector(".skill-notice");
-      if (notice) {
-        notice.textContent = this._skillNotice;
-      } else {
-        this._render();
-      }
-    } catch (err) {
-      this._skillNotice = `Could not derive tool steps: ${err?.message || err}`;
-      this._render();
-    }
+  _downloadTextFile(filename, text) {
+    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   async _saveSkillEditor() {
@@ -3888,13 +3869,33 @@ class HaAgentPanel extends HTMLElement {
         });
         this._skillNotice =
           `Synced skills from disk: ${data.imported || 0} imported, ` +
-          `${data.written || 0} written.`;
+          `${data.written || 0} written` +
+          `${data.repaired ? `, ${data.repaired} repaired` : ""}.`;
         await this._loadSkills();
         this._render();
       } catch (err) {
         this._skillNotice = `Sync failed: ${err?.message || err}`;
         this._render();
       }
+    });
+
+    this.shadowRoot.querySelector('[data-action="skill-export-md"]')?.addEventListener("click", async () => {
+      const data = await this._call("ha_agent/skills/export", { entry_id: this._entryId });
+      const skills = (data.skills || []).filter((s) => s.markdown && !s.is_builtin);
+      if (!skills.length) {
+        this._skillNotice = "No learned skills to export as markdown.";
+        this._render();
+        return;
+      }
+      for (const skill of skills) {
+        const slug = (skill.slug || skill.title || "skill")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-|-$/g, "");
+        this._downloadTextFile(`${slug || "skill"}.md`, skill.markdown);
+      }
+      this._skillNotice = `Exported ${skills.length} skill file(s).`;
+      this._render();
     });
 
     this.shadowRoot.querySelector('[data-action="skill-export"]')?.addEventListener("click", async () => {
@@ -3987,6 +3988,18 @@ class HaAgentPanel extends HTMLElement {
       });
 
     this.shadowRoot
+      .querySelector('[data-action="skill-detail-export-md"]')
+      ?.addEventListener("click", () => {
+        const skill = this._viewingSkill;
+        if (!skill?.markdown) return;
+        const slug = (skill.slug || skill.title || "skill")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-|-$/g, "");
+        this._downloadTextFile(`${slug || "skill"}.md`, skill.markdown);
+      });
+
+    this.shadowRoot
       .querySelector('[data-action="skill-detail-delete"]')
       ?.addEventListener("click", async () => {
         if (!this._viewingSkill?.id) return;
@@ -4008,10 +4021,6 @@ class HaAgentPanel extends HTMLElement {
           await this._restoreSkillRevision(el.getAttribute("data-revision-id"));
         };
       });
-
-    this.shadowRoot
-      .querySelector('[data-action="skill-derive-tool-steps"]')
-      ?.addEventListener("click", () => void this._deriveSkillToolSteps());
 
     this.shadowRoot
       .querySelector('[data-action="skill-save"]')

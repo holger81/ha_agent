@@ -8,6 +8,7 @@ from typing import Any
 
 from .defaults import apply_route_defaults_to_draft
 from .models import Skill, SkillDraft
+from .tool_names import canonicalize_skill, canonicalize_skill_draft
 
 _TOOL_STEPS_FENCE = re.compile(
     r"```(?:json)?\s*tool[_\s-]*steps?\s*\n(.*?)```",
@@ -117,6 +118,16 @@ def normalize_skill_draft(
     explicit_tool_steps: bool = False,
 ) -> SkillDraft:
     """Ensure tool_steps reflect the markdown workflow when not overridden."""
+    fixed, _ = canonicalize_skill_draft(draft)
+    draft.title = fixed.title
+    draft.description = fixed.description
+    draft.triggers = fixed.triggers
+    draft.body = fixed.body
+    draft.tool_steps = fixed.tool_steps
+    draft.slots = fixed.slots
+    draft.preconditions = fixed.preconditions
+    draft.parent_id = fixed.parent_id
+    draft.route_scope = fixed.route_scope
     steps = resolve_tool_steps(
         draft.body,
         draft.tool_steps,
@@ -138,6 +149,9 @@ def normalize_skill_draft(
 
 def normalize_skill(skill: Skill, *, explicit_tool_steps: bool = False) -> Skill:
     """Refresh a skill's tool_steps from its body unless explicitly overridden."""
+    fixed, _ = canonicalize_skill(skill)
+    skill.body = fixed.body
+    skill.tool_steps = list(fixed.tool_steps)
     skill.tool_steps = resolve_tool_steps(
         skill.body,
         skill.tool_steps,

@@ -39,9 +39,12 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
         "body": (
             "EMAIL PLAYBOOK:\n"
             "1. Discover tools in domain email if needed.\n"
-            "2. Call mailbox_status for unseen count.\n"
-            "3. Call search_messages with unread_only=true and a small limit.\n"
-            "4. Call get_message only for messages you will cite.\n"
+            "2. Call `mail_mcp__imap_mailbox_status` with mailbox INBOX "
+            "for unseen count.\n"
+            "3. Call `mail_mcp__imap_search_messages` with mailbox INBOX, "
+            "unread_only=true, and a small limit (e.g. 10).\n"
+            "4. Call `mail_mcp__imap_fetch_message` only for messages "
+            "you will cite (uid from search results).\n"
             "5. Answer using tool results only; never invent subjects or counts."
         ),
     },

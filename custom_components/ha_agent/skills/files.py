@@ -8,6 +8,7 @@ from pathlib import Path
 from homeassistant.core import HomeAssistant
 
 from ..const import LOGGER
+from .body import normalize_skill
 from .markdown import (
     NEW_SKILL_MARKDOWN,
     apply_draft_to_skill,
@@ -25,6 +26,7 @@ class SkillFileSyncResult:
     directory: str
     imported: int = 0
     written: int = 0
+    repaired: int = 0
     skipped: int = 0
 
 
@@ -78,6 +80,7 @@ def _import_file(store: SkillStore, path: Path) -> bool:
             LOGGER.warning("Skipping skill file %s: slug matches builtin skill", path)
             return False
         apply_draft_to_skill(existing, draft)
+        normalize_skill(existing)
         store.update_skill(existing)
         return True
 
@@ -120,8 +123,15 @@ def sync_skill_files(hass: HomeAssistant, entry_id: str) -> SkillFileSyncResult:
     for skill in store.list_recent(limit=max(total, 1)):
         if skill.is_builtin:
             continue
+        before = skill_to_markdown(skill)
+        normalize_skill(skill)
+        after = skill_to_markdown(skill)
         file_path = skill_file_path(directory, skill.slug)
-        if not file_path.is_file():
+        if after != before:
+            store.update_skill(skill)
+            write_skill_file(directory, skill)
+            result.repaired += 1
+        elif not file_path.is_file():
             write_skill_file(directory, skill)
             result.written += 1
 

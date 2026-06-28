@@ -26,7 +26,7 @@ def _load_body_module():
         skills_pkg.__path__ = [str(COMPONENT / "skills")]  # type: ignore[attr-defined]
         sys.modules["ha_agent.skills"] = skills_pkg
 
-    for name in ("defaults",):
+    for name in ("defaults", "tool_names"):
         mod_name = f"ha_agent.skills.{name}"
         if mod_name in sys.modules:
             continue

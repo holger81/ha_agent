@@ -23,7 +23,7 @@ enabled: true
 # Workflow
 
 1. Describe steps in markdown.
-2. Name tools in backticks, e.g. `mcp_news__news_curate`.
+2. Name tools in backticks with full MCP names, e.g. `mail_mcp__imap_mailbox_status`.
 """
 
 

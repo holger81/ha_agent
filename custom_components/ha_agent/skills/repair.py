@@ -11,6 +11,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from ..const import LOGGER
+from .body import normalize_skill
 from .defaults import apply_route_defaults, default_slots_for_route
 from .files import mirror_skill_to_file
 from .models import Skill, SkillSlot, TurnTrace
@@ -71,6 +72,17 @@ def detect_repairable_issues(trace: TurnTrace, skill: Skill) -> list[RepairIssue
                 ),
             )
         )
+
+    for call in trace.tool_calls:
+        err = str(call.get("error") or "").lower()
+        if "unknown tool" in err or "not found" in err:
+            issues.append(
+                RepairIssue(
+                    kind="bad_tool_name",
+                    detail="Tool call failed because the tool name was wrong.",
+                )
+            )
+            break
 
     concrete_steps = [
         step
@@ -190,6 +202,22 @@ def _strip_discovery_from_steps(skill: Skill) -> tuple[Skill, str | None]:
     return skill, "removed discovery tools from skill steps"
 
 
+def _canonicalize_tool_names(skill: Skill) -> tuple[Skill, str | None]:
+    """Rewrite shorthand or mistyped MCP tool names in body and steps."""
+    before = (
+        skill.body,
+        tuple(str(step.get("toolName") or "") for step in skill.tool_steps),
+    )
+    normalize_skill(skill)
+    after = (
+        skill.body,
+        tuple(str(step.get("toolName") or "") for step in skill.tool_steps),
+    )
+    if before == after:
+        return skill, None
+    return skill, "canonicalized MCP tool names in skill workflow"
+
+
 def repair_skill_from_trace(skill: Skill, trace: TurnTrace) -> tuple[Skill, str] | None:
     """Apply deterministic repairs; return updated skill and reason."""
     issues = detect_repairable_issues(trace, skill)
@@ -204,6 +232,11 @@ def repair_skill_from_trace(skill: Skill, trace: TurnTrace) -> tuple[Skill, str]
         "mailbox" in issue.fields for issue in issues if issue.fields
     ):
         working, reason = _ensure_mailbox_on_imap_steps(working)
+        if reason:
+            reasons.append(reason)
+
+    if "bad_tool_name" in kinds:
+        working, reason = _canonicalize_tool_names(working)
         if reason:
             reasons.append(reason)
 

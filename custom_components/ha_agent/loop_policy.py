@@ -61,9 +61,9 @@ _MAX_EMPTY_RESPONSES = 2
 _MAX_MCP_GUIDANCE_CHARS = 600
 _ROUTE_PLAN_STEPS: dict[str, list[dict[str, Any]]] = {
     "email": [
-        {"toolName": "mailbox_status"},
-        {"toolName": "search_messages"},
-        {"toolName": "get_message"},
+        {"toolName": "mail_mcp__imap_mailbox_status"},
+        {"toolName": "mail_mcp__imap_search_messages"},
+        {"toolName": "mail_mcp__imap_fetch_message"},
     ],
     "news": [
         {"toolName": "news_curate"},
@@ -169,7 +169,7 @@ def check_stuck(
         "You already used this tool with the same arguments. "
         "STOP retrying this call this turn. Review the previous tool result, "
         "answer from it if sufficient, or use a different tool (for example "
-        "get_message with a message_id from search results)."
+        "mail_mcp__imap_fetch_message with a uid from search results)."
     )
 
 
@@ -584,10 +584,11 @@ def _default_recovery_hints(name_lower: str, lowered: str) -> list[str]:
         if _EMAIL_LARGE_INBOX.search(lowered):
             hints.append(
                 "Search unread messages only with a small limit (e.g. 10) via "
-                "mail_mcp_imap_search_messages instead of listing the full inbox."
+                "`mail_mcp__imap_search_messages` instead of listing the full inbox."
             )
         hints.append(
-            "Prefer mailbox_status for unseen count, then search_messages with "
+            "Prefer `mail_mcp__imap_mailbox_status` for unseen count, then "
+            "`mail_mcp__imap_search_messages` with mailbox INBOX and "
             "unread_only=true before fetching individual messages."
         )
 

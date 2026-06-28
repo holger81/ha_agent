@@ -42,11 +42,12 @@ DEFAULT_RECOVERY_HINTS: list[dict[str, object]] = [
     },
     {
         "rule_id": "email_status",
-        "title": "Email: prefer mailbox_status + unread search",
+        "title": "Email: prefer mailbox status + unread search",
         "tool_substring": "mail",
         "error_pattern": "",
         "body": (
-            "Prefer mailbox_status for unseen count, then search_messages with "
+            "Prefer `mail_mcp__imap_mailbox_status` for unseen count, then "
+            "`mail_mcp__imap_search_messages` with mailbox INBOX and "
             "unread_only=true before fetching individual messages."
         ),
         "priority": 0,
@@ -61,7 +62,7 @@ DEFAULT_RECOVERY_HINTS: list[dict[str, object]] = [
         ),
         "body": (
             "Search unread messages only with a small limit (e.g. 10) via "
-            "mail_mcp_imap_search_messages instead of listing the full inbox."
+            "`mail_mcp__imap_search_messages` instead of listing the full inbox."
         ),
         "priority": 1,
     },
