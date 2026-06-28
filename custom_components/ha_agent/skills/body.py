@@ -157,4 +157,8 @@ def normalize_skill(skill: Skill, *, explicit_tool_steps: bool = False) -> Skill
         skill.tool_steps,
         explicit_override=explicit_tool_steps,
     )
+    if not explicit_tool_steps:
+        from .tool_names import ensure_imap_tool_step_arguments
+
+        ensure_imap_tool_step_arguments(skill)
     return skill

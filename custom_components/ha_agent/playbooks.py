@@ -43,8 +43,8 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
             "for unseen count.\n"
             "3. Call `mail_mcp__imap_search_messages` with mailbox INBOX, "
             "unread_only=true, and a small limit (e.g. 10).\n"
-            "4. Call `mail_mcp__imap_fetch_message` only for messages "
-            "you will cite (uid from search results).\n"
+            "4. Call `mail_mcp__imap_get_message` only for messages "
+            "you will cite (message_id from search results).\n"
             "5. Answer using tool results only; never invent subjects or counts."
         ),
     },

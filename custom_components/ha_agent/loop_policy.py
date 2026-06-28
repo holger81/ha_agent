@@ -63,7 +63,7 @@ _ROUTE_PLAN_STEPS: dict[str, list[dict[str, Any]]] = {
     "email": [
         {"toolName": "mail_mcp__imap_mailbox_status"},
         {"toolName": "mail_mcp__imap_search_messages"},
-        {"toolName": "mail_mcp__imap_fetch_message"},
+        {"toolName": "mail_mcp__imap_get_message"},
     ],
     "news": [
         {"toolName": "news_curate"},
@@ -169,7 +169,7 @@ def check_stuck(
         "You already used this tool with the same arguments. "
         "STOP retrying this call this turn. Review the previous tool result, "
         "answer from it if sufficient, or use a different tool (for example "
-        "mail_mcp__imap_fetch_message with a uid from search results)."
+        "mail_mcp__imap_get_message with message_id from search results)."
     )
 
 

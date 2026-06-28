@@ -44,7 +44,7 @@ def _load_modules():
 models_mod, tool_names_mod, body_mod = _load_modules()
 Skill = models_mod.Skill
 SkillDraft = models_mod.SkillDraft
-IMAP_FETCH_MESSAGE = tool_names_mod.IMAP_FETCH_MESSAGE
+IMAP_GET_MESSAGE = tool_names_mod.IMAP_GET_MESSAGE
 IMAP_MAILBOX_STATUS = tool_names_mod.IMAP_MAILBOX_STATUS
 IMAP_SEARCH_MESSAGES = tool_names_mod.IMAP_SEARCH_MESSAGES
 canonicalize_tool_name = tool_names_mod.canonicalize_tool_name
@@ -58,7 +58,7 @@ normalize_skill_draft = body_mod.normalize_skill_draft
 def test_canonicalize_short_email_tool_names() -> None:
     assert canonicalize_tool_name("mailbox_status") == IMAP_MAILBOX_STATUS
     assert canonicalize_tool_name("search_messages") == IMAP_SEARCH_MESSAGES
-    assert canonicalize_tool_name("get_message") == IMAP_FETCH_MESSAGE
+    assert canonicalize_tool_name("get_message") == IMAP_GET_MESSAGE
 
 
 def test_canonicalize_wrong_delimiter_email_tool_names() -> None:
@@ -121,6 +121,33 @@ def test_derive_tool_steps_after_rewrite() -> None:
     updated, _ = rewrite_tool_names_in_text(body)
     steps = derive_tool_steps_from_body(updated)
     assert steps == [{"toolName": IMAP_MAILBOX_STATUS, "arguments": {}}]
+
+
+def test_canonicalize_imap_get_message_is_not_renamed_to_fetch() -> None:
+    assert (
+        canonicalize_tool_name("mail_mcp__imap_get_message") == IMAP_GET_MESSAGE
+    )
+
+
+def test_ensure_imap_tool_step_arguments() -> None:
+    skill = Skill(
+        id="s1",
+        slug="email",
+        title="Email",
+        description="d",
+        triggers=["email"],
+        body="workflow",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_mailbox_status", "arguments": {}},
+            {"toolName": "mail_mcp__imap_search_messages", "arguments": {}},
+        ],
+    )
+    normalize_skill(skill)
+    assert skill.tool_steps[0]["arguments"]["mailbox"] == "{{mailbox}}"
+    search_args = skill.tool_steps[1]["arguments"]
+    assert search_args["mailbox"] == "{{mailbox}}"
+    assert search_args["unread_only"] is True
+    assert search_args["limit"] == 10
 
 
 def test_canonicalize_tool_steps_preserves_arguments() -> None:

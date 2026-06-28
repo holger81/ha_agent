@@ -20,6 +20,7 @@ class HaAgentPanel extends HTMLElement {
     this._unsubEvents = null;
     this._eventsReady = null;
     this._bootstrapError = null;
+    this._integrationVersion = "";
     this._turnTimeout = null;
     this._stickToBottom = true;
     this._chatRenderPending = false;
@@ -294,14 +295,39 @@ class HaAgentPanel extends HTMLElement {
     });
   }
 
+  _formatApiError(err, command = "") {
+    const message = err?.message || String(err);
+    if (/unknown command/i.test(message)) {
+      const hint =
+        "Reload HA Agent (header button) or restart Home Assistant — required after HACS updates.";
+      return command
+        ? `API command not available: ${command}. ${hint}`
+        : `HA Agent API unavailable (Unknown command). ${hint}`;
+    }
+    return message;
+  }
+
   async _bootstrap() {
     try {
       await this._ensureEventSubscription();
-      const data = await this._call("ha_agent/subscribe", {});
+      let data;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          data = await this._call("ha_agent/subscribe", {});
+          break;
+        } catch (err) {
+          if (attempt >= 2 || !/unknown command/i.test(err?.message || "")) {
+            throw err;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
+      }
       this._entryId = data.entry_id;
       this._config = data.config;
       this._status = data.status || {};
-      await Promise.all([
+      this._integrationVersion = data.integration_version || "";
+      this._bootstrapError = null;
+      await Promise.allSettled([
         this._loadThreads(),
         this._loadSkills(),
         this._loadPendingDraft(),
@@ -309,10 +335,14 @@ class HaAgentPanel extends HTMLElement {
       if (this._threads.length > 0) {
         this._conversationId = this._threads[0].conversation_id;
       }
-      await this._loadHistory();
+      try {
+        await this._loadHistory();
+      } catch (_err) {
+        this._messages = [];
+      }
       await this._loadHacsStatus();
     } catch (err) {
-      this._bootstrapError = err?.message || String(err);
+      this._bootstrapError = this._formatApiError(err, "ha_agent/subscribe");
     }
     this._render();
   }
@@ -450,6 +480,7 @@ class HaAgentPanel extends HTMLElement {
       if (this._tab === "playbooks") await this._loadPlaybooks();
       if (this._tab === "routes") await this._loadRouteKeywords();
       if (this._tab === "recovery") await this._loadRecoveryHints();
+      if (this._tab === "skills") await this._loadSkills();
       if (!quiet) {
         this._setHeaderNotice("Integration reloaded.");
       }
@@ -467,18 +498,28 @@ class HaAgentPanel extends HTMLElement {
 
   async _loadSkills() {
     if (!this._entryId) return;
-    const [data, dir] = await Promise.all([
-      this._call("ha_agent/skills/list", {
+    this._skillNotice = null;
+    try {
+      const data = await this._call("ha_agent/skills/list", {
         entry_id: this._entryId,
         limit: 100,
-      }),
-      this._call("ha_agent/skills/directory", {
+      });
+      this._skills = data.skills || [];
+    } catch (err) {
+      this._skills = [];
+      this._skillNotice = this._formatApiError(err, "ha_agent/skills/list");
+      return;
+    }
+    try {
+      const dir = await this._call("ha_agent/skills/directory", {
         entry_id: this._entryId,
-      }),
-    ]);
-    this._skills = data.skills || [];
-    this._skillsDirectory = dir.directory || "";
-    this._skillTemplate = dir.template || "";
+      });
+      this._skillsDirectory = dir.directory || "";
+      this._skillTemplate = dir.template || "";
+    } catch {
+      this._skillsDirectory = "";
+      this._skillTemplate = "";
+    }
   }
 
   async _loadActivity() {
@@ -1128,8 +1169,16 @@ class HaAgentPanel extends HTMLElement {
     if (trimmed) {
       payload.query = trimmed;
     }
-    const data = await this._call("ha_agent/threads/list", payload);
-    this._threads = data.threads || [];
+    try {
+      const data = await this._call("ha_agent/threads/list", payload);
+      this._threads = data.threads || [];
+    } catch (err) {
+      this._threads = [];
+      if (/unknown command/i.test(err?.message || "")) {
+        this._skillNotice =
+          "Chat list API unavailable — reload HA Agent or restart Home Assistant.";
+      }
+    }
   }
 
   async _deleteThread(conversationId) {
@@ -1298,12 +1347,15 @@ class HaAgentPanel extends HTMLElement {
 
   async _loadPendingDraft() {
     if (!this._entryId) return;
-    const data = await this._call("ha_agent/skills/pending_get", {
-      entry_id: this._entryId,
-      conversation_id: this._conversationId,
-    });
-    this._pendingDraft = data.draft;
-    this._render();
+    try {
+      const data = await this._call("ha_agent/skills/pending_get", {
+        entry_id: this._entryId,
+        conversation_id: this._conversationId,
+      });
+      this._pendingDraft = data.draft;
+    } catch (_err) {
+      this._pendingDraft = null;
+    }
   }
 
   _appendStreamText(buffer, piece) {
@@ -3639,6 +3691,27 @@ class HaAgentPanel extends HTMLElement {
     return blocks.join("");
   }
 
+  _renderActiveTabBody() {
+    switch (this._tab) {
+      case "skills":
+        return this._renderSkills();
+      case "playbooks":
+        return this._renderPlaybooks();
+      case "routes":
+        return this._renderRoutes();
+      case "recovery":
+        return this._renderRecovery();
+      case "settings":
+        return this._renderSettings();
+      case "eval":
+        return this._renderEval();
+      case "activity":
+        return this._renderActivity();
+      default:
+        return "";
+    }
+  }
+
   _render() {
     if (!this.shadowRoot) return;
     const tabs = [
@@ -3656,7 +3729,7 @@ class HaAgentPanel extends HTMLElement {
       .map((t) => {
         const label = tabLabels[t] || `${t[0].toUpperCase()}${t.slice(1)}`;
         const busy = this._streaming && t === "chat" ? " …" : "";
-        return `<button class="tab ${this._tab === t ? "active" : ""}" data-tab="${t}">${label}${busy}</button>`;
+        return `<button type="button" class="tab ${this._tab === t ? "active" : ""}" data-tab="${t}">${label}${busy}</button>`;
       })
       .join("");
 
@@ -3665,17 +3738,17 @@ class HaAgentPanel extends HTMLElement {
 
     let body = "";
     if (this._bootstrapError) {
-      body = `<div class="banner">Failed to connect: ${this._escape(this._bootstrapError)}</div>`;
-    } else if (this._tab === "chat") body = this._renderChat();
-    if (this._tab === "skills") body = this._renderSkills();
-    if (this._tab === "playbooks") body = this._renderPlaybooks();
-    if (this._tab === "routes") body = this._renderRoutes();
-    if (this._tab === "recovery") body = this._renderRecovery();
-    if (this._tab === "settings") body = this._renderSettings();
-    if (this._tab === "eval") body = this._renderEval();
-    if (this._tab === "activity") body = this._renderActivity();
+      body = `<div class="banner">${this._escape(this._bootstrapError)}</div>`;
+      if (this._tab !== "chat") {
+        body += this._renderActiveTabBody();
+      }
+    } else if (this._tab === "chat") {
+      body = this._renderChat();
+    } else {
+      body = this._renderActiveTabBody();
+    }
 
-    const panelClass = this._tab === "chat" ? "panel chat-panel" : "panel";
+    const panelClass = this._tab === "chat" && !this._bootstrapError ? "panel chat-panel" : "panel";
 
     const hacsEnabled = this._hacsControlsEnabled();
     const headerBusy = this._reloading || this._hacsBusy;
@@ -3718,13 +3791,29 @@ class HaAgentPanel extends HTMLElement {
 
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((el) => {
       el.onclick = async () => {
-        this._tab = el.getAttribute("data-tab");
-        if (this._tab === "activity") await this._loadActivity();
-        if (this._tab === "skills") await this._loadSkills();
-        if (this._tab === "playbooks") await this._loadPlaybooks();
-        if (this._tab === "routes") await this._loadRouteKeywords();
-        if (this._tab === "recovery") await this._loadRecoveryHints();
-        if (this._tab === "eval") await this._loadEvalStatus();
+        const nextTab = el.getAttribute("data-tab");
+        if (!nextTab) return;
+        this._tab = nextTab;
+        this._render();
+        try {
+          if (this._tab === "activity") await this._loadActivity();
+          if (this._tab === "skills") await this._loadSkills();
+          if (this._tab === "playbooks") await this._loadPlaybooks();
+          if (this._tab === "routes") await this._loadRouteKeywords();
+          if (this._tab === "recovery") await this._loadRecoveryHints();
+          if (this._tab === "eval") await this._loadEvalStatus();
+        } catch (err) {
+          const message = err?.message || String(err);
+          if (this._tab === "skills") {
+            this._skillNotice = `Could not load skills: ${message}`;
+          } else if (this._tab === "playbooks") {
+            this._playbookNotice = `Could not load playbooks: ${message}`;
+          } else if (this._tab === "routes") {
+            this._routeNotice = `Could not load route keywords: ${message}`;
+          } else if (this._tab === "recovery") {
+            this._hintNotice = `Could not load recovery hints: ${message}`;
+          }
+        }
         this._render();
         if (this._tab === "chat" && (this._streaming || this._findOpenStreamMessage())) {
           this._scheduleChatRender();

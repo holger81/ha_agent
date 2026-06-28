@@ -6,6 +6,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.loader import async_get_integration
 
 from .activity import list_turns
 from .api import chat as chat_api
@@ -22,6 +23,7 @@ from .api.helpers import (
     get_entry,
     require_admin,
 )
+from .const import DOMAIN
 from .status import get_agent_status
 from .threads import (
     async_delete_thread,
@@ -38,6 +40,7 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_subscribe)
     websocket_api.async_register_command(hass, ws_status)
     websocket_api.async_register_command(hass, ws_chat_send)
+    websocket_api.async_register_command(hass, ws_chat_cancel)
     websocket_api.async_register_command(hass, ws_chat_history_list)
     websocket_api.async_register_command(hass, ws_chat_history_clear)
     websocket_api.async_register_command(hass, ws_skills_list)
@@ -47,11 +50,16 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_skills_delete)
     websocket_api.async_register_command(hass, ws_skills_create)
     websocket_api.async_register_command(hass, ws_skills_update)
+    websocket_api.async_register_command(hass, ws_skills_derive_tool_steps)
     websocket_api.async_register_command(hass, ws_skills_pending_get)
     websocket_api.async_register_command(hass, ws_skills_pending_confirm)
     websocket_api.async_register_command(hass, ws_skills_pending_dismiss)
     websocket_api.async_register_command(hass, ws_skills_export)
     websocket_api.async_register_command(hass, ws_skills_import)
+    websocket_api.async_register_command(hass, ws_skills_sync)
+    websocket_api.async_register_command(hass, ws_skills_directory)
+    websocket_api.async_register_command(hass, ws_skills_revisions_list)
+    websocket_api.async_register_command(hass, ws_skills_revisions_restore)
     websocket_api.async_register_command(hass, ws_playbooks_list)
     websocket_api.async_register_command(hass, ws_playbooks_create)
     websocket_api.async_register_command(hass, ws_playbooks_update)
@@ -120,6 +128,7 @@ async def ws_subscribe(hass: HomeAssistant, connection, msg: dict) -> None:
     entries = entry_summaries(hass)
     entry_id = msg.get("entry_id") or (entries[0]["entry_id"] if entries else None)
     config = config_snapshot(hass, get_entry(hass, entry_id)) if entry_id else None
+    integration = await async_get_integration(hass, DOMAIN)
     connection.send_message(
         websocket_api.result_message(
             msg["id"],
@@ -128,6 +137,7 @@ async def ws_subscribe(hass: HomeAssistant, connection, msg: dict) -> None:
                 "entry_id": entry_id,
                 "config": config,
                 "status": get_agent_status(hass, entry_id) if entry_id else {},
+                "integration_version": integration.version,
             },
         )
     )
@@ -175,6 +185,25 @@ async def ws_chat_send(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_message(
         websocket_api.result_message(msg["id"], {"started": True})
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/chat/cancel",
+        vol.Required("entry_id"): str,
+        vol.Required("conversation_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_chat_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Cancel an in-flight console chat turn."""
+    require_admin(connection)
+    chat_api.cancel_chat_task(
+        hass,
+        msg["entry_id"],
+        msg["conversation_id"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], {"success": True}))
 
 
 @websocket_api.websocket_command(

@@ -10,28 +10,28 @@ from .models import Skill, SkillDraft
 
 IMAP_MAILBOX_STATUS = "mail_mcp__imap_mailbox_status"
 IMAP_SEARCH_MESSAGES = "mail_mcp__imap_search_messages"
-IMAP_FETCH_MESSAGE = "mail_mcp__imap_fetch_message"
+IMAP_GET_MESSAGE = "mail_mcp__imap_get_message"
 
 EMAIL_IMAP_TOOLS = (
     IMAP_MAILBOX_STATUS,
     IMAP_SEARCH_MESSAGES,
-    IMAP_FETCH_MESSAGE,
+    IMAP_GET_MESSAGE,
 )
 
 # Common LLM / legacy abbreviations → proxy callTool names.
 _TOOL_ALIASES: dict[str, str] = {
     "mailbox_status": IMAP_MAILBOX_STATUS,
     "search_messages": IMAP_SEARCH_MESSAGES,
-    "get_message": IMAP_FETCH_MESSAGE,
-    "fetch_message": IMAP_FETCH_MESSAGE,
+    "get_message": IMAP_GET_MESSAGE,
+    "fetch_message": IMAP_GET_MESSAGE,
     "mail_mcp__mailbox_status": IMAP_MAILBOX_STATUS,
     "mail_mcp__search_messages": IMAP_SEARCH_MESSAGES,
-    "mail_mcp__get_message": IMAP_FETCH_MESSAGE,
-    "mail_mcp__imap_get_message": IMAP_FETCH_MESSAGE,
+    "mail_mcp__get_message": IMAP_GET_MESSAGE,
+    "mail_mcp__imap_fetch_message": IMAP_GET_MESSAGE,
     "mail_mcp_imap_mailbox_status": IMAP_MAILBOX_STATUS,
     "mail_mcp_imap_search_messages": IMAP_SEARCH_MESSAGES,
-    "mail_mcp_imap_fetch_message": IMAP_FETCH_MESSAGE,
-    "mail_mcp_imap_get_message": IMAP_FETCH_MESSAGE,
+    "mail_mcp_imap_fetch_message": IMAP_GET_MESSAGE,
+    "mail_mcp_imap_get_message": IMAP_GET_MESSAGE,
 }
 
 _BACKTICK_TOOL = re.compile(
@@ -155,19 +155,33 @@ def canonicalize_skill_draft(draft: SkillDraft) -> tuple[SkillDraft, bool]:
     steps, steps_changed = canonicalize_tool_steps(draft.tool_steps)
     if steps_changed:
         changed = True
-    if not changed:
-        return draft, False
-    return SkillDraft(
+    working = SkillDraft(
         title=draft.title,
         description=draft.description,
         triggers=draft.triggers,
-        body=new_body,
+        body=new_body if body_changed else draft.body,
         tool_steps=steps,
         slots=draft.slots,
         preconditions=draft.preconditions,
         parent_id=draft.parent_id,
         route_scope=draft.route_scope,
-    ), True
+    )
+    temp = Skill(
+        id="draft",
+        slug="draft",
+        title=working.title,
+        description=working.description,
+        triggers=working.triggers,
+        body=working.body,
+        tool_steps=list(working.tool_steps),
+        route_scope=working.route_scope,
+    )
+    if ensure_imap_tool_step_arguments(temp):
+        working.tool_steps = temp.tool_steps
+        changed = True
+    if not changed:
+        return draft, False
+    return working, True
 
 
 def canonicalize_skill(skill: Skill) -> tuple[Skill, bool]:
@@ -181,3 +195,47 @@ def canonicalize_skill(skill: Skill) -> tuple[Skill, bool]:
         working.tool_steps = steps
     changed = body_changed or steps_changed
     return working, changed
+
+
+def ensure_imap_tool_step_arguments(skill: Skill) -> bool:
+    """Fill required IMAP tool arguments on structured tool steps."""
+    changed = False
+    new_steps: list[dict[str, Any]] = []
+    for step in skill.tool_steps:
+        step_copy = dict(step)
+        tool_name = canonicalize_tool_name(
+            str(step_copy.get("toolName") or step_copy.get("name") or "")
+        )
+        if not tool_name:
+            new_steps.append(step_copy)
+            continue
+        args = step_copy.get("arguments")
+        args = {} if not isinstance(args, dict) else dict(args)
+
+        if tool_name == IMAP_MAILBOX_STATUS:
+            if not args.get("mailbox"):
+                args["mailbox"] = "{{mailbox}}"
+                changed = True
+        elif tool_name == IMAP_SEARCH_MESSAGES:
+            if not args.get("mailbox"):
+                args["mailbox"] = "{{mailbox}}"
+                changed = True
+            if "unread_only" not in args:
+                args["unread_only"] = True
+                changed = True
+            if "limit" not in args:
+                args["limit"] = 10
+                changed = True
+        elif tool_name == IMAP_GET_MESSAGE and not args.get("message_id"):
+            args["message_id"] = "{{message_id}}"
+            changed = True
+
+        if changed or args != step_copy.get("arguments"):
+            step_copy["arguments"] = args
+        step_copy["toolName"] = tool_name
+        step_copy.pop("name", None)
+        new_steps.append(step_copy)
+
+    if changed:
+        skill.tool_steps = new_steps
+    return changed

@@ -9,6 +9,11 @@ from homeassistant.core import HomeAssistant
 
 from ..const import LOGGER
 from .body import normalize_skill
+from .bundled import (
+    apply_bundled_skill,
+    email_skill_needs_refresh,
+    seed_missing_bundled_skills,
+)
 from .markdown import (
     NEW_SKILL_MARKDOWN,
     apply_draft_to_skill,
@@ -109,6 +114,9 @@ def sync_skill_files(hass: HomeAssistant, entry_id: str) -> SkillFileSyncResult:
     directory.mkdir(parents=True, exist_ok=True)
 
     result = SkillFileSyncResult(directory=str(directory))
+    seeded = seed_missing_bundled_skills(store, directory)
+    result.imported += seeded
+
     for path in sorted(directory.glob("*.md")):
         try:
             if _import_file(store, path):
@@ -124,6 +132,8 @@ def sync_skill_files(hass: HomeAssistant, entry_id: str) -> SkillFileSyncResult:
         if skill.is_builtin:
             continue
         before = skill_to_markdown(skill)
+        if email_skill_needs_refresh(skill):
+            apply_bundled_skill(skill)
         normalize_skill(skill)
         after = skill_to_markdown(skill)
         file_path = skill_file_path(directory, skill.slug)

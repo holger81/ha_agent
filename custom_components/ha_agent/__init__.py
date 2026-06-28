@@ -165,6 +165,7 @@ async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up HA Agent from the config entry."""
+    async_register_handlers(hass)
     device_registry = dr.async_get(hass)
     device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
