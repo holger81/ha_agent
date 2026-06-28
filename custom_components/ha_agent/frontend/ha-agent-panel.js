@@ -133,6 +133,7 @@ class HaAgentPanel extends HTMLElement {
       thinkingCollapsed: false,
       thinkingUserToggled: false,
       activeSkill: null,
+      turnMeta: null,
       _streamOpen: true,
     };
   }
@@ -1147,7 +1148,60 @@ class HaAgentPanel extends HTMLElement {
     if (message.tools && message.tools.length) return true;
     if (String(message.thinking || "").trim()) return true;
     if (String(message.content || "").trim()) return true;
+    if (message.turnMeta && Object.keys(message.turnMeta).length) return true;
     return false;
+  }
+
+  _mergeTurnMeta(existing, patch) {
+    if (!patch || typeof patch !== "object") return existing || null;
+    const merged = { ...(existing || {}) };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        merged[key] = { ...(merged[key] || {}), ...value };
+      } else if (value !== undefined && value !== null) {
+        merged[key] = value;
+      }
+    }
+    return merged;
+  }
+
+  _renderTurnMeta(msg) {
+    const m = msg.turnMeta;
+    if (!m || !Object.keys(m).length) return "";
+    const chips = [];
+    const add = (label, value) => {
+      if (value !== undefined && value !== null && String(value).trim()) {
+        chips.push({ label, value: String(value) });
+      }
+    };
+    add("Route", m.route);
+    add("Playbook", m.playbook);
+    if (m.skill) {
+      add("Skill", m.skill);
+    } else if (msg.activeSkill?.title) {
+      add("Skill", msg.activeSkill.title);
+    }
+    if (m.model_role && m.model) {
+      const host = m.host ? ` @ ${m.host}` : "";
+      add(m.model_role, `${m.model}${host}`);
+    }
+    if (m.classifier?.model) {
+      add("Classifier", m.classifier.model);
+    }
+    add("LLM step", m.iteration);
+    add("MCP tools", m.mcp_tools);
+    add("History msgs", m.history_messages);
+    if (!chips.length) return "";
+    const items = chips
+      .map(
+        (chip) =>
+          `<span class="turn-meta-chip" title="${this._escape(chip.value)}">` +
+          `<span class="turn-meta-label">${this._escape(chip.label)}</span> ` +
+          `<span class="turn-meta-value">${this._escape(chip.value)}</span>` +
+          `</span>`
+      )
+      .join("");
+    return `<div class="turn-meta">${items}</div>`;
   }
 
   _applyHistory(history) {
@@ -1204,7 +1258,8 @@ class HaAgentPanel extends HTMLElement {
       !data.content &&
       !data.tool &&
       !data.thinking_clear &&
-      !data.skill
+      !data.skill &&
+      !data.meta
     ) {
       return;
     }
@@ -1224,6 +1279,9 @@ class HaAgentPanel extends HTMLElement {
     }
     if (data.skill) {
       msg.activeSkill = data.skill;
+    }
+    if (data.meta) {
+      msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, data.meta);
     }
     if (data.thinking) {
       msg.thinking = this._appendStreamText(msg.thinking, data.thinking);
@@ -1348,11 +1406,13 @@ class HaAgentPanel extends HTMLElement {
           return `<div class="bubble user">${this._escape(m.content)}</div>`;
         }
 
-        const skillBadge = m.activeSkill
-          ? `<div class="skill-badge">Skill: ${this._escape(
-              m.activeSkill.title || m.activeSkill.slug || "unknown"
-            )}</div>`
-          : "";
+        const skillBadge =
+          !m.turnMeta?.skill && m.activeSkill
+            ? `<div class="skill-badge">Skill: ${this._escape(
+                m.activeSkill.title || m.activeSkill.slug || "unknown"
+              )}</div>`
+            : "";
+        const turnMeta = this._renderTurnMeta(m);
         const thinking = this._renderThinkingPanel(m);
         const toolBlocks = (m.tools || [])
           .map((tool) => this._renderToolCall(tool))
@@ -1365,7 +1425,7 @@ class HaAgentPanel extends HTMLElement {
           ? `<div class="bubble assistant">${body}</div>`
           : "";
 
-        return `<div class="assistant-turn">${skillBadge}${thinking}${tools}${bubble}</div>`;
+        return `<div class="assistant-turn">${turnMeta}${skillBadge}${thinking}${tools}${bubble}</div>`;
       })
       .join("");
 
@@ -1497,6 +1557,19 @@ class HaAgentPanel extends HTMLElement {
         if (!msg.activeSkill) {
           msg.activeSkill = { title: data.active_skill };
         }
+        msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, {
+          skill: data.active_skill,
+        });
+        break;
+      }
+    }
+    if (data.last_route) {
+      for (let index = this._messages.length - 1; index >= 0; index -= 1) {
+        const msg = this._messages[index];
+        if (msg.role !== "assistant") continue;
+        msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, {
+          route: data.last_route,
+        });
         break;
       }
     }
@@ -1716,6 +1789,39 @@ class HaAgentPanel extends HTMLElement {
         color: var(--primary-color);
         background: color-mix(in srgb, var(--primary-color) 14%, transparent);
         border: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+      }
+      .turn-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-self: flex-start;
+      }
+      .turn-meta-chip {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 4px;
+        max-width: 100%;
+        padding: 3px 8px;
+        border-radius: 8px;
+        font-size: 0.72rem;
+        line-height: 1.3;
+        color: var(--secondary-text-color, #aaa);
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 6%, transparent);
+        border: 1px solid var(--divider-color, #444);
+      }
+      .turn-meta-label {
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-size: 0.65rem;
+        opacity: 0.85;
+      }
+      .turn-meta-value {
+        color: var(--primary-text-color, #e0e0e0);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 18rem;
       }
       .bubble.assistant { align-self: stretch; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
       .bubble.assistant .md p { margin: 0.45em 0; }

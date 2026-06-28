@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from homeassistant.core import HomeAssistant
 
@@ -44,7 +45,7 @@ from .loop_policy import (
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
-from .playbooks import async_select_playbook
+from .playbooks import async_select_playbook, playbook_key_for_route
 from .recovery_hints import async_recovery_hints
 from .route_keywords import async_route_keyword_map
 from .router import TaskRoute, backend_for_route, classify_route
@@ -88,6 +89,32 @@ class AgentDelta:
     tool: dict[str, Any] | None = None
     thinking_clear: bool = False
     skill: dict[str, Any] | None = None
+    meta: dict[str, Any] | None = None
+
+
+def _backend_host(base_url: str) -> str:
+    """Return host portion of an LLM base URL for display."""
+    try:
+        return urlparse(base_url).netloc or base_url
+    except ValueError:
+        return base_url
+
+
+def _model_chip(backend: LlmBackend) -> dict[str, str]:
+    return {
+        "model": backend.model,
+        "host": _backend_host(backend.base_url),
+    }
+
+
+def _agent_model_role(route: TaskRoute, *, use_chat_backend: bool) -> str:
+    if route == TaskRoute.EMAIL:
+        return "email"
+    if route == TaskRoute.NEWS:
+        return "news"
+    if route == TaskRoute.HA_ACTION and not use_chat_backend:
+        return "action"
+    return "chat"
 
 
 def _tool_call_payload(call: ToolCall) -> tuple[str, dict[str, Any]]:
@@ -714,6 +741,20 @@ async def run_agent(
         skill_title=matched_skills[0].title if matched_skills else "",
     )
 
+    classifier_backend = router_config.classifier_backend or backend
+    yield AgentDelta(
+        meta={
+            "route": route.value,
+            "playbook": playbook_key_for_route(route.value),
+            "skill": matched_skills[0].title if matched_skills else None,
+            "skill_slug": matched_skills[0].slug if matched_skills else None,
+            "history_messages": len(history),
+            "mcp_tools": len(llm_tools),
+            "classifier": _model_chip(classifier_backend),
+            "max_iterations": agent_config.max_iterations,
+        }
+    )
+
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
@@ -724,6 +765,14 @@ async def run_agent(
             chat_backend=backend,
             router_config=router_config,
             prefer_action=route == TaskRoute.HA_ACTION and not use_chat_backend,
+        )
+        model_role = _agent_model_role(route, use_chat_backend=use_chat_backend)
+        yield AgentDelta(
+            meta={
+                "iteration": iteration + 1,
+                "model_role": model_role,
+                **_model_chip(active_backend),
+            }
         )
 
         if iteration > 0 and agent_config.show_reasoning_in_chat:
