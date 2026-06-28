@@ -54,8 +54,10 @@ class HaAgentPanel extends HTMLElement {
     this._discoverWebhookUrl = "";
     this._discoverSelectedModels = new Set();
     this._reloading = false;
-    this._reloadNotice = null;
-    this._reloadNoticeTimer = null;
+    this._headerNotice = null;
+    this._headerNoticeTimer = null;
+    this._hacsStatus = null;
+    this._hacsBusy = false;
   }
 
   _newConversationId() {
@@ -304,6 +306,7 @@ class HaAgentPanel extends HTMLElement {
         this._conversationId = this._threads[0].conversation_id;
       }
       await this._loadHistory();
+      await this._loadHacsStatus();
     } catch (err) {
       this._bootstrapError = err?.message || String(err);
     }
@@ -318,25 +321,117 @@ class HaAgentPanel extends HTMLElement {
     this._render();
   }
 
-  _setReloadNotice(message) {
-    if (this._reloadNoticeTimer) {
-      clearTimeout(this._reloadNoticeTimer);
-      this._reloadNoticeTimer = null;
+  _setHeaderNotice(message) {
+    if (this._headerNoticeTimer) {
+      clearTimeout(this._headerNoticeTimer);
+      this._headerNoticeTimer = null;
     }
-    this._reloadNotice = message;
-    if (message && !message.startsWith("Reloading")) {
-      this._reloadNoticeTimer = setTimeout(() => {
-        this._reloadNotice = null;
-        this._reloadNoticeTimer = null;
+    this._headerNotice = message;
+    if (
+      message &&
+      !message.startsWith("Reloading") &&
+      !message.startsWith("Checking") &&
+      !message.startsWith("Redownloading") &&
+      !message.startsWith("Installed")
+    ) {
+      this._headerNoticeTimer = setTimeout(() => {
+        this._headerNotice = null;
+        this._headerNoticeTimer = null;
         this._render();
-      }, 4000);
+      }, 5000);
     }
   }
 
-  async _reloadIntegration() {
+  async _loadHacsStatus() {
+    if (!this._entryId) return;
+    try {
+      this._hacsStatus = await this._call("ha_agent/hacs/status", {
+        entry_id: this._entryId,
+      });
+    } catch (_err) {
+      this._hacsStatus = { hacs_available: false, repository_found: false };
+    }
+  }
+
+  _hacsControlsEnabled() {
+    const s = this._hacsStatus;
+    return Boolean(s?.hacs_available && s?.repository_found);
+  }
+
+  _hacsUpdateLabel() {
+    const s = this._hacsStatus;
+    if (s?.update_available && s.latest_version) {
+      const from = s.installed_version || "?";
+      return `Update (${from} → ${s.latest_version})`;
+    }
+    return "Update";
+  }
+
+  async _checkHacsUpdate() {
+    if (!this._entryId || this._hacsBusy) return;
+    this._hacsBusy = true;
+    this._setHeaderNotice("Checking for updates…");
+    this._render();
+    try {
+      this._hacsStatus = await this._call("ha_agent/hacs/refresh", {
+        entry_id: this._entryId,
+      });
+      const s = this._hacsStatus;
+      if (s.update_available) {
+        this._setHeaderNotice(
+          `Update available: ${s.installed_version || "?"} → ${s.latest_version}`,
+        );
+      } else {
+        this._setHeaderNotice(`Up to date (${s.installed_version || "unknown"}).`);
+      }
+    } catch (err) {
+      this._setHeaderNotice(`Check failed: ${err?.message || err}`);
+    } finally {
+      this._hacsBusy = false;
+      this._render();
+    }
+  }
+
+  async _hacsUpdate(forceReinstall = false) {
+    if (!this._entryId || this._hacsBusy) return;
+    this._hacsBusy = true;
+    this._setHeaderNotice(
+      forceReinstall ? "Redownloading from HACS…" : "Checking for updates…",
+    );
+    this._render();
+    try {
+      const data = await this._call("ha_agent/hacs/update", {
+        entry_id: this._entryId,
+        force_refresh: true,
+        force_reinstall: forceReinstall,
+      });
+      this._hacsStatus = data;
+      if (data.installed) {
+        this._setHeaderNotice(
+          `Installed ${data.installed_version || data.latest_version || "update"}. Reloading…`,
+        );
+        this._render();
+        await this._reloadIntegration(true);
+        this._setHeaderNotice(
+          `Updated to ${data.installed_version || data.latest_version || "latest"}. Reloaded.`,
+        );
+      } else {
+        this._setHeaderNotice(`Already on latest (${data.installed_version || "unknown"}).`);
+      }
+    } catch (err) {
+      this._setHeaderNotice(`Update failed: ${err?.message || err}`);
+    } finally {
+      this._hacsBusy = false;
+      this._render();
+    }
+  }
+
+  async _reloadIntegration(quiet = false) {
     if (!this._entryId || this._reloading) return;
     this._reloading = true;
-    this._setReloadNotice("Reloading integration…");
+    if (!quiet) {
+      this._setHeaderNotice("Reloading integration…");
+    }
     this._render();
     try {
       const data = await this._call("ha_agent/reload", {
@@ -345,14 +440,21 @@ class HaAgentPanel extends HTMLElement {
       this._config = data.config || this._config;
       this._bootstrapError = null;
       await this._refreshStatus();
+      await this._loadHacsStatus();
       if (this._tab === "eval") await this._loadEvalStatus();
       if (this._tab === "activity") await this._loadActivity();
       if (this._tab === "playbooks") await this._loadPlaybooks();
       if (this._tab === "routes") await this._loadRouteKeywords();
       if (this._tab === "recovery") await this._loadRecoveryHints();
-      this._setReloadNotice("Integration reloaded.");
+      if (!quiet) {
+        this._setHeaderNotice("Integration reloaded.");
+      }
     } catch (err) {
-      this._setReloadNotice(`Reload failed: ${err?.message || err}`);
+      if (!quiet) {
+        this._setHeaderNotice(`Reload failed: ${err?.message || err}`);
+      } else {
+        throw err;
+      }
     } finally {
       this._reloading = false;
       this._render();
@@ -1461,6 +1563,8 @@ class HaAgentPanel extends HTMLElement {
       .header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
       .header-spacer { flex: 1; min-width: 8px; }
       .reload-notice { font-size: 0.9em; opacity: 0.85; }
+      .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .header-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
       .tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
       .tab, button, select, input, textarea {
         font: inherit;
@@ -3324,6 +3428,15 @@ class HaAgentPanel extends HTMLElement {
 
     const panelClass = this._tab === "chat" ? "panel chat-panel" : "panel";
 
+    const hacsEnabled = this._hacsControlsEnabled();
+    const headerBusy = this._reloading || this._hacsBusy;
+    const hacsButtons = hacsEnabled
+      ? `<div class="header-actions">
+          <button data-action="hacs-check" title="Force check GitHub for a new version" ${headerBusy ? "disabled" : ""}>Check</button>
+          <button data-action="hacs-update" title="Check for updates, download if available. Alt+click to force redownload." ${headerBusy ? "disabled" : ""}>${this._escape(this._hacsUpdateLabel())}</button>
+        </div>`
+      : "";
+
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
       <div class="wrap">
@@ -3331,8 +3444,9 @@ class HaAgentPanel extends HTMLElement {
           <strong>HA Agent Console</strong>
           <span class="chip">${this._escape(this._config?.title || "")}</span>
           <span class="header-spacer"></span>
-          ${this._reloadNotice ? `<span class="reload-notice">${this._escape(this._reloadNotice)}</span>` : ""}
-          <button class="header-reload" data-action="reload-integration" title="Reload HA Agent integration (Devices &amp; services)" ${this._reloading ? "disabled" : ""}>Reload</button>
+          ${this._headerNotice ? `<span class="reload-notice">${this._escape(this._headerNotice)}</span>` : ""}
+          ${hacsButtons}
+          <button class="header-reload" data-action="reload-integration" title="Reload HA Agent integration (Devices &amp; services)" ${headerBusy ? "disabled" : ""}>Reload</button>
         </div>
         <div class="tabs">${tabButtons}</div>
         <div class="${panelClass}">${body}</div>
@@ -3371,6 +3485,14 @@ class HaAgentPanel extends HTMLElement {
 
     this.shadowRoot.querySelector('[data-action="reload-integration"]')?.addEventListener("click", async () => {
       await this._reloadIntegration();
+    });
+
+    this.shadowRoot.querySelector('[data-action="hacs-check"]')?.addEventListener("click", async () => {
+      await this._checkHacsUpdate();
+    });
+
+    this.shadowRoot.querySelector('[data-action="hacs-update"]')?.addEventListener("click", async (ev) => {
+      await this._hacsUpdate(Boolean(ev.altKey));
     });
 
     const sendBtn = this.shadowRoot.querySelector('[data-action="send"]');

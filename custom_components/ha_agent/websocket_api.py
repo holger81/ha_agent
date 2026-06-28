@@ -11,6 +11,7 @@ from .activity import list_turns
 from .api import chat as chat_api
 from .api import config as config_api
 from .api import eval as eval_api
+from .api import hacs as hacs_api
 from .api import playbooks as playbooks_api
 from .api import recovery_hints as recovery_hints_api
 from .api import route_keywords as route_keywords_api
@@ -70,6 +71,9 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_config_get)
     websocket_api.async_register_command(hass, ws_config_set)
     websocket_api.async_register_command(hass, ws_config_reload)
+    websocket_api.async_register_command(hass, ws_hacs_status)
+    websocket_api.async_register_command(hass, ws_hacs_refresh)
+    websocket_api.async_register_command(hass, ws_hacs_update)
     websocket_api.async_register_command(hass, ws_activity_list)
     websocket_api.async_register_command(hass, ws_threads_list)
     websocket_api.async_register_command(hass, ws_threads_update)
@@ -799,6 +803,54 @@ async def ws_config_reload(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     config = await config_api.reload_integration(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"config": config}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/hacs/status",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_hacs_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    status = hacs_api.get_update_status(hass)
+    connection.send_message(websocket_api.result_message(msg["id"], status))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/hacs/refresh",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_hacs_refresh(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    status = await hacs_api.refresh_repository(hass)
+    connection.send_message(websocket_api.result_message(msg["id"], status))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/hacs/update",
+        **_entry_id_schema(
+            {
+                vol.Optional("force_refresh", default=True): bool,
+                vol.Optional("force_reinstall", default=False): bool,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_hacs_update(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    status = await hacs_api.install_update(
+        hass,
+        force_refresh=bool(msg.get("force_refresh", True)),
+        force_reinstall=bool(msg.get("force_reinstall", False)),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], status))
 
 
 @websocket_api.websocket_command(
