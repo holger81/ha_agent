@@ -24,6 +24,7 @@ async def _fake_run_agent(*_args, **_kwargs):
             thinking=None,
             tool=None,
             thinking_clear=False,
+            content_clear=False,
             skill=None,
             meta=None,
         ):
@@ -31,6 +32,7 @@ async def _fake_run_agent(*_args, **_kwargs):
             self.thinking = thinking
             self.tool = tool
             self.thinking_clear = thinking_clear
+            self.content_clear = content_clear
             self.skill = skill
             self.meta = meta
 

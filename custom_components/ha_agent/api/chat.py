@@ -139,6 +139,7 @@ def start_chat(
                         and not delta.thinking
                         and not delta.tool
                         and not delta.thinking_clear
+                        and not delta.content_clear
                         and not delta.skill
                         and not delta.meta
                         and not getattr(delta, "subagent", None)
@@ -151,6 +152,7 @@ def start_chat(
                             "content": delta.content or None,
                             "thinking": delta.thinking or None,
                             "thinking_clear": delta.thinking_clear or None,
+                            "content_clear": delta.content_clear or None,
                             "tool": delta.tool,
                             "skill": delta.skill,
                             "meta": delta.meta,

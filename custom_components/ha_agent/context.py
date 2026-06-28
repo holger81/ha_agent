@@ -159,10 +159,37 @@ _GENERIC_CHITCHAT = re.compile(
     re.IGNORECASE,
 )
 
+_CASUAL_CHAT = re.compile(
+    r"\b(?:"
+    r"joke|jokes|funny|make\s+me\s+laugh|"
+    r"say\s+something\s+(?:funny|random)|"
+    r"tell\s+me\s+(?:a\s+)?(?:joke|story|riddle)|"
+    r"who\s+are\s+you|what\s+can\s+you\s+do"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_CHAT_ROUTES = frozenset({"chat", "general", ""})
+
 
 def is_generic_chitchat(query: str) -> bool:
     """Return True for greetings and other non-task small talk."""
     return bool(_GENERIC_CHITCHAT.match(query.strip()))
+
+
+def is_casual_chat_query(query: str) -> bool:
+    """Return True when the user wants conversation, not a saved workflow."""
+    text = query.strip()
+    if not text:
+        return False
+    if is_generic_chitchat(text):
+        return True
+    return bool(_CASUAL_CHAT.search(text))
+
+
+def is_chat_route(route: str | None) -> bool:
+    """Return True for general conversation routes (not email/news/action)."""
+    return (route or "").lower() in _CHAT_ROUTES
 
 
 def is_news_query(query: str, keywords: list[str] | None = None) -> bool:

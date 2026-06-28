@@ -70,6 +70,12 @@ def test_format_exposed_entities() -> None:
     assert "Dining room" in text
 
 
+def test_is_casual_chat_query_matches_jokes() -> None:
+    """Jokes and small talk should skip learned skill selection."""
+    assert context.is_casual_chat_query("tell me a joke") is True
+    assert context.is_casual_chat_query("what are todays news") is False
+
+
 def test_build_tool_context_adds_news_hint() -> None:
     """News queries get a direct news_curate tool hint."""
     tool_context = context.build_tool_context("What's the news?", [])

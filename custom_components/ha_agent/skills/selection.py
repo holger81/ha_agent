@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 
 from ..config_helpers import LlmBackend
 from ..const import LOGGER
-from ..context import is_generic_chitchat
+from ..context import is_casual_chat_query, is_chat_route
 from ..llm_client import LlmClient
 from .discovery import build_discovery_query
 from .models import Skill
@@ -289,6 +289,39 @@ def _load_skill_candidates(
     return _filter_by_route(candidates, route), fts_skills
 
 
+def _resolve_chat_route_skills(
+    store: Any,
+    user_text: str,
+    *,
+    max_inject: int,
+) -> SkillSelectionResult:
+    """On chat routes, only pin a skill when the user text alone matches one."""
+    rows = store.search(user_text.strip(), limit=2, enabled_only=True)
+    if len(rows) != 1:
+        return SkillSelectionResult(
+            skills=[],
+            method="skipped",
+            summary="no skill (chat route)",
+            detail="Chat turns skip learned skills unless one clearly matches.",
+        )
+    skills = store.load_skills_by_ids([rows[0].id])
+    skill = skills[0] if skills else None
+    if skill is None or skill.is_builtin:
+        return SkillSelectionResult(
+            skills=[],
+            method="skipped",
+            summary="no skill (chat route)",
+            detail="Chat turns skip learned skills unless one clearly matches.",
+        )
+    return SkillSelectionResult(
+        skills=[skill][:max_inject],
+        method="fts_only",
+        summary=f"FTS → {skill.slug}",
+        detail=f"User text pinned skill {skill.title!r} on chat route.",
+        candidate_count=1,
+    )
+
+
 async def resolve_skills_for_turn(
     hass: HomeAssistant,
     entry_id: str,
@@ -301,7 +334,7 @@ async def resolve_skills_for_turn(
     max_inject: int = 3,
 ) -> SkillSelectionResult:
     """Pick skill(s) for a turn via FTS candidates and LLM selection."""
-    if max_inject <= 0 or is_generic_chitchat(user_text):
+    if max_inject <= 0 or is_casual_chat_query(user_text):
         return SkillSelectionResult(
             skills=[],
             method="skipped",
@@ -310,6 +343,17 @@ async def resolve_skills_for_turn(
         )
 
     store = get_skill_store(hass, entry_id)
+
+    if is_chat_route(route):
+
+        def _chat_only() -> SkillSelectionResult:
+            return _resolve_chat_route_skills(
+                store,
+                user_text,
+                max_inject=max_inject,
+            )
+
+        return await hass.async_add_executor_job(_chat_only)
 
     def _load() -> tuple[list[Skill], list[Skill]]:
         return _load_skill_candidates(

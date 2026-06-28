@@ -194,9 +194,9 @@ async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
             id=slug,
             slug=slug,
             title=slug,
-            description="",
-            triggers=[],
-            body="",
+            description="check inbox email",
+            triggers=["email"],
+            body="imap mailbox",
             tool_steps=[],
         )
 
@@ -224,6 +224,7 @@ async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
         llm,
         MagicMock(),
         "anything",
+        route="email",
     )
 
     assert [skill.slug for skill in result.skills] == ["a"]
@@ -404,6 +405,51 @@ async def test_greeting_does_not_auto_select_only_skill(monkeypatch) -> None:
         llm,
         MagicMock(),
         "hi",
+        route="chat",
+    )
+
+    assert result.skills == []
+    assert result.method == "skipped"
+    llm.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_joke_on_chat_route_skips_learned_skills(monkeypatch) -> None:
+    """Casual chat must not attach email workflows via the skill classifier."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    email_skill = Skill(
+        id="email-1",
+        slug="check-and-read-unread-emails",
+        title="Email Management",
+        description="Check inbox",
+        triggers=["email"],
+        body="",
+        tool_steps=[],
+    )
+
+    store = MagicMock()
+    store.search.return_value = [MagicMock(id=email_skill.id)]
+    store.load_skills_by_ids.return_value = [email_skill]
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+
+    llm = MagicMock()
+    llm.chat = AsyncMock()
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        MagicMock(),
+        "tell me a joke",
         route="chat",
     )
 

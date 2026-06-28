@@ -1323,6 +1323,7 @@ class HaAgentPanel extends HTMLElement {
       !data.content &&
       !data.tool &&
       !data.thinking_clear &&
+      !data.content_clear &&
       !data.skill &&
       !data.meta &&
       !data.subagent
@@ -1342,6 +1343,9 @@ class HaAgentPanel extends HTMLElement {
     }
     if (data.thinking_clear) {
       msg.thinking = "";
+    }
+    if (data.content_clear) {
+      msg.content = "";
     }
     if (data.skill) {
       msg.activeSkill = data.skill;

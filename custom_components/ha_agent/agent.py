@@ -107,6 +107,7 @@ class AgentDelta:
     thinking: str = ""
     tool: dict[str, Any] | None = None
     thinking_clear: bool = False
+    content_clear: bool = False
     skill: dict[str, Any] | None = None
     meta: dict[str, Any] | None = None
     subagent: dict[str, Any] | None = None
@@ -1175,7 +1176,10 @@ async def run_agent(
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
         if iteration > 0:
+            yield AgentDelta(content_clear=True)
             inject_loop_context(messages, loop_state)
+            if agent_config.show_reasoning_in_chat:
+                yield AgentDelta(thinking_clear=True)
         active_backend = backend_for_route(
             route,
             chat_backend=backend,
@@ -1191,9 +1195,6 @@ async def run_agent(
         turn_meta.update(iteration_meta)
         yield AgentDelta(meta=iteration_meta)
 
-        if iteration > 0 and agent_config.show_reasoning_in_chat:
-            yield AgentDelta(thinking_clear=True)
-
         if agent_config.enable_streaming:
             session = StreamChatSession()
             async for delta, active_session in _yield_streamed_assistant_text(
@@ -1204,7 +1205,12 @@ async def run_agent(
                 show_reasoning=agent_config.show_reasoning_in_chat,
             ):
                 session = active_session
-                if delta.content or delta.thinking or delta.thinking_clear:
+                if (
+                    delta.content
+                    or delta.thinking
+                    or delta.thinking_clear
+                    or delta.content_clear
+                ):
                     yield delta
 
             raw_buffer = session.content
@@ -1389,12 +1395,10 @@ async def run_agent(
             assistant_text = FALLBACK_MESSAGE
             yield AgentDelta(content=assistant_text)
 
-        primary_skill = None
-        if matched_skills:
-            primary_skill = next(
-                (s for s in matched_skills if not s.is_builtin), matched_skills[0]
-            )
-        if primary_skill or trace.tool_errors > 0:
+        primary_learned = next(
+            (s for s in matched_skills if not s.is_builtin), None
+        )
+        if primary_learned is not None or trace.tool_errors > 0:
             v_result = await verify_turn(
                 llm,
                 role_registry.backend_for(ModelRole.VERIFIER),
@@ -1402,7 +1406,7 @@ async def run_agent(
                 assistant_text=assistant_text,
                 tool_calls=trace.tool_calls,
                 tool_errors=trace.tool_errors,
-                skill=primary_skill,
+                skill=primary_learned,
                 slot_bindings=slot_bindings,
             )
         else:
