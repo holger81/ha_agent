@@ -43,6 +43,8 @@ class LoopState:
     plan_step_statuses: list[str] = field(default_factory=list)
     plan_current_step_index: int | None = None
     plan_completed_tools: list[str] = field(default_factory=list)
+    skill_plan_override: bool = False
+    skill_plan_override_reason: str = ""
     empty_responses: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
 
@@ -93,6 +95,36 @@ _REASONING_WILL_CALL = re.compile(
 )
 _REASONING_TOOL_BACKTICK = re.compile(
     r"`([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`",
+    re.IGNORECASE,
+)
+_SKILL_OVERRIDE_MARKER = re.compile(
+    r"SKILL_OVERRIDE:\s*(.+)",
+    re.IGNORECASE | re.DOTALL,
+)
+_USER_SKILL_OVERRIDE = re.compile(
+    r"\b(?:"
+    r"ignore (?:the )?skill|"
+    r"without (?:the )?skill|"
+    r"don'?t use (?:the )?skill|"
+    r"override (?:the )?skill|"
+    r"forget (?:the )?skill|"
+    r"skip (?:the )?skill|"
+    r"not using (?:the )?skill"
+    r")\b",
+    re.IGNORECASE,
+)
+_REASONING_SKILL_MISMATCH = re.compile(
+    r"\b(?:"
+    r"skill (?:does not|doesn'?t) (?:include|cover|apply|fit|match)|"
+    r"neither includes?|"
+    r"not (?:in|part of) (?:the )?(?:active )?skill|"
+    r"outside (?:the )?skill(?: workflow)?|"
+    r"override (?:the )?skill(?: workflow| plan)?|"
+    r"abandon (?:the )?skill|"
+    r"skill workflow (?:does not|doesn'?t)|"
+    r"no (?:matching )?tool step|"
+    r"need to (?:run )?discover"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -318,6 +350,72 @@ def _match_plan_step_index(loop_state: LoopState, tool_name: str) -> int | None:
     return None
 
 
+def user_requests_skill_override(user_text: str) -> bool:
+    """Return True when the user explicitly asks to bypass the active skill."""
+    return bool(_USER_SKILL_OVERRIDE.search(user_text.strip()))
+
+
+def reasoning_declares_skill_mismatch(reasoning: str) -> bool:
+    """Return True when model reasoning states the active skill does not fit."""
+    text = reasoning.strip()
+    if not text:
+        return False
+    if _SKILL_OVERRIDE_MARKER.search(text):
+        return True
+    tail = text[-2400:]
+    if not _REASONING_SKILL_MISMATCH.search(tail):
+        return False
+    return "skill" in tail.lower() or "workflow" in tail.lower()
+
+
+def extract_skill_override_reason(reasoning: str) -> str | None:
+    """Return an override reason from explicit markers or mismatch reasoning."""
+    text = reasoning.strip()
+    if not text:
+        return None
+    marker = _SKILL_OVERRIDE_MARKER.search(text)
+    if marker:
+        reason = marker.group(1).strip()
+        return reason[:400] if reason else "Declared in reasoning."
+    if reasoning_declares_skill_mismatch(text):
+        tail = text[-400:].strip()
+        return tail[:400] if tail else "Active skill does not fit the user's goal."
+    return None
+
+
+def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
+    """Stop enforcing the active skill's concrete tool-step plan for this turn."""
+    loop_state.skill_plan_override = True
+    loop_state.skill_plan_override_reason = reason.strip()[:400]
+    loop_state.plan_steps = []
+    loop_state.plan_step_statuses = []
+    loop_state.plan_current_step_index = None
+
+
+def maybe_suspend_skill_plan_from_reasoning(
+    loop_state: LoopState,
+    reasoning: str,
+) -> bool:
+    """Suspend the skill plan when reasoning explicitly declares a mismatch."""
+    if loop_state.skill_plan_override:
+        return False
+    reason = extract_skill_override_reason(reasoning)
+    if not reason:
+        return False
+    suspend_skill_plan(loop_state, reason)
+    return True
+
+
+def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
+    """Return True when discovery tools should stay blocked for the skill plan."""
+    return (
+        not loop_state.skill_plan_override
+        and bool(loop_state.plan_steps)
+        and len(loop_state.plan_steps) >= 2
+        and bool(loop_state.plan_skill_title)
+    )
+
+
 def initialize_loop_plan(
     loop_state: LoopState,
     *,
@@ -421,6 +519,15 @@ def build_plan_progress_summary(loop_state: LoopState) -> str | None:
     """Compile plan progress for injection at the start of a loop step."""
     if not loop_state.plan_goal:
         return None
+
+    if loop_state.skill_plan_override:
+        reason = loop_state.skill_plan_override_reason or (
+            "Active skill does not fit the user's goal."
+        )
+        return (
+            "AGENT PLAN (internal — not from the user): Active skill workflow "
+            f"suspended — {reason} Use discovery and other tools as needed."
+        )
 
     lines = [
         "AGENT PLAN PROGRESS (internal — not from the user):",

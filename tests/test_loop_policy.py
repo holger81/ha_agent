@@ -339,6 +339,75 @@ def test_reasoning_execution_mismatch_allows_matching_tool() -> None:
     )
 
 
+def test_user_requests_skill_override() -> None:
+    """User phrases can explicitly bypass the active skill workflow."""
+    policy = _load_loop_policy()
+    assert policy.user_requests_skill_override("ignore the skill and search tools")
+    assert policy.user_requests_skill_override("mark read without the skill")
+    assert not policy.user_requests_skill_override("mark all emails read")
+
+
+def test_reasoning_skill_override_marker() -> None:
+    """SKILL_OVERRIDE marker suspends the enforced skill plan."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="mark emails read",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+        skill_title="Check unread email",
+    )
+
+    reasoning = (
+        "The active skill only reads mail. SKILL_OVERRIDE: user wants mark-as-read."
+    )
+    assert policy.maybe_suspend_skill_plan_from_reasoning(state, reasoning) is True
+    assert state.skill_plan_override is True
+    assert state.plan_steps == []
+    assert not policy.skill_plan_blocks_discovery(state)
+
+
+def test_reasoning_declares_skill_mismatch_without_marker() -> None:
+    """Explicit mismatch reasoning allows discovery without the marker."""
+    policy = _load_loop_policy()
+    reasoning = (
+        "Active skills are check-and-read-unread-emails. Neither includes a "
+        "mark-as-read step. I need to discover a mark-as-read tool."
+    )
+    assert policy.reasoning_declares_skill_mismatch(reasoning)
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="mark all above emails read",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+        skill_title="Check unread email",
+    )
+    assert policy.maybe_suspend_skill_plan_from_reasoning(state, reasoning) is True
+    assert not policy.skill_plan_blocks_discovery(state)
+
+
+def test_build_plan_progress_summary_when_skill_overridden() -> None:
+    """Injected plan guidance reflects a suspended skill workflow."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark emails read"
+    policy.suspend_skill_plan(state, "Skill only covers unread checks.")
+
+    summary = policy.build_plan_progress_summary(state)
+
+    assert summary is not None
+    assert "suspended" in summary
+    assert "Skill only covers unread checks." in summary
+
+
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:
     """Unknown ha_search_entities steers the model to ha_call_service."""
     policy = _load_loop_policy()

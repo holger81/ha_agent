@@ -85,6 +85,36 @@ def test_detect_missing_mailbox_param() -> None:
     assert any(issue.kind == "missing_param" for issue in issues)
 
 
+def test_detect_repairable_issues_skips_skill_override_turns() -> None:
+    skill = Skill(
+        id="s1",
+        slug="email",
+        title="Check unread email",
+        description="Unread",
+        triggers=["unread"],
+        body="Search unread.",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+        route_scope="email",
+    )
+    trace = TurnTrace(
+        user_text="mark all emails read",
+        history_len=0,
+        skill_plan_override=True,
+        skill_followed=False,
+        tool_calls=[
+            {
+                "toolName": "searchToolsForDomain",
+                "arguments": {},
+                "succeeded": True,
+            }
+        ],
+    )
+    assert detect_repairable_issues(trace, skill) == []
+
+
 def test_repair_adds_mailbox_to_imap_steps() -> None:
     skill = Skill(
         id="s1",

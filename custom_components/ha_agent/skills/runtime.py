@@ -100,6 +100,8 @@ def should_offer_skill_creation(
 
     if not learning_enabled:
         return False
+    if trace.skill_plan_override:
+        return False
     if trace.fallback:
         return False
     if not trace.tool_calls:
@@ -129,3 +131,20 @@ def should_offer_skill_creation(
 
     multi_step = len(trace.tool_calls) >= 2 or trace.iterations >= 2
     return multi_step
+
+
+def override_turn_eligible_for_learning(trace: TurnTrace) -> bool:
+    """Return True when a skill-override turn succeeded with a reusable workflow."""
+    if not trace.skill_plan_override:
+        return False
+    if trace.fallback or not trace.assistant_text.strip():
+        return False
+    if trace.outcome not in {"success", "partial"}:
+        return False
+    successful = [
+        call
+        for call in trace.tool_calls
+        if call.get("succeeded")
+        and not is_discovery_tool(str(call.get("toolName") or call.get("name") or ""))
+    ]
+    return bool(successful)

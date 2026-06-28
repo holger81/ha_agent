@@ -472,8 +472,10 @@ def build_tool_context(
     if route in {"email", "news"} and skill_hints.strip():
         context_parts.append(
             "When ACTIVE SKILLS include a workflow for this route, follow that "
-            "workflow first. Use tool_steps only when present; otherwise follow "
-            "the markdown workflow text."
+            "workflow first when it fits the user's goal. Use tool_steps only "
+            "when present; otherwise follow the markdown workflow text. If the "
+            "skill does not fit, declare SKILL_OVERRIDE: <reason> in your "
+            "reasoning before discovery or other off-skill tools."
         )
 
     if exposed:

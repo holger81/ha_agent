@@ -71,6 +71,7 @@ def _load_runtime():
 models_mod, runtime_mod = _load_runtime()
 TurnTrace = models_mod.TurnTrace
 should_offer_skill_creation = runtime_mod.should_offer_skill_creation
+override_turn_eligible_for_learning = runtime_mod.override_turn_eligible_for_learning
 
 
 def test_should_offer_multi_tool_turn() -> None:
@@ -236,3 +237,39 @@ def test_manual_save_requires_successful_tools() -> None:
         learning_enabled=False,
         manual_save=True,
     ) is False
+
+
+def test_override_turn_blocks_generic_skill_creation() -> None:
+    """Override turns use dedicated learning instead of generic creation."""
+    trace = TurnTrace(
+        user_text="mark all emails read",
+        history_len=0,
+        route="email",
+        matched_learned_skill_ids=["skill-1"],
+        skill_plan_override=True,
+        tool_calls=[
+            {"toolName": "mail_mcp__imap_mark_read", "succeeded": True},
+        ],
+        assistant_text="Marked 3 messages as read.",
+        iterations=3,
+        outcome="success",
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is False
+    assert override_turn_eligible_for_learning(trace) is True
+
+
+def test_override_turn_requires_successful_workflow_tools() -> None:
+    """Override learning needs at least one successful non-discovery tool."""
+    trace = TurnTrace(
+        user_text="mark all emails read",
+        history_len=0,
+        route="email",
+        skill_plan_override=True,
+        tool_calls=[
+            {"toolName": "searchToolsForDomain", "succeeded": True},
+        ],
+        assistant_text="Could not find a tool.",
+        iterations=2,
+        outcome="partial",
+    )
+    assert override_turn_eligible_for_learning(trace) is False

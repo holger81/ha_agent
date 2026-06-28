@@ -44,6 +44,9 @@ class RepairResult:
 
 def detect_repairable_issues(trace: TurnTrace, skill: Skill) -> list[RepairIssue]:
     """Return issues that can be repaired from a turn trace."""
+    if trace.skill_plan_override:
+        return []
+
     issues: list[RepairIssue] = []
     missing: set[str] = set()
     for call in trace.tool_calls:

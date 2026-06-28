@@ -40,6 +40,8 @@ _OBSERVER_PROMPT = (
     "- slots (optional): [{name, description, source, default}] for parameterized "
     "workflows with {{slot}} placeholders in body/tool_steps.\n"
     "- parent_id (optional): when forking a variant of an existing skill.\n"
+    "- update_parent (optional boolean): when extending an existing skill in "
+    "place instead of forking.\n"
     "- EXCLUDE discovery/searchToolsForDomain/searchTool from body unless core.\n"
     "- Do not copy email bodies, headlines, or assistant reply text into body.\n"
     "- Use entity_id values only from controlled_entity_ids or tool arguments.\n"
@@ -60,6 +62,7 @@ class SkillObserverResult:
     learn: bool
     reason: str
     draft: SkillDraft | None = None
+    update_parent: bool = False
 
 
 def is_discovery_tool(tool_name: str) -> bool:
@@ -110,6 +113,8 @@ def build_observer_payload(
         "slot_bindings": trace.slot_bindings,
         "verifier_verdict": trace.verifier_verdict,
         "skill_followed": trace.skill_followed,
+        "skill_plan_override": trace.skill_plan_override,
+        "skill_plan_override_reason": trace.skill_plan_override_reason,
         "recovery_hints": trace.recovery_hints[-4:],
         "complexity": trace.complexity,
         "subtask_results": trace.subtask_results[:8],
@@ -209,11 +214,88 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
         explicit_tool_steps=bool(tool_steps),
     )
 
+    update_parent = bool(data.get("update_parent", False))
+
     return SkillObserverResult(
         learn=True,
         reason=reason,
         draft=draft,
+        update_parent=update_parent,
     )
+
+
+_OVERRIDE_PROMPT = (
+    f"{_OBSERVER_PROMPT}\n"
+    "OVERRIDE MODE: An active skill was suspended because it did not fit the "
+    "user's goal. The assistant completed the request with a different "
+    "workflow (often after MCP discovery).\n"
+    "When learn=true:\n"
+    "- Set update_parent=true to extend/replace the parent skill so one skill "
+    "covers the new procedure (merge triggers/body/tool_steps when closely "
+    "related, e.g. add mark-as-read to an email skill).\n"
+    "- Set update_parent=false and parent_id to the parent skill id when the "
+    "new workflow is a distinct procedure that should remain a separate child "
+    "skill (e.g. mark-as-read vs check-unread).\n"
+    "- Include concrete tool_steps for MCP tools used successfully; omit "
+    "discovery/searchToolsForDomain unless essential.\n"
+    "- Triggers should match how the user asked for this new goal.\n"
+)
+
+
+async def observe_skill_override(
+    llm: LlmClient,
+    backend: LlmBackend,
+    *,
+    parent_skill: Any,
+    trace: TurnTrace,
+    history: list[dict[str, str]],
+) -> SkillObserverResult | None:
+    """Distill an updated or child skill after overriding a mismatched workflow."""
+    from .models import Skill
+
+    if not isinstance(parent_skill, Skill):
+        return None
+
+    payload = build_observer_payload(trace, history)
+    payload["parent_skill"] = {
+        "id": parent_skill.id,
+        "title": parent_skill.title,
+        "slug": parent_skill.slug,
+        "body": parent_skill.body[:1200],
+        "tool_steps": parent_skill.tool_steps,
+        "triggers": parent_skill.triggers[:12],
+    }
+    payload["override_reason"] = trace.skill_plan_override_reason
+    messages = [
+        {"role": "system", "content": _OVERRIDE_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+    ]
+    try:
+        result = await llm.chat(messages, backend, tools=[])
+    except Exception as err:
+        LOGGER.warning("Skill override observer failed: %s", err)
+        return None
+    parsed = parse_observer_response(result.content or "")
+    if parsed is None or not parsed.learn or parsed.draft is None:
+        return None
+    if not parsed.update_parent and not parsed.draft.parent_id:
+        parsed = SkillObserverResult(
+            learn=True,
+            reason=parsed.reason,
+            draft=SkillDraft(
+                title=parsed.draft.title,
+                description=parsed.draft.description,
+                triggers=parsed.draft.triggers,
+                body=parsed.draft.body,
+                tool_steps=parsed.draft.tool_steps,
+                slots=parsed.draft.slots,
+                preconditions=parsed.draft.preconditions,
+                parent_id=parent_skill.id,
+                route_scope=parsed.draft.route_scope or parent_skill.route_scope,
+            ),
+            update_parent=False,
+        )
+    return parsed
 
 
 async def observe_skill_fork(

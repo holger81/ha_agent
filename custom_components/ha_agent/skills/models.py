@@ -80,6 +80,8 @@ class TurnTrace:
     orchestration_plan: list[dict[str, Any]] = field(default_factory=list)
     matched_learned_skill_ids: list[str] = field(default_factory=list)
     skill_followed: bool | None = None
+    skill_plan_override: bool = False
+    skill_plan_override_reason: str = ""
     recovery_hints: list[str] = field(default_factory=list)
 
 
@@ -116,6 +118,7 @@ class PendingSkillDraft:
     history: list[dict[str, str]]
     skill_draft: SkillDraft | None = None
     observer_reason: str = ""
+    update_skill_id: str | None = None
 
 
 @dataclass(slots=True)

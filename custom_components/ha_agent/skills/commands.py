@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, cal
 from ..const import DATA_KEY, DOMAIN, LOGGER
 from ..context import is_affirmative
 from .creator import create_skill_from_trace
-from .models import PendingSkillDraft
+from .models import PendingSkillDraft, Skill
 from .runtime import pop_pending_draft, set_pending_draft
 from .store import get_skill_store
 
@@ -112,20 +112,39 @@ async def try_confirm_pending_save(
     draft = pop_pending_draft(hass, conversation_id)
     if draft is None or draft.entry_id != entry_id:
         return None
-    skill = await create_skill_from_trace(
-        hass,
-        entry_id,
-        llm,
-        backend,
-        trace=draft.trace,
-        history=draft.history,
-        manual_save=True,
-        draft=draft.skill_draft,
-    )
+    if draft.skill_draft is not None:
+        from .creator import save_skill_from_draft
+        from .store import get_skill_store
+
+        update_existing = None
+        if draft.update_skill_id:
+
+            def _load() -> Skill | None:
+                return get_skill_store(hass, entry_id).get_skill(draft.update_skill_id)
+
+            update_existing = await hass.async_add_executor_job(_load)
+
+        skill = await save_skill_from_draft(
+            hass,
+            entry_id,
+            draft.skill_draft,
+            update_existing=update_existing,
+        )
+    else:
+        skill = await create_skill_from_trace(
+            hass,
+            entry_id,
+            llm,
+            backend,
+            trace=draft.trace,
+            history=draft.history,
+            manual_save=True,
+        )
     if skill is None:
         set_pending_draft(hass, draft)
         return "I couldn't save that skill. Please try again."
-    return f"Saved skill: {skill.title}."
+    verb = "Updated" if draft.update_skill_id else "Saved"
+    return f"{verb} skill: {skill.title}."
 
 
 def queue_pending_save(
@@ -137,6 +156,7 @@ def queue_pending_save(
     history: list[dict[str, str]],
     skill_draft=None,
     observer_reason: str = "",
+    update_skill_id: str | None = None,
 ) -> None:
     """Queue a skill draft for user confirmation."""
     if not conversation_id:
@@ -150,6 +170,7 @@ def queue_pending_save(
             history=history,
             skill_draft=skill_draft,
             observer_reason=observer_reason,
+            update_skill_id=update_skill_id,
         ),
     )
 

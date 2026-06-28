@@ -36,12 +36,16 @@ from .loop_policy import (
     initialize_loop_plan,
     inject_loop_context,
     mark_iteration_outcome,
+    maybe_suspend_skill_plan_from_reasoning,
     reasoning_execution_mismatch,
     record_iteration_failure,
     record_mcp_guidance,
     record_plan_tool_result,
     reset_iteration_flags,
     should_retry_empty_response,
+    skill_plan_blocks_discovery,
+    suspend_skill_plan,
+    user_requests_skill_override,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, conversation_history_for_turn
@@ -66,6 +70,7 @@ from .skills.observer import (
     is_discovery_tool,
     observe_skill_candidate,
     observe_skill_fork,
+    observe_skill_override,
 )
 from .skills.params import (
     apply_slot_defaults,
@@ -76,7 +81,10 @@ from .skills.params import (
 )
 from .skills.repair import auto_repair_skill
 from .skills.route_skills import load_route_skill, merge_route_and_learned_skills
-from .skills.runtime import should_offer_skill_creation
+from .skills.runtime import (
+    override_turn_eligible_for_learning,
+    should_offer_skill_creation,
+)
 from .skills.selection import filter_tool_steps_for_route, resolve_skills_for_turn
 from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
@@ -321,6 +329,7 @@ async def _process_tool_calls(
     reasoning: str = "",
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run tool calls and yield chat progress deltas."""
+    maybe_suspend_skill_plan_from_reasoning(loop_state, reasoning)
     blocked_ids: set[str] = set()
     if calls and reasoning.strip():
         execution_names = [_tool_call_payload(call)[0] for call in calls]
@@ -358,15 +367,14 @@ async def _process_tool_calls(
         if call.id in blocked_ids:
             continue
         tool_name, arguments = _tool_call_payload(call)
-        if (
-            is_discovery_tool_name(tool_name)
-            and loop_state.plan_steps
-            and len(loop_state.plan_steps) >= 2
-            and loop_state.plan_skill_title
+        if is_discovery_tool_name(tool_name) and skill_plan_blocks_discovery(
+            loop_state
         ):
             blocked = (
                 "Tool error: Active skill lists concrete tool steps; "
-                "do not run discovery. Follow the skill workflow."
+                "do not run discovery while following that workflow. "
+                "If the skill does not fit the user's goal, declare "
+                "SKILL_OVERRIDE: <reason> in your reasoning, then retry."
             )
             record_iteration_failure(loop_state, tool_name, arguments, blocked)
             record_plan_tool_result(
@@ -727,6 +735,93 @@ async def _post_turn_skills(
                 LOGGER.warning("Skill evaluation failed: %s", err)
 
         hass.async_create_task(_evaluate())
+
+        if (
+            trace.skill_plan_override
+            and skills_config.learning_enabled
+            and override_turn_eligible_for_learning(trace)
+        ):
+            override_obs = await observe_skill_override(
+                llm,
+                observer_backend,
+                parent_skill=primary_learned,
+                trace=trace,
+                history=history,
+            )
+            if (
+                override_obs
+                and override_obs.learn
+                and override_obs.draft is not None
+            ):
+                update_target = (
+                    primary_learned if override_obs.update_parent else None
+                )
+                draft = override_obs.draft
+                action = "update" if update_target else "create"
+
+                async def _save_override(
+                    *,
+                    _draft=draft,
+                    _update=update_target,
+                    _action=action,
+                ) -> None:
+                    try:
+                        await save_skill_from_draft(
+                            hass,
+                            entry_id,
+                            _draft,
+                            update_existing=_update,
+                        )
+                        await _update_skill_status(hass, entry_id)
+                    except Exception as err:
+                        LOGGER.warning("Skill override save failed: %s", err)
+
+                if skills_config.auto_save:
+                    from_version = (
+                        update_target.version if update_target is not None else None
+                    )
+                    hass.async_create_task(_save_override())
+                    if action == "update" and from_version is not None:
+                        suffix = (
+                            f" Updating skill: {draft.title} "
+                            f"(v{from_version}→v{from_version + 1}) "
+                            f"— {override_obs.reason}."
+                        )
+                        meta_patch = {
+                            "skill_update": {
+                                "title": draft.title,
+                                "from_version": from_version,
+                                "to_version": from_version + 1,
+                                "reason": override_obs.reason,
+                                "override": True,
+                            }
+                        }
+                    else:
+                        suffix = f" Saving skill: {draft.title}."
+                    return suffix, meta_patch
+
+                queue_pending_save(
+                    hass,
+                    entry_id,
+                    trace.conversation_id,
+                    trace=trace,
+                    history=history,
+                    skill_draft=draft,
+                    observer_reason=override_obs.reason,
+                    update_skill_id=(
+                        primary_learned.id if update_target is not None else None
+                    ),
+                )
+                if update_target is not None:
+                    return (
+                        f" I can update skill “{draft.title}” with this workflow. "
+                        "Reply yes to confirm.",
+                        meta_patch,
+                    )
+                return (
+                    f" I can save a new skill: {draft.title}. Reply yes to confirm.",
+                    meta_patch,
+                )
 
         if (
             trace.slot_bindings
@@ -1129,6 +1224,11 @@ async def run_agent(
         skill_title=matched_skills[0].title if matched_skills else "",
         slot_bindings=slot_bindings or None,
     )
+    if matched_skills and user_requests_skill_override(user_text):
+        suspend_skill_plan(
+            loop_state,
+            "User asked to override the active skill workflow.",
+        )
     if matched_skills and slot_bindings:
         primary_learned = next(
             (s for s in matched_skills if not s.is_builtin), None
@@ -1448,6 +1548,8 @@ async def run_agent(
         else:
             trace.outcome = TurnOutcome.SUCCESS
         trace.recovery_hints = list(loop_state.mcp_guidance)
+        trace.skill_plan_override = loop_state.skill_plan_override
+        trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
         turn_meta.update(
             {
                 "verifier_verdict": trace.verifier_verdict,

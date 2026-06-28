@@ -96,6 +96,7 @@ gate_mod = _load_module("skills.learning_gate")
 TurnTrace = models_mod.TurnTrace
 parse_observer_response = observer_mod.parse_observer_response
 observe_skill_candidate = observer_mod.observe_skill_candidate
+observe_skill_override = observer_mod.observe_skill_override
 build_observer_payload = observer_mod.build_observer_payload
 assess_skill_worth_learning = gate_mod.assess_skill_worth_learning
 
@@ -132,6 +133,101 @@ def test_parse_observer_response_accepts_with_draft() -> None:
     assert parsed.learn is True
     assert parsed.draft is not None
     assert parsed.draft.title == "Evening lights"
+
+
+def test_parse_observer_response_reads_update_parent() -> None:
+    parsed = parse_observer_response(
+        json.dumps(
+            {
+                "learn": True,
+                "reason": "extend parent",
+                "title": "Email workflows",
+                "description": "Check and mark email.",
+                "triggers": ["mark emails read"],
+                "body": "Use mark-read tool.",
+                "tool_steps": [],
+                "update_parent": True,
+            }
+        )
+    )
+    assert parsed is not None
+    assert parsed.update_parent is True
+
+
+def test_build_observer_payload_includes_override_fields() -> None:
+    trace = TurnTrace(
+        user_text="mark all emails read",
+        history_len=0,
+        route="email",
+        skill_plan_override=True,
+        skill_plan_override_reason="Skill only covers unread checks.",
+        tool_calls=[],
+    )
+    payload = build_observer_payload(trace, [])
+    assert payload["skill_plan_override"] is True
+    assert "unread checks" in payload["skill_plan_override_reason"]
+
+
+@pytest.mark.asyncio
+async def test_observe_skill_override_updates_parent() -> None:
+    Skill = models_mod.Skill
+    parent = Skill(
+        id="parent-1",
+        slug="check-unread",
+        title="Check unread email",
+        description="Unread count",
+        triggers=["unread email"],
+        body="Search unread.",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages", "arguments": {}}],
+        route_scope="email",
+    )
+    trace = TurnTrace(
+        user_text="mark all above emails read",
+        history_len=0,
+        route="email",
+        skill_plan_override=True,
+        skill_plan_override_reason="No mark-read step in parent skill.",
+        tool_calls=[
+            {"toolName": "mail_mcp__imap_mark_read", "succeeded": True},
+        ],
+        assistant_text="Marked 3 messages as read.",
+        iterations=4,
+        outcome="success",
+    )
+    llm = MagicMock()
+    llm.chat = AsyncMock(
+        return_value=MagicMock(
+            content=json.dumps(
+                {
+                    "learn": True,
+                    "reason": "extend email skill",
+                    "title": "Email read workflows",
+                    "description": "Check unread and mark messages read.",
+                    "triggers": ["mark emails read", "mark all read"],
+                    "body": "Call `mail_mcp__imap_mark_read` for each message.",
+                    "tool_steps": [
+                        {
+                            "toolName": "mail_mcp__imap_mark_read",
+                            "arguments": {"message_id": "{{message_id}}"},
+                        }
+                    ],
+                    "update_parent": True,
+                }
+            ),
+        ),
+    )
+
+    result = await observe_skill_override(
+        llm,
+        MagicMock(),
+        parent_skill=parent,
+        trace=trace,
+        history=[],
+    )
+    assert result is not None
+    assert result.learn is True
+    assert result.update_parent is True
+    assert result.draft is not None
 
 
 def test_build_observer_payload_marks_discovery_tools() -> None:
