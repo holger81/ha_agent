@@ -325,6 +325,7 @@ def initialize_loop_plan(
     route: str,
     tool_steps: list[dict[str, Any]] | None = None,
     skill_title: str = "",
+    slot_bindings: dict[str, str] | None = None,
 ) -> None:
     """Seed per-turn plan state from the user goal, route, and optional skill."""
     loop_state.plan_goal = goal.strip()
@@ -335,6 +336,19 @@ def initialize_loop_plan(
     loop_state.plan_step_statuses = ["pending"] * len(steps)
     loop_state.plan_current_step_index = 0 if steps else None
     loop_state.plan_completed_tools = []
+    if slot_bindings:
+        bound = ", ".join(
+            f"{key}={value}" for key, value in slot_bindings.items() if value
+        )
+        if bound:
+            loop_state.mcp_guidance.insert(
+                0,
+                (
+                    "ADAPT skill workflow — bound slots: "
+                    f"{bound}. Change slot values for this goal; "
+                    "keep the same tool sequence."
+                ),
+            )
 
 
 def record_plan_tool_result(

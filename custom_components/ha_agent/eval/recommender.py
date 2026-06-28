@@ -24,7 +24,9 @@ _SETTINGS_PROMPT = (
     "- action: device control (lights, covers, locks)\n"
     "- email: unread mail queries via MCP\n"
     "- news: headline briefing via MCP\n"
-    "- classifier: route/playbook selection (small, fast model)\n\n"
+    "- classifier: route/playbook selection (small, fast model)\n"
+    "- planner: multi-domain request decomposition\n"
+    "- verifier: goal/skill adherence critic (small, fast model)\n\n"
     "Server capabilities:\n"
     "{capabilities_json}\n\n"
     "Host/runtime context:\n"
@@ -46,7 +48,9 @@ _SETTINGS_PROMPT = (
     '    "action": {{"model": "...", "reason": "..."}},\n'
     '    "email": {{"model": "...", "reason": "..."}},\n'
     '    "news": {{"model": "...", "reason": "..."}},\n'
-    '    "classifier": {{"model": "...", "reason": "..."}}\n'
+    '    "classifier": {{"model": "...", "reason": "..."}},\n'
+    '    "planner": {{"model": "...", "reason": "..."}},\n'
+    '    "verifier": {{"model": "...", "reason": "..."}}\n'
     "  }}\n"
     "}}"
 )

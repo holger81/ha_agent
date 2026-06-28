@@ -45,8 +45,10 @@ from .loop_policy import (
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
+from .orchestrator import Complexity, plan_subtasks, triage_complexity
 from .playbooks import async_select_playbook
 from .recovery_hints import async_recovery_hints
+from .role_registry import ModelRole, RoleRegistry, build_role_registry
 from .route_keywords import async_route_keyword_map
 from .router import TaskRoute, backend_for_route, resolve_route_with_classifier
 from .skills.commands import (
@@ -60,11 +62,22 @@ from .skills.creator import save_skill_from_draft
 from .skills.discovery import build_skill_hints
 from .skills.evaluator import evaluate_skill_use
 from .skills.models import TurnTrace
-from .skills.observer import is_discovery_tool, observe_skill_candidate
+from .skills.observer import (
+    is_discovery_tool,
+    observe_skill_candidate,
+    observe_skill_fork,
+)
+from .skills.params import (
+    bind_tool_steps,
+    bindings_diverge_from_defaults,
+    infer_slot_bindings,
+)
+from .skills.route_skills import load_route_skill, merge_route_and_learned_skills
 from .skills.runtime import should_offer_skill_creation
 from .skills.selection import filter_tool_steps_for_route, resolve_skills_for_turn
 from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
+from .subagent import WorkerResult, run_worker
 from .tools import (
     execute_tool,
     ha_service_entity_id,
@@ -73,11 +86,13 @@ from .tools import (
     parse_tool_arguments,
     tool_result_message,
 )
+from .verifier import build_verifier_retry_guidance, verify_turn
 
 if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
 
 FALLBACK_MESSAGE = "Sorry, I couldn't complete that request."
+_MAX_VERIFIER_RETRIES = 1
 
 
 @dataclass(slots=True, frozen=True)
@@ -90,6 +105,7 @@ class AgentDelta:
     thinking_clear: bool = False
     skill: dict[str, Any] | None = None
     meta: dict[str, Any] | None = None
+    subagent: dict[str, Any] | None = None
 
 
 def _backend_host(base_url: str) -> str:
@@ -449,6 +465,150 @@ async def _process_embedded_tool_calls(
         yield delta
 
 
+async def _run_orchestrated_turn(
+    hass: HomeAssistant,
+    *,
+    llm: LlmClient,
+    mcp_client: McpProxyClient,
+    registry: RoleRegistry,
+    agent_config: AgentConfig,
+    skills_config: SkillsConfig,
+    entry_id: str,
+    conversation_id: str | None,
+    user_text: str,
+    orch_plan: Any,
+    exposed_entities: list[dict[str, Any]],
+    mcp_session_prompt: str,
+    llm_tools: list[dict[str, Any]],
+    backend: LlmBackend,
+    trace: TurnTrace,
+    hint_rules: list[Any] | None,
+) -> AsyncGenerator[AgentDelta, None]:
+    """Execute a complex multi-subtask turn via worker subagents."""
+    from .context import build_messages, build_system_message
+
+    worker_results: list[WorkerResult] = []
+    for subtask in orch_plan.subtasks:
+        sub_skills: list = []
+        if skills_config.use_enabled:
+            sub_sel = await resolve_skills_for_turn(
+                hass,
+                entry_id,
+                llm,
+                registry.backend_for(ModelRole.ROUTER),
+                subtask.subgoal,
+                history=[],
+                route=subtask.route,
+                max_inject=1,
+            )
+            sub_skills = sub_sel.skills
+            route_skill = await load_route_skill(
+                hass,
+                entry_id,
+                llm,
+                registry.backend_for(ModelRole.ROUTER),
+                user_text=subtask.subgoal,
+                route_value=subtask.route,
+                history=[],
+            )
+            sub_skills = merge_route_and_learned_skills(route_skill, sub_skills)
+
+        async for meta, result in run_worker(
+            hass,
+            llm=llm,
+            mcp_client=mcp_client,
+            registry=registry,
+            agent_config=agent_config,
+            subgoal=subtask.subgoal,
+            route_value=subtask.route,
+            exposed_entities=exposed_entities,
+            matched_skills=sub_skills,
+            mcp_session_prompt=mcp_session_prompt,
+            llm_tools=llm_tools,
+            prior_results=worker_results,
+        ):
+            if meta:
+                yield AgentDelta(subagent=meta)
+            if result is not None:
+                worker_results.append(result)
+                trace.subtask_results.append(
+                    {
+                        "subgoal": result.subgoal,
+                        "route": result.route,
+                        "summary": result.assistant_text[:500],
+                        "tool_errors": result.tool_errors,
+                    }
+                )
+
+    synth_backend = registry.backend_for(ModelRole.WORKER_CHAT)
+    synth_body = "\n".join(
+        f"- {r.subgoal}: {r.assistant_text}" for r in worker_results
+    )
+    synth_messages = build_messages(
+        system_message=build_system_message(
+            agent_config.system_prompt,
+            agent_config.tool_instructions,
+            extra_system_prompt=(
+                "Synthesize subtask results into one concise reply for the user."
+            ),
+        ),
+        history=[],
+        user_text=f"Original request: {user_text}\n\nSubtask results:\n{synth_body}",
+    )
+    synth = await llm.chat(synth_messages, synth_backend, tools=[])
+    assistant_text = (synth.content or "").strip() or FALLBACK_MESSAGE
+    yield AgentDelta(content=assistant_text)
+
+    v_result = await verify_turn(
+        llm,
+        registry.backend_for(ModelRole.VERIFIER),
+        user_text=user_text,
+        assistant_text=assistant_text,
+        tool_calls=trace.tool_calls,
+        tool_errors=sum(r.tool_errors for r in worker_results),
+    )
+    trace.verifier_verdict = "pass" if v_result.passed else "fail"
+    trace.verifier_detail = v_result.reason
+    yield AgentDelta(
+        meta={
+            "verifier_verdict": trace.verifier_verdict,
+            "verifier_detail": trace.verifier_detail,
+        }
+    )
+
+    trace.assistant_text = assistant_text
+    trace.outcome = TurnOutcome.SUCCESS if v_result.passed else TurnOutcome.PARTIAL
+    suffix = await _post_turn_skills(
+        hass,
+        entry_id=entry_id,
+        llm=llm,
+        backend=backend,
+        observer_backend=registry.backend_for(ModelRole.OBSERVER),
+        skills_config=skills_config,
+        trace=trace,
+        history=[],
+        matched_skills=[],
+    )
+    if suffix:
+        assistant_text = f"{assistant_text}{suffix}".strip()
+        yield AgentDelta(content=suffix)
+
+    append_turn(
+        hass,
+        conversation_id,
+        user_text,
+        assistant_text,
+        max_turns=agent_config.history_turns,
+        entry_id=entry_id,
+        turn_meta={
+            "complexity": orch_plan.complexity.value,
+            "verifier_verdict": trace.verifier_verdict,
+            "subtask_count": len(worker_results),
+        },
+    )
+    record_turn(hass, entry_id, trace)
+
+
 async def _update_skill_status(hass: HomeAssistant, entry_id: str) -> None:
     """Refresh skill diagnostic counters."""
     store = get_skill_store(hass, entry_id)
@@ -498,6 +658,51 @@ async def _post_turn_skills(
                 LOGGER.warning("Skill evaluation failed: %s", err)
 
         hass.async_create_task(_evaluate())
+
+        primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
+        if (
+            primary_learned
+            and trace.slot_bindings
+            and bindings_diverge_from_defaults(primary_learned, trace.slot_bindings)
+            and skills_config.learning_enabled
+        ):
+            forked = await observe_skill_fork(
+                llm,
+                observer_backend,
+                parent_skill=primary_learned,
+                trace=trace,
+                history=history,
+            )
+            if forked and forked.learn and forked.draft is not None:
+                if skills_config.auto_save:
+
+                    async def _save_fork() -> None:
+                        try:
+                            await save_skill_from_draft(
+                                hass,
+                                entry_id,
+                                forked.draft,
+                                update_existing=None,
+                            )
+                            await _update_skill_status(hass, entry_id)
+                        except Exception as err:
+                            LOGGER.warning("Skill fork save failed: %s", err)
+
+                    hass.async_create_task(_save_fork())
+                    return f" Saving skill variant: {forked.draft.title}."
+                queue_pending_save(
+                    hass,
+                    entry_id,
+                    trace.conversation_id,
+                    trace=trace,
+                    history=history,
+                    skill_draft=forked.draft,
+                    observer_reason=forked.reason,
+                )
+                return (
+                    f" I can save a variant skill: {forked.draft.title}. "
+                    "Reply yes to confirm."
+                )
 
     manual_save = bool(_MANUAL_SAVE.search(trace.user_text))
     if manual_save:
@@ -636,6 +841,20 @@ async def run_agent(
     )
     route = route_resolution.route
     record_route(hass, entry_id, route)
+    role_registry = build_role_registry(backend, router_config)
+    orch_plan = await triage_complexity(
+        llm,
+        role_registry,
+        user_text=user_text,
+        history=history,
+    )
+    if orch_plan.complexity == Complexity.COMPLEX:
+        orch_plan = await plan_subtasks(
+            llm,
+            role_registry,
+            user_text=user_text,
+            plan=orch_plan,
+        )
     yield AgentDelta(
         meta={
             "route": route.value,
@@ -645,6 +864,10 @@ async def run_agent(
             "keyword_hint": route_resolution.keyword_hint,
             "classification": route_resolution.classifier_summary,
             "route_method": route_resolution.method,
+            "complexity": orch_plan.complexity.value,
+            "orchestration_reason": orch_plan.reason,
+            "subtask_count": len(orch_plan.subtasks),
+            "planner": role_registry.chip_for(ModelRole.PLANNER),
         }
     )
     hint_rules = await async_recovery_hints(hass, entry_id)
@@ -652,6 +875,7 @@ async def run_agent(
     matched_skills = []
     skill_selection = None
     skill_hints = ""
+    slot_bindings: dict[str, str] = {}
     if skills_config.use_enabled:
         skill_selection = await resolve_skills_for_turn(
             hass,
@@ -664,7 +888,31 @@ async def run_agent(
             max_inject=skills_config.max_inject,
         )
         matched_skills = skill_selection.skills
-        skill_hints = build_skill_hints(matched_skills, route=route.value)
+        learned_only = [s for s in matched_skills if not s.is_builtin]
+        route_skill = await load_route_skill(
+            hass,
+            entry_id,
+            llm,
+            classifier_backend,
+            user_text=user_text,
+            route_value=route.value,
+            history=history,
+        )
+        matched_skills = merge_route_and_learned_skills(route_skill, learned_only)
+        primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
+        if primary_learned:
+            slot_bindings = await infer_slot_bindings(
+                llm,
+                role_registry.backend_for(ModelRole.ROUTER),
+                user_text=user_text,
+                skill=primary_learned,
+                route=route.value,
+            )
+        skill_hints = build_skill_hints(
+            matched_skills,
+            route=route.value,
+            slot_bindings=slot_bindings,
+        )
         update_agent_status(
             hass,
             entry_id,
@@ -689,6 +937,16 @@ async def run_agent(
         conversation_id=conversation_id,
         route=route.value,
         exposed_entities=list(exposed_entities),
+        complexity=orch_plan.complexity.value,
+        slot_bindings=slot_bindings,
+        orchestration_plan=[
+            {
+                "id": st.id,
+                "subgoal": st.subgoal,
+                "route": st.route,
+            }
+            for st in orch_plan.subtasks
+        ],
     )
 
     mcp_session_prompt = ""
@@ -711,6 +969,28 @@ async def run_agent(
             mcp_reachable=False,
             last_error=str(err),
         )
+
+    if orch_plan.complexity == Complexity.COMPLEX and orch_plan.subtasks:
+        async for handled in _run_orchestrated_turn(
+            hass,
+            llm=llm,
+            mcp_client=mcp_client,
+            registry=role_registry,
+            agent_config=agent_config,
+            skills_config=skills_config,
+            entry_id=entry_id,
+            conversation_id=conversation_id,
+            user_text=user_text,
+            orch_plan=orch_plan,
+            exposed_entities=exposed_entities,
+            mcp_session_prompt=mcp_session_prompt,
+            llm_tools=llm_tools,
+            backend=backend,
+            trace=trace,
+            hint_rules=hint_rules,
+        ):
+            yield handled
+        return
 
     tool_context = build_tool_context(
         user_text,
@@ -745,17 +1025,22 @@ async def run_agent(
     use_chat_backend = route != TaskRoute.HA_ACTION
     controlled_entity_ids: list[str] = []
     loop_state = LoopState()
-    skill_steps = (
-        filter_tool_steps_for_route(matched_skills[0].tool_steps, route.value)
-        if matched_skills
-        else None
-    )
+    skill_steps = None
+    if matched_skills:
+        primary = next(
+            (s for s in matched_skills if not s.is_builtin),
+            matched_skills[0],
+        )
+        raw_steps = filter_tool_steps_for_route(primary.tool_steps, route.value)
+        if raw_steps:
+            skill_steps = bind_tool_steps(raw_steps, slot_bindings)
     initialize_loop_plan(
         loop_state,
         goal=user_text,
         route=route.value,
         tool_steps=skill_steps,
         skill_title=matched_skills[0].title if matched_skills else "",
+        slot_bindings=slot_bindings or None,
     )
 
     classifier_backend = router_config.classifier_backend or backend
@@ -775,6 +1060,9 @@ async def run_agent(
         "skill_classifier_detail": (
             skill_selection.detail if skill_selection else None
         ),
+        "complexity": orch_plan.complexity.value,
+        "slot_bindings": slot_bindings or None,
+        "verifier": role_registry.chip_for(ModelRole.VERIFIER),
         "history_messages": len(history),
         "mcp_tools": len(llm_tools),
         "classifier": _model_chip(classifier_backend),
@@ -782,6 +1070,7 @@ async def run_agent(
     }
     yield AgentDelta(meta=turn_meta)
 
+    verifier_retries = 0
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
@@ -1000,6 +1289,46 @@ async def run_agent(
             assistant_text = FALLBACK_MESSAGE
             yield AgentDelta(content=assistant_text)
 
+        primary_skill = None
+        if matched_skills:
+            primary_skill = next(
+                (s for s in matched_skills if not s.is_builtin), matched_skills[0]
+            )
+        if primary_skill or trace.tool_errors > 0:
+            v_result = await verify_turn(
+                llm,
+                role_registry.backend_for(ModelRole.VERIFIER),
+                user_text=user_text,
+                assistant_text=assistant_text,
+                tool_calls=trace.tool_calls,
+                tool_errors=trace.tool_errors,
+                skill=primary_skill,
+                slot_bindings=slot_bindings,
+            )
+        else:
+            from .verifier import VerifierResult
+
+            v_result = VerifierResult(passed=True, reason="no skill workflow")
+        trace.verifier_verdict = "pass" if v_result.passed else "fail"
+        trace.verifier_detail = v_result.reason
+        yield AgentDelta(
+            meta={
+                "verifier_verdict": trace.verifier_verdict,
+                "verifier_detail": trace.verifier_detail,
+            }
+        )
+        if not v_result.passed and verifier_retries < _MAX_VERIFIER_RETRIES:
+            verifier_retries += 1
+            messages.append(
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_verifier_retry_guidance(v_result),
+                }
+            )
+            _prepare_next_loop_iteration(loop_state)
+            use_chat_backend = True
+            continue
+
         trace.assistant_text = assistant_text
         trace.controlled_entity_ids = list(controlled_entity_ids)
         trace.verification_notes = list(loop_state.verification_notes)
@@ -1007,18 +1336,24 @@ async def run_agent(
             note.startswith("VERIFICATION FAILED")
             for note in trace.verification_notes
         )
-        if failed_verification:
+        if failed_verification or trace.verifier_verdict == "fail":
             trace.outcome = TurnOutcome.PARTIAL
         elif trace.tool_errors and not assistant_text:
             trace.outcome = TurnOutcome.FAILED
         else:
             trace.outcome = TurnOutcome.SUCCESS
+        turn_meta.update(
+            {
+                "verifier_verdict": trace.verifier_verdict,
+                "verifier_detail": trace.verifier_detail,
+            }
+        )
         suffix = await _post_turn_skills(
             hass,
             entry_id=entry_id,
             llm=llm,
             backend=backend,
-            observer_backend=router_config.classifier_backend or backend,
+            observer_backend=role_registry.backend_for(ModelRole.OBSERVER),
             skills_config=skills_config,
             trace=trace,
             history=history,

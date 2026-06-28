@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-EVAL_TASKS = ("chat", "action", "email", "news", "classifier")
+EVAL_TASKS = ("chat", "action", "email", "news", "classifier", "planner", "verifier")
 
 
 @dataclass(slots=True)

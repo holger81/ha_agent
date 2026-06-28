@@ -40,6 +40,7 @@ def build_run_result(
         not trace.fallback
         and trace.tool_errors == 0
         and bool(trace.assistant_text.strip())
+        and trace.verifier_verdict != "fail"
     )
     return SkillRunResult(
         skill_id=skill_id,
@@ -87,6 +88,17 @@ async def evaluate_skill_use(
     updated = await hass.async_add_executor_job(_record)
     if updated is None:
         return
+
+    score_delta = 0.15 if run_result.succeeded else -0.2
+    if trace.verifier_verdict == "pass":
+        score_delta += 0.05
+    elif trace.verifier_verdict == "fail":
+        score_delta -= 0.15
+
+    def _adjust_score() -> Skill | None:
+        return store.adjust_score(skill.id, score_delta)
+
+    await hass.async_add_executor_job(_adjust_score)
 
     def _can_improve() -> bool:
         return store.can_improve(skill.id)
@@ -146,6 +158,9 @@ async def _request_improvement(
             "tool_errors": trace.tool_errors,
             "iterations": trace.iterations,
             "assistant_text": trace.assistant_text,
+            "verifier_verdict": trace.verifier_verdict,
+            "verifier_detail": trace.verifier_detail,
+            "slot_bindings": trace.slot_bindings,
         },
     }
     messages = [

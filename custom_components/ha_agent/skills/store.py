@@ -13,7 +13,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from ..const import DATA_KEY, LOGGER
-from .models import Skill, SkillIndexRow
+from .models import Skill, SkillIndexRow, SkillSlot
 
 SKILLS_STORE_KEY = "skill_stores"
 _IMPROVEMENT_COOLDOWN_SECONDS = 3600
@@ -46,13 +46,47 @@ CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
 );
 """
 
+_ADDED_COLUMNS = {
+    "slots_json": "TEXT NOT NULL DEFAULT '[]'",
+    "preconditions": "TEXT NOT NULL DEFAULT ''",
+    "parent_id": "TEXT",
+    "route_scope": "TEXT",
+    "score": "REAL NOT NULL DEFAULT 1.0",
+    "is_builtin": "INTEGER NOT NULL DEFAULT 0",
+}
+
 
 def _slugify(title: str) -> str:
     base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return (base[:60] or "skill").strip("-")
 
 
+def _parse_slots(raw: str | None) -> list[SkillSlot]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    slots: list[SkillSlot] = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        slots.append(
+            SkillSlot(
+                name=str(item["name"]),
+                description=str(item.get("description", "")),
+                source=str(item.get("source", "user")),
+                default=item.get("default"),
+            )
+        )
+    return slots
+
+
 def _row_to_skill(row: sqlite3.Row) -> Skill:
+    keys = row.keys()
     return Skill(
         id=row["id"],
         slug=row["slug"],
@@ -69,6 +103,12 @@ def _row_to_skill(row: sqlite3.Row) -> Skill:
         last_improved_at=row["last_improved_at"],
         last_evaluation_at=row["last_evaluation_at"],
         version=int(row["version"]),
+        slots=_parse_slots(row["slots_json"]) if "slots_json" in keys else [],
+        preconditions=str(row["preconditions"]) if "preconditions" in keys else "",
+        parent_id=row["parent_id"] if "parent_id" in keys else None,
+        route_scope=row["route_scope"] if "route_scope" in keys else None,
+        score=float(row["score"]) if "score" in keys else 1.0,
+        is_builtin=bool(row["is_builtin"]) if "is_builtin" in keys else False,
     )
 
 
@@ -90,7 +130,17 @@ class SkillStore:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate(self._conn)
         self._conn.commit()
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(skills)").fetchall()
+        }
+        for column, ddl in _ADDED_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE skills ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         """Close the database connection."""
@@ -142,6 +192,12 @@ class SkillStore:
         tool_steps: list[dict[str, Any]],
         enabled: bool = True,
         skill_id: str | None = None,
+        slots: list[SkillSlot] | None = None,
+        preconditions: str = "",
+        parent_id: str | None = None,
+        route_scope: str | None = None,
+        score: float = 1.0,
+        is_builtin: bool = False,
     ) -> Skill:
         """Insert a new skill and index it in FTS."""
         now = time.time()
@@ -155,13 +211,20 @@ class SkillStore:
             tool_steps=tool_steps,
             enabled=enabled,
             created_at=now,
+            slots=slots or [],
+            preconditions=preconditions,
+            parent_id=parent_id,
+            route_scope=route_scope,
+            score=score,
+            is_builtin=is_builtin,
         )
         conn = self._connection()
         conn.execute(
             "INSERT INTO skills "
             "(id, slug, title, description, triggers_json, body, tool_steps_json, "
-            "enabled, created_at, version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "enabled, created_at, version, slots_json, preconditions, parent_id, "
+            "route_scope, score, is_builtin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 skill.id,
                 skill.slug,
@@ -173,6 +236,22 @@ class SkillStore:
                 int(skill.enabled),
                 skill.created_at,
                 skill.version,
+                json.dumps(
+                    [
+                        {
+                            "name": s.name,
+                            "description": s.description,
+                            "source": s.source,
+                            "default": s.default,
+                        }
+                        for s in skill.slots
+                    ]
+                ),
+                skill.preconditions,
+                skill.parent_id,
+                skill.route_scope,
+                skill.score,
+                int(skill.is_builtin),
             ),
         )
         self._sync_fts(skill)
@@ -187,7 +266,8 @@ class SkillStore:
             "slug = ?, title = ?, description = ?, triggers_json = ?, body = ?, "
             "tool_steps_json = ?, enabled = ?, last_used_at = ?, use_count = ?, "
             "success_count = ?, last_improved_at = ?, last_evaluation_at = ?, "
-            "version = ? "
+            "version = ?, slots_json = ?, preconditions = ?, parent_id = ?, "
+            "route_scope = ?, score = ?, is_builtin = ? "
             "WHERE id = ?",
             (
                 skill.slug,
@@ -203,6 +283,22 @@ class SkillStore:
                 skill.last_improved_at,
                 skill.last_evaluation_at,
                 skill.version,
+                json.dumps(
+                    [
+                        {
+                            "name": s.name,
+                            "description": s.description,
+                            "source": s.source,
+                            "default": s.default,
+                        }
+                        for s in skill.slots
+                    ]
+                ),
+                skill.preconditions,
+                skill.parent_id,
+                skill.route_scope,
+                skill.score,
+                int(skill.is_builtin),
                 skill.id,
             ),
         )
@@ -337,6 +433,14 @@ class SkillStore:
         if succeeded:
             skill.success_count += 1
         skill.last_used_at = time.time()
+        return self.update_skill(skill)
+
+    def adjust_score(self, skill_id: str, delta: float) -> Skill | None:
+        """Raise or lower a skill's ranking score."""
+        skill = self.get_skill(skill_id)
+        if skill is None:
+            return None
+        skill.score = max(0.1, min(5.0, skill.score + delta))
         return self.update_skill(skill)
 
     def can_improve(self, skill_id: str) -> bool:

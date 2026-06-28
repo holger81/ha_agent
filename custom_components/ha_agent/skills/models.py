@@ -7,6 +7,16 @@ from typing import Any
 
 
 @dataclass(slots=True)
+class SkillSlot:
+    """A fillable parameter in a parameterized skill workflow."""
+
+    name: str
+    description: str = ""
+    source: str = "user"
+    default: str | None = None
+
+
+@dataclass(slots=True)
 class Skill:
     """A reusable workflow learned from a successful multi-step turn."""
 
@@ -25,6 +35,12 @@ class Skill:
     last_improved_at: float | None = None
     last_evaluation_at: float | None = None
     version: int = 1
+    slots: list[SkillSlot] = field(default_factory=list)
+    preconditions: str = ""
+    parent_id: str | None = None
+    route_scope: str | None = None
+    score: float = 1.0
+    is_builtin: bool = False
 
 
 @dataclass(slots=True)
@@ -56,6 +72,12 @@ class TurnTrace:
     verification_notes: list[str] = field(default_factory=list)
     route: str = ""
     exposed_entities: list[dict[str, Any]] = field(default_factory=list)
+    complexity: str = "simple"
+    slot_bindings: dict[str, str] = field(default_factory=dict)
+    verifier_verdict: str = ""
+    verifier_detail: str = ""
+    subtask_results: list[dict[str, Any]] = field(default_factory=list)
+    orchestration_plan: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -90,3 +112,7 @@ class SkillDraft:
     triggers: list[str]
     body: str
     tool_steps: list[dict[str, Any]]
+    slots: list[SkillSlot] = field(default_factory=list)
+    preconditions: str = ""
+    parent_id: str | None = None
+    route_scope: str | None = None

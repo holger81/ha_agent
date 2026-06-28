@@ -98,7 +98,7 @@ def test_builtin_case_counts() -> None:
     chat_cases = eval_cases.cases_for_task("chat")
     assert len(action_cases) == 6
     assert len(chat_cases) == 5
-    assert len(eval_cases.list_eval_cases()) == 16
+    assert len(eval_cases.list_eval_cases()) == 19
 
 
 def test_score_case_passes_when_tool_and_text_match() -> None:

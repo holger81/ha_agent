@@ -1176,6 +1176,33 @@ class HaAgentPanel extends HTMLElement {
     };
     add("Route", m.route);
     add("Route classifier", m.route_classifier || m.classification);
+    add("Complexity", m.complexity);
+    if (m.subtask_count) {
+      add("Subtasks", String(m.subtask_count));
+    }
+    if (m.verifier_verdict) {
+      add("Verifier", m.verifier_verdict);
+    }
+    if (m.verifier_detail) {
+      add("Verifier detail", m.verifier_detail);
+    }
+    if (m.planner?.model) {
+      const host = m.planner.host ? ` @ ${m.planner.host}` : "";
+      add("Planner", `${m.planner.model}${host}`);
+    }
+    if (m.verifier?.model && !m.verifier_verdict) {
+      const host = m.verifier.host ? ` @ ${m.verifier.host}` : "";
+      add("Verifier model", `${m.verifier.model}${host}`);
+    }
+    if (m.slot_bindings && typeof m.slot_bindings === "object") {
+      const bound = Object.entries(m.slot_bindings)
+        .filter(([, value]) => value)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(", ");
+      if (bound) {
+        add("Skill slots", bound);
+      }
+    }
     if (m.keyword_hint) {
       add("Keyword hint", m.keyword_hint);
     }
@@ -1279,7 +1306,8 @@ class HaAgentPanel extends HTMLElement {
       !data.tool &&
       !data.thinking_clear &&
       !data.skill &&
-      !data.meta
+      !data.meta &&
+      !data.subagent
     ) {
       return;
     }
@@ -1302,6 +1330,18 @@ class HaAgentPanel extends HTMLElement {
     }
     if (data.meta) {
       msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, data.meta);
+    }
+    if (data.subagent) {
+      msg.subagents = msg.subagents || [];
+      const phase = data.subagent.phase || "update";
+      const existing = msg.subagents.findIndex(
+        (item) => item.subgoal === data.subagent.subgoal && item.phase === phase
+      );
+      if (existing >= 0) {
+        msg.subagents[existing] = { ...msg.subagents[existing], ...data.subagent };
+      } else {
+        msg.subagents.push({ ...data.subagent });
+      }
     }
     if (data.thinking) {
       msg.thinking = this._appendStreamText(msg.thinking, data.thinking);
@@ -1433,6 +1473,24 @@ class HaAgentPanel extends HTMLElement {
               )}</div>`
             : "";
         const turnMeta = this._renderTurnMeta(m);
+        const subagents = (m.subagents || [])
+          .map((item) => {
+            const route = item.route ? ` [${item.route}]` : "";
+            const skill = item.skill ? ` · ${item.skill}` : "";
+            const model = item.model ? ` · ${item.model}` : "";
+            const summary = item.summary ? ` — ${item.summary}` : "";
+            return (
+              `<div class="subagent-line">` +
+              `<span class="subagent-phase">${this._escape(item.phase || "update")}</span>` +
+              `${this._escape(item.subgoal || "subtask")}${this._escape(route)}` +
+              `${this._escape(skill)}${this._escape(model)}${this._escape(summary)}` +
+              `</div>`
+            );
+          })
+          .join("");
+        const subagentBlock = subagents
+          ? `<div class="subagent-progress">${subagents}</div>`
+          : "";
         const thinking = this._renderThinkingPanel(m);
         const toolBlocks = (m.tools || [])
           .map((tool) => this._renderToolCall(tool))
@@ -1445,7 +1503,7 @@ class HaAgentPanel extends HTMLElement {
           ? `<div class="bubble assistant">${body}</div>`
           : "";
 
-        return `<div class="assistant-turn">${turnMeta}${skillBadge}${thinking}${tools}${bubble}</div>`;
+        return `<div class="assistant-turn">${turnMeta}${subagentBlock}${skillBadge}${thinking}${tools}${bubble}</div>`;
       })
       .join("");
 
@@ -1852,6 +1910,30 @@ class HaAgentPanel extends HTMLElement {
         text-overflow: ellipsis;
         white-space: nowrap;
         max-width: 18rem;
+      }
+      .subagent-progress {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin: 4px 0 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px dashed var(--divider-color, #444);
+        font-size: 0.78rem;
+        color: var(--secondary-text-color, #aaa);
+      }
+      .subagent-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: baseline;
+      }
+      .subagent-phase {
+        font-size: 0.65rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--primary-color);
       }
       .bubble.assistant { align-self: stretch; background: var(--secondary-background-color, #2a2a2a); color: var(--primary-text-color, #e0e0e0); }
       .bubble.assistant .md p { margin: 0.45em 0; }
@@ -2945,6 +3027,20 @@ class HaAgentPanel extends HTMLElement {
     }
   }
 
+  _renderRoleModels(roleModels) {
+    if (!roleModels || typeof roleModels !== "object") return "";
+    const rows = Object.entries(roleModels)
+      .map(([role, chip]) => {
+        if (!chip || !chip.model) return "";
+        const host = chip.host ? ` @ ${chip.host}` : "";
+        return `<span class="chip">${this._escape(role)}: ${this._escape(chip.model)}${this._escape(host)}</span>`;
+      })
+      .filter(Boolean)
+      .join("");
+    if (!rows) return "";
+    return `<div class="role-models">${rows}</div>`;
+  }
+
   _renderSettings() {
     const c = this._config || {};
     const s = this._status || {};
@@ -2970,6 +3066,8 @@ class HaAgentPanel extends HTMLElement {
         <label><input type="checkbox" data-config-bool="classifier_model_enabled" ${c.classifier_model_enabled ? "checked" : ""}/> Use a dedicated playbook classifier model</label>
         <label>Classifier model<input data-config="classifier_llm_model" value="${this._escape(c.classifier_model || "")}" placeholder="defaults to chat model" /></label>
         <label>Classifier base URL<input data-config="classifier_llm_base_url" value="${this._escape(c.classifier_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
+        <p class="hint">Orchestration roles (router, planner, verifier, observer) use the classifier model when set; workers use chat/action/email/news models.</p>
+        ${this._renderRoleModels(c.role_models)}
         <label><input type="checkbox" data-config-bool="email_model_enabled" ${c.email_model_enabled ? "checked" : ""}/> Use a dedicated email-route model</label>
         <label>Email model<input data-config="email_llm_model" value="${this._escape(c.email_model || "")}" placeholder="defaults to chat model" /></label>
         <label>Email base URL<input data-config="email_llm_base_url" value="${this._escape(c.email_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>

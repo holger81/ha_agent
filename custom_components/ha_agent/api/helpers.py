@@ -20,6 +20,7 @@ from ..const import (
     CONF_EVAL_MODELS_DIR,
     DOMAIN,
 )
+from ..role_registry import ModelRole, build_role_registry
 
 
 def require_admin(connection) -> None:
@@ -56,6 +57,7 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     skills = get_skills_config(entry)
     router = get_router_config(entry)
     llm = get_llm_backend(entry)
+    role_registry = build_role_registry(llm, router)
     return {
         "entry_id": entry.entry_id,
         "title": entry.title,
@@ -98,4 +100,7 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "eval_discover_max_models": int(
             data.get(CONF_EVAL_DISCOVER_MAX_MODELS, 3)
         ),
+        "role_models": {
+            role.value: role_registry.chip_for(role) for role in ModelRole
+        },
     }

@@ -221,6 +221,41 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
         mock_mcp_responses=[],
         max_iterations=1,
     ),
+    EvalCase(
+        id="planner_junk_and_move",
+        task="planner",
+        user_text=(
+            "check junk mail from the last 5 days and move any misclassified "
+            "messages to the inbox"
+        ),
+        expected_text_contains=["junk", "inbox"],
+        mock_mcp_responses=[],
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="planner_email_and_lights",
+        task="planner",
+        user_text="turn off the dining lights and summarize unread inbox email",
+        exposed_entities=[
+            {
+                "entity_id": "light.dining",
+                "name": "Dining",
+                "state": "on",
+                "area_name": "Dining room",
+            }
+        ],
+        expected_text_contains=["light", "email"],
+        mock_mcp_responses=[],
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="verifier_slot_adaptation",
+        task="verifier",
+        user_text="search junk folder for messages from the last week",
+        expected_text_contains=["junk"],
+        mock_mcp_responses=[],
+        max_iterations=1,
+    ),
 )
 
 

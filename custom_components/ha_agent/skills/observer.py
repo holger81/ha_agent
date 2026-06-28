@@ -37,6 +37,9 @@ _OBSERVER_PROMPT = (
     "workflow, etc.), not a single factual answer.\n"
     "- Prefer a clear markdown body; tool_steps are optional when body names "
     "tools in backticks (e.g. `mcp_news__news_curate`).\n"
+    "- slots (optional): [{name, description, source, default}] for parameterized "
+    "workflows with {{slot}} placeholders in body/tool_steps.\n"
+    "- parent_id (optional): when forking a variant of an existing skill.\n"
     "- EXCLUDE discovery/searchToolsForDomain/searchTool from body unless core.\n"
     "- Do not copy email bodies, headlines, or assistant reply text into body.\n"
     "- Use entity_id values only from controlled_entity_ids or tool arguments.\n"
@@ -44,7 +47,9 @@ _OBSERVER_PROMPT = (
     "- One-off Q&A, chit-chat, news/email summaries (unless manual_save_requested "
     "and a clear reusable procedure exists).\n"
     "- Single lookup with no durable workflow.\n"
-    "- Failed or empty runs with nothing reusable."
+    "- Failed or empty runs with nothing reusable.\n"
+    "When subtask_results are present, distill a multi-step orchestration "
+    "procedure across domains."
 )
 
 
@@ -99,6 +104,11 @@ def build_observer_payload(
         "outcome": trace.outcome,
         "controlled_entity_ids": trace.controlled_entity_ids,
         "matched_existing_skills": bool(trace.matched_skill_ids),
+        "slot_bindings": trace.slot_bindings,
+        "verifier_verdict": trace.verifier_verdict,
+        "complexity": trace.complexity,
+        "subtask_results": trace.subtask_results[:8],
+        "orchestration_plan": trace.orchestration_plan[:8],
     }
 
 
@@ -166,6 +176,14 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
             triggers=triggers,
             body=body,
             tool_steps=tool_steps,
+            parent_id=(
+                str(data["parent_id"]).strip() if data.get("parent_id") else None
+            ),
+            route_scope=(
+                str(data["route_scope"]).strip()
+                if data.get("route_scope")
+                else None
+            ),
         ),
         explicit_tool_steps=bool(tool_steps),
     )
@@ -175,6 +193,56 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
         reason=reason,
         draft=draft,
     )
+
+
+async def observe_skill_fork(
+    llm: LlmClient,
+    backend: LlmBackend,
+    *,
+    parent_skill: Any,
+    trace: TurnTrace,
+    history: list[dict[str, str]],
+) -> SkillObserverResult | None:
+    """Propose a child skill when an existing skill was adapted with new slots."""
+    from .models import Skill
+    from .params import bindings_diverge_from_defaults
+
+    if not isinstance(parent_skill, Skill):
+        return None
+    if not bindings_diverge_from_defaults(parent_skill, trace.slot_bindings):
+        return None
+
+    fork_prompt = (
+        f"{_OBSERVER_PROMPT}\n"
+        "FORK MODE: The user reused skill "
+        f'"{parent_skill.title}" with different slot values. '
+        "Propose a child variant (learn=true) with parent_id set to the parent "
+        "skill id, updated triggers/body/tool_steps for the new intent, and "
+        "slots reflecting the adapted parameters."
+    )
+    payload = build_observer_payload(trace, history)
+    payload["parent_skill"] = {
+        "id": parent_skill.id,
+        "title": parent_skill.title,
+        "body": parent_skill.body[:1200],
+        "tool_steps": parent_skill.tool_steps,
+    }
+    payload["fork_slot_bindings"] = trace.slot_bindings
+    messages = [
+        {"role": "system", "content": fork_prompt},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+    ]
+    try:
+        result = await llm.chat(messages, backend, tools=[])
+    except Exception as err:
+        LOGGER.warning("Skill fork observer failed: %s", err)
+        return None
+    parsed = parse_observer_response(result.content or "")
+    if parsed is None or not parsed.learn or parsed.draft is None:
+        return None
+    if not parsed.draft.parent_id:
+        parsed.draft.parent_id = parent_skill.id
+    return parsed
 
 
 async def observe_skill_candidate(

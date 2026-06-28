@@ -30,6 +30,10 @@ async def save_skill_from_draft(
             skill.triggers = draft.triggers
             skill.body = draft.body
             skill.tool_steps = draft.tool_steps
+            skill.slots = draft.slots
+            skill.preconditions = draft.preconditions
+            skill.parent_id = draft.parent_id
+            skill.route_scope = draft.route_scope
             skill.version += 1
             return store.update_skill(skill)
         return store.insert_skill(
@@ -38,6 +42,10 @@ async def save_skill_from_draft(
             triggers=draft.triggers,
             body=draft.body,
             tool_steps=draft.tool_steps,
+            slots=draft.slots,
+            preconditions=draft.preconditions,
+            parent_id=draft.parent_id,
+            route_scope=draft.route_scope,
         )
 
     return await hass.async_add_executor_job(_save)

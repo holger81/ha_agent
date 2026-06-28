@@ -120,6 +120,9 @@ class RouterConfig:
     classifier_backend: LlmBackend | None = None
     email_backend: LlmBackend | None = None
     news_backend: LlmBackend | None = None
+    planner_backend: LlmBackend | None = None
+    verifier_backend: LlmBackend | None = None
+    observer_backend: LlmBackend | None = None
 
 
 def default_mcp_health_url(mcp_url: str) -> str:

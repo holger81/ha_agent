@@ -70,6 +70,20 @@ def skill_to_dict(skill: Skill) -> dict[str, Any]:
         "last_improved_at": skill.last_improved_at,
         "last_evaluation_at": skill.last_evaluation_at,
         "version": skill.version,
+        "slots": [
+            {
+                "name": s.name,
+                "description": s.description,
+                "source": s.source,
+                "default": s.default,
+            }
+            for s in skill.slots
+        ],
+        "preconditions": skill.preconditions,
+        "parent_id": skill.parent_id,
+        "route_scope": skill.route_scope,
+        "score": skill.score,
+        "is_builtin": skill.is_builtin,
     }
 
 

@@ -164,6 +164,8 @@ async def apply_eval_recommendations(
     email = assignments.get("email") or {}
     news = assignments.get("news") or {}
     classifier = assignments.get("classifier") or {}
+    planner = assignments.get("planner") or {}
+    verifier = assignments.get("verifier") or {}
     if isinstance(chat, dict) and chat.get("model"):
         updates["llm_model"] = chat["model"]
     if isinstance(action, dict) and action.get("model"):
@@ -178,6 +180,14 @@ async def apply_eval_recommendations(
     if isinstance(classifier, dict) and classifier.get("model"):
         updates["classifier_model_enabled"] = True
         updates["classifier_llm_model"] = classifier["model"]
+    role_model = None
+    if isinstance(planner, dict) and planner.get("model"):
+        role_model = planner["model"]
+    if isinstance(verifier, dict) and verifier.get("model"):
+        role_model = verifier["model"]
+    if role_model and not updates.get("classifier_llm_model"):
+        updates["classifier_model_enabled"] = True
+        updates["classifier_llm_model"] = role_model
 
     if not updates:
         raise HomeAssistantError("No supported model assignments to apply.")
