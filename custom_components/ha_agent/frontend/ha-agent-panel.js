@@ -2209,6 +2209,39 @@ class HaAgentPanel extends HTMLElement {
       .banner { padding: 10px; border-radius: 8px; background: #fff4d6; margin-bottom: 12px; }
       .form-grid { display: grid; gap: 10px; }
       .form-grid label { display: grid; gap: 4px; }
+      .form-grid .hint {
+        margin: 0;
+        opacity: 0.75;
+        font-size: 0.88rem;
+        line-height: 1.4;
+      }
+      .role-models-table {
+        width: 100%;
+        margin: 0;
+        font-size: 0.88rem;
+        border-collapse: collapse;
+      }
+      .role-models-table th,
+      .role-models-table td {
+        padding: 5px 0;
+        border-bottom: 1px solid color-mix(in srgb, var(--divider-color, #ccc) 55%, transparent);
+        vertical-align: top;
+      }
+      .role-models-table tr:last-child th,
+      .role-models-table tr:last-child td {
+        border-bottom: none;
+      }
+      .role-models-table th {
+        width: 7.5rem;
+        padding-right: 12px;
+        font-weight: 600;
+        opacity: 0.85;
+        white-space: nowrap;
+      }
+      .role-models-table td {
+        word-break: break-word;
+        line-height: 1.35;
+      }
       .discover-section {
         gap: 12px;
       }
@@ -3099,13 +3132,17 @@ class HaAgentPanel extends HTMLElement {
     const rows = Object.entries(roleModels)
       .map(([role, chip]) => {
         if (!chip || !chip.model) return "";
-        const host = chip.host ? ` @ ${chip.host}` : "";
-        return `<span class="chip">${this._escape(role)}: ${this._escape(chip.model)}${this._escape(host)}</span>`;
+        const host = chip.host ? ` · ${chip.host}` : "";
+        const label = `${chip.model}${host}`;
+        return `<tr>
+          <th scope="row">${this._escape(role)}</th>
+          <td title="${this._escape(label)}">${this._escape(chip.model)}${this._escape(host)}</td>
+        </tr>`;
       })
       .filter(Boolean)
       .join("");
     if (!rows) return "";
-    return `<div class="role-models">${rows}</div>`;
+    return `<table class="role-models-table"><tbody>${rows}</tbody></table>`;
   }
 
   _renderSettings() {
