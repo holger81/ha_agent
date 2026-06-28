@@ -53,6 +53,9 @@ class HaAgentPanel extends HTMLElement {
     this._discoverModelsDir = "";
     this._discoverWebhookUrl = "";
     this._discoverSelectedModels = new Set();
+    this._reloading = false;
+    this._reloadNotice = null;
+    this._reloadNoticeTimer = null;
   }
 
   _newConversationId() {
@@ -313,6 +316,47 @@ class HaAgentPanel extends HTMLElement {
       entry_id: this._entryId,
     });
     this._render();
+  }
+
+  _setReloadNotice(message) {
+    if (this._reloadNoticeTimer) {
+      clearTimeout(this._reloadNoticeTimer);
+      this._reloadNoticeTimer = null;
+    }
+    this._reloadNotice = message;
+    if (message && !message.startsWith("Reloading")) {
+      this._reloadNoticeTimer = setTimeout(() => {
+        this._reloadNotice = null;
+        this._reloadNoticeTimer = null;
+        this._render();
+      }, 4000);
+    }
+  }
+
+  async _reloadIntegration() {
+    if (!this._entryId || this._reloading) return;
+    this._reloading = true;
+    this._setReloadNotice("Reloading integration…");
+    this._render();
+    try {
+      const data = await this._call("ha_agent/reload", {
+        entry_id: this._entryId,
+      });
+      this._config = data.config || this._config;
+      this._bootstrapError = null;
+      await this._refreshStatus();
+      if (this._tab === "eval") await this._loadEvalStatus();
+      if (this._tab === "activity") await this._loadActivity();
+      if (this._tab === "playbooks") await this._loadPlaybooks();
+      if (this._tab === "routes") await this._loadRouteKeywords();
+      if (this._tab === "recovery") await this._loadRecoveryHints();
+      this._setReloadNotice("Integration reloaded.");
+    } catch (err) {
+      this._setReloadNotice(`Reload failed: ${err?.message || err}`);
+    } finally {
+      this._reloading = false;
+      this._render();
+    }
   }
 
   async _loadSkills() {
@@ -1415,6 +1459,8 @@ class HaAgentPanel extends HTMLElement {
       :host { display: block; height: 100%; font-family: var(--ha-font-family-body); }
       .wrap { display: flex; flex-direction: column; height: 100%; padding: 16px; box-sizing: border-box; }
       .header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+      .header-spacer { flex: 1; min-width: 8px; }
+      .reload-notice { font-size: 0.9em; opacity: 0.85; }
       .tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
       .tab, button, select, input, textarea {
         font: inherit;
@@ -3284,6 +3330,9 @@ class HaAgentPanel extends HTMLElement {
         <div class="header">
           <strong>HA Agent Console</strong>
           <span class="chip">${this._escape(this._config?.title || "")}</span>
+          <span class="header-spacer"></span>
+          ${this._reloadNotice ? `<span class="reload-notice">${this._escape(this._reloadNotice)}</span>` : ""}
+          <button class="header-reload" data-action="reload-integration" title="Reload HA Agent integration (Devices &amp; services)" ${this._reloading ? "disabled" : ""}>Reload</button>
         </div>
         <div class="tabs">${tabButtons}</div>
         <div class="${panelClass}">${body}</div>
@@ -3318,6 +3367,10 @@ class HaAgentPanel extends HTMLElement {
           this._scheduleChatRender();
         }
       };
+    });
+
+    this.shadowRoot.querySelector('[data-action="reload-integration"]')?.addEventListener("click", async () => {
+      await this._reloadIntegration();
     });
 
     const sendBtn = this.shadowRoot.querySelector('[data-action="send"]');

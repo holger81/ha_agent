@@ -103,3 +103,14 @@ async def set_config(
     await hass.config_entries.async_reload(entry_id)
     reloaded = get_entry(hass, entry_id)
     return config_snapshot(hass, reloaded)
+
+
+async def reload_integration(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> dict[str, Any]:
+    """Reload the config entry (Devices & services → Reload)."""
+    get_entry(hass, entry_id)
+    await hass.config_entries.async_reload(entry_id)
+    reloaded = get_entry(hass, entry_id)
+    return config_snapshot(hass, reloaded)

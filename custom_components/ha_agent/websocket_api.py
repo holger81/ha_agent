@@ -69,6 +69,7 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_recovery_hints_reset)
     websocket_api.async_register_command(hass, ws_config_get)
     websocket_api.async_register_command(hass, ws_config_set)
+    websocket_api.async_register_command(hass, ws_config_reload)
     websocket_api.async_register_command(hass, ws_activity_list)
     websocket_api.async_register_command(hass, ws_threads_list)
     websocket_api.async_register_command(hass, ws_threads_update)
@@ -784,6 +785,19 @@ async def ws_config_get(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_config_set(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     config = await config_api.set_config(hass, msg["entry_id"], msg["updates"])
+    connection.send_message(websocket_api.result_message(msg["id"], {"config": config}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/reload",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_config_reload(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    config = await config_api.reload_integration(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"config": config}))
 
 
