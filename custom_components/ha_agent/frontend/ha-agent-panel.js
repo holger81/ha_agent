@@ -368,6 +368,8 @@ class HaAgentPanel extends HTMLElement {
     const discoverMsg = discover.progress?.message;
     if (discoverMsg && (data.pipeline === "discover" || discover.status === "awaiting_approval")) {
       this._evalNotice = discoverMsg;
+    } else if (data.pipeline === "eval" && data.run?.progress?.message) {
+      this._evalNotice = data.run.progress.message;
     }
     if (data.running) {
       this._startEvalPoll();
@@ -433,9 +435,13 @@ class HaAgentPanel extends HTMLElement {
       trialLen: (discover.trial_results || []).length,
       runStatus: run.status,
       runPhase: runProgress.phase,
+      runMessage: runProgress.message,
       runModel: runProgress.model,
       runCase: runProgress.case_id,
       runTask: runProgress.task,
+      runCaseIndex: runProgress.case_index,
+      runCompletedCases: runProgress.completed_cases,
+      runProgressPct: runProgress.progress_percent ?? null,
       taskScoresLen: (run.task_scores || []).length,
     });
   }
@@ -709,6 +715,65 @@ class HaAgentPanel extends HTMLElement {
       this._evalStatus?.discover?.progress?.message ||
       (approved ? `Trial approved for ${modelId}.` : `Skipped trial for ${modelId}.`);
     this._render();
+  }
+
+  _evalPhaseLabel(phase) {
+    const labels = {
+      starting: "Starting",
+      probe: "Probing server",
+      preload: "Loading model",
+      benchmark: "Benchmarking",
+      recommend: "Recommendations",
+      completed: "Completed",
+      cancelled: "Cancelled",
+      failed: "Failed",
+    };
+    return labels[phase] || phase || "Idle";
+  }
+
+  _renderEvalProgressPanel(progress, isRunning) {
+    if (!isRunning && !progress?.message) return "";
+    const phase = progress?.phase || "idle";
+    const message = progress?.message || "";
+    const caseIndex = progress?.case_index;
+    const caseTotal = progress?.case_total;
+    const completed = progress?.completed_cases;
+    const pct =
+      progress?.progress_percent != null
+        ? Number(progress.progress_percent)
+        : caseIndex != null && caseTotal
+          ? Math.round((caseIndex / caseTotal) * 100)
+          : null;
+    const bar =
+      pct != null && !Number.isNaN(pct)
+        ? `<div class="discover-progress" aria-label="Eval progress">
+            <div class="discover-progress-bar" style="width:${Math.max(0, Math.min(100, pct))}%"></div>
+            <span class="discover-progress-label">${Math.round(pct)}%</span>
+          </div>`
+        : "";
+    const meta = [];
+    if (progress?.model) {
+      meta.push(`Model: ${this._shortModelId(progress.model)}`);
+    }
+    if (caseIndex != null && caseTotal) {
+      meta.push(`Case ${caseIndex}/${caseTotal}`);
+    }
+    if (progress?.model_index != null && progress?.model_total) {
+      meta.push(`Model ${progress.model_index}/${progress.model_total}`);
+    }
+    if (completed != null) {
+      meta.push(`${completed} completed`);
+    }
+    if (progress?.task && progress?.case_id) {
+      meta.push(`${progress.task}/${progress.case_id}`);
+    }
+    return `
+      <div class="eval-progress-panel">
+        <p class="eval-progress-phase"><strong>${this._escape(this._evalPhaseLabel(phase))}</strong></p>
+        ${message ? `<p class="eval-progress-message">${this._escape(message)}</p>` : ""}
+        ${bar}
+        ${meta.length ? `<p class="activity-hint">${this._escape(meta.join(" · "))}</p>` : ""}
+      </div>`;
   }
 
   _shortModelId(modelId) {
@@ -1825,6 +1890,23 @@ class HaAgentPanel extends HTMLElement {
         margin-top: 0;
         margin-bottom: 8px;
       }
+      .eval-progress-panel {
+        margin: 10px 0 4px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--primary-color) 8%, transparent);
+        border: 1px solid color-mix(in srgb, var(--primary-color) 20%, transparent);
+      }
+      .eval-progress-phase {
+        margin: 0 0 4px;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        opacity: 0.75;
+      }
+      .eval-progress-message {
+        margin: 0 0 8px;
+      }
       .eval-section.discover-section {
         margin-top: 0;
         padding-top: 14px;
@@ -2701,14 +2783,18 @@ class HaAgentPanel extends HTMLElement {
         ? "Discover running"
         : "Eval running"
       : run.status || "idle";
+    const evalRunning = Boolean(this._evalStatus?.running && pipeline === "eval");
+    const progressPanel = this._renderEvalProgressPanel(progress, evalRunning);
     const statusDetail =
       pipeline === "discover" && discover?.progress?.message
         ? discover.progress.message
-        : progress.message
+        : evalRunning && progress.message
           ? progress.message
-          : progress.phase
-            ? `${progress.phase}${progress.model ? ` · ${progress.model}` : ""}${this._formatCatalogProgress(progress.progress || progress.payload) !== "—" ? ` · ${this._formatCatalogProgress(progress.progress || progress.payload)}` : ""}`
-            : "";
+          : progress.message
+            ? progress.message
+            : progress.phase
+              ? `${this._evalPhaseLabel(progress.phase)}${progress.model ? ` · ${this._shortModelId(progress.model)}` : ""}`
+              : "";
     const loadedModels = caps.loaded_models || [];
     const modelDetails = caps.model_details || [];
     const catalogRows = modelDetails
@@ -2776,8 +2862,9 @@ class HaAgentPanel extends HTMLElement {
     return `
       <div class="eval-page">
         <section class="eval-section eval-section-status">
-          ${this._evalNotice ? `<p class="activity-hint">${this._escape(this._evalNotice)}</p>` : ""}
-          <p class="eval-status-line">Status: <strong>${this._escape(running)}</strong>${statusDetail ? ` — ${this._escape(statusDetail)}` : ""}</p>
+          ${this._evalNotice && !evalRunning ? `<p class="activity-hint">${this._escape(this._evalNotice)}</p>` : ""}
+          <p class="eval-status-line">Status: <strong>${this._escape(running)}</strong>${statusDetail && !evalRunning ? ` — ${this._escape(statusDetail)}` : ""}</p>
+          ${progressPanel}
           ${run.error ? `<p class="banner">${this._escape(run.error)}</p>` : ""}
           <div class="eval-stats">${statChips}</div>
         </section>

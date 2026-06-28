@@ -25,7 +25,13 @@ from ..config_helpers import (
 )
 from ..const import DATA_KEY, LOGGER
 from ..llm_client import LlmClient
-from ..llm_server import eval_candidate_models, preload_models, probe_server
+from ..llm_server import (
+    download_progress_percent,
+    eval_candidate_models,
+    normalize_download_progress,
+    preload_models,
+    probe_server,
+)
 from ..skills.models import TurnTrace
 from .cases import list_eval_cases_for_entry
 from .classifier_runner import run_classifier_case
@@ -40,6 +46,16 @@ from .scorer import aggregate_task_scores, score_case
 from .store import get_eval_store
 
 EVAL_STATE_KEY = "eval_run_states"
+
+
+def _eval_progress(
+    run: EvalRun,
+    *,
+    phase: str,
+    message: str,
+    **extra: Any,
+) -> None:
+    run.progress = {"phase": phase, "message": message, **extra}
 
 
 def _trace_from_activity(data: dict[str, Any]) -> TurnTrace:
@@ -170,9 +186,17 @@ async def run_eval_suite(
     try:
         async with aiohttp.ClientSession() as session:
             llm = LlmClient(session)
-            run.progress = {"phase": "probe"}
+            _eval_progress(run, phase="probe", message="Probing llama.cpp server…")
             capabilities = await probe_server(session, chat_backend)
             run.server_capabilities = capabilities.to_dict()
+            _eval_progress(
+                run,
+                phase="probe",
+                message=(
+                    f"Found {len(capabilities.models)} model(s), "
+                    f"{len(capabilities.loaded_models)} loaded."
+                ),
+            )
 
             include_unloaded = bool(models)
             candidate_models = eval_candidate_models(
@@ -193,12 +217,31 @@ async def run_eval_suite(
 
             if preload_models_flag and candidate_models:
                 state.cancellable_phase = "preload"
+                _eval_progress(
+                    run,
+                    phase="preload",
+                    message=f"Preloading {len(candidate_models)} model(s)…",
+                    model_total=len(candidate_models),
+                )
 
                 def _preload_progress(data: dict[str, Any]) -> None:
                     model_id = data.get("model")
                     if isinstance(model_id, str) and model_id:
                         state.active_model_id = model_id
-                    run.progress = {"phase": "preload", **data}
+                    norm = normalize_download_progress(data)
+                    pct = download_progress_percent(norm)
+                    if pct is not None:
+                        message = f"Loading {model_id} on llama.cpp ({pct}%)…"
+                    else:
+                        message = f"Loading {model_id} on llama.cpp…"
+                    _eval_progress(
+                        run,
+                        phase="preload",
+                        message=message,
+                        model=model_id,
+                        progress_percent=pct,
+                        **data,
+                    )
 
                 preload_results = await preload_models(
                     session,
@@ -230,8 +273,21 @@ async def run_eval_suite(
             cases = list_eval_cases_for_entry(hass, entry_id, tasks=selected_tasks)
             if not cases:
                 raise RuntimeError("No eval cases matched the requested tasks.")
+            total_cases = len(cases)
+            model_total = len(candidate_models)
+            _eval_progress(
+                run,
+                phase="benchmark",
+                message=(
+                    f"Benchmarking {model_total} model(s) across "
+                    f"{total_cases} case(s)…"
+                ),
+                case_total=total_cases,
+                model_total=model_total,
+                completed_cases=0,
+            )
 
-            for model in candidate_models:
+            for model_index, model in enumerate(candidate_models, start=1):
                 if state.cancel_requested:
                     run.status = "cancelled"
                     break
@@ -244,16 +300,27 @@ async def run_eval_suite(
                     timeout=chat_backend.timeout,
                     thinking_level="off",
                 )
-                for case in cases:
+                for case_index, case in enumerate(cases, start=1):
                     if state.cancel_requested:
                         run.status = "cancelled"
                         break
-                    run.progress = {
-                        "phase": "benchmark",
-                        "model": model,
-                        "task": case.task,
-                        "case_id": case.id,
-                    }
+                    _eval_progress(
+                        run,
+                        phase="benchmark",
+                        message=(
+                            f"Benchmarking {model} — {case.task}/{case.id} "
+                            f"(case {case_index}/{total_cases}, "
+                            f"model {model_index}/{model_total})…"
+                        ),
+                        model=model,
+                        task=case.task,
+                        case_id=case.id,
+                        case_index=case_index,
+                        case_total=total_cases,
+                        model_index=model_index,
+                        model_total=model_total,
+                        completed_cases=len(run.case_scores),
+                    )
                     if case.task == "classifier":
                         classifier_backend = LlmBackend(
                             base_url=chat_backend.base_url,
@@ -356,7 +423,11 @@ async def run_eval_suite(
             else:
                 run.task_scores = aggregate_task_scores(run.case_scores)
                 if include_settings and run.task_scores:
-                    run.progress = {"phase": "recommend"}
+                    _eval_progress(
+                        run,
+                        phase="recommend",
+                        message="Generating settings recommendations…",
+                    )
                     recommendation = await recommend_settings(
                         llm,
                         chat_backend,
@@ -377,7 +448,25 @@ async def run_eval_suite(
         run.error = str(err)
     finally:
         run.finished_at = time.time()
-        run.progress = {"phase": run.status}
+        if run.status == "completed":
+            passed = sum(1 for item in run.case_scores if item.passed)
+            _eval_progress(
+                run,
+                phase="completed",
+                message=(
+                    f"Eval finished — {passed}/{len(run.case_scores)} "
+                    "case(s) passed."
+                ),
+                completed_cases=len(run.case_scores),
+            )
+        elif run.status == "cancelled":
+            _eval_progress(run, phase="cancelled", message="Eval cancelled.")
+        elif run.status == "failed":
+            _eval_progress(
+                run,
+                phase="failed",
+                message=run.error or "Eval failed.",
+            )
         store.finish_run(run)
         state_store[entry_id] = state
 
@@ -549,7 +638,7 @@ async def start_eval_background(
         entry_id=entry_id,
         status="running",
         started_at=time.time(),
-        progress={"phase": "starting"},
+        progress={"phase": "starting", "message": "Starting eval suite…"},
     )
     state_store[entry_id] = EvalRunState(run=placeholder)
 
