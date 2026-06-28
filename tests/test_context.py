@@ -335,3 +335,14 @@ def test_build_tool_context_turn_them_back_off_reuses_history_entity() -> None:
     )
     assert "service turn_off" in tool_context
     assert "light.dining_room_ceiling" in tool_context
+
+
+def test_build_messages_skips_duplicate_user() -> None:
+    """Current user text should not be appended twice to the prompt."""
+    messages = context.build_messages(
+        system_message="system",
+        history=[{"role": "user", "content": "what are todays news"}],
+        user_text="what are todays news",
+    )
+    user_messages = [msg for msg in messages if msg["role"] == "user"]
+    assert user_messages == [{"role": "user", "content": "what are todays news"}]

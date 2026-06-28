@@ -44,7 +44,7 @@ from .loop_policy import (
     should_retry_empty_response,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
-from .memory import append_turn, get_history
+from .memory import append_turn, conversation_history_for_turn
 from .orchestrator import Complexity, plan_subtasks, triage_complexity
 from .playbooks import async_select_playbook
 from .recovery_hints import async_recovery_hints
@@ -858,9 +858,10 @@ async def run_agent(
     extra_system_prompt: str | None = None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run the tool loop and yield assistant chat deltas."""
-    history = get_history(
+    history = conversation_history_for_turn(
         hass,
         conversation_id,
+        user_text,
         max_turns=agent_config.history_turns,
     )
 

@@ -204,6 +204,7 @@ class SkillStore:
         tool_steps: list[dict[str, Any]],
         enabled: bool = True,
         skill_id: str | None = None,
+        slug: str | None = None,
         slots: list[SkillSlot] | None = None,
         preconditions: str = "",
         parent_id: str | None = None,
@@ -213,9 +214,10 @@ class SkillStore:
     ) -> Skill:
         """Insert a new skill and index it in FTS."""
         now = time.time()
+        base_slug = _slugify(slug or title)
         skill = Skill(
             id=skill_id or str(uuid.uuid4()),
-            slug=self._unique_slug(_slugify(title)),
+            slug=self._unique_slug(base_slug),
             title=title.strip(),
             description=description.strip()[:1024],
             triggers=triggers,

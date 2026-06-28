@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant
 from ..config_helpers import LlmBackend
 from ..llm_client import LlmClient
 from .body import normalize_skill_draft
+from .files import async_mirror_skill_to_file
 from .models import Skill, SkillDraft, TurnTrace
 from .observer import observe_skill_candidate
 from .store import get_skill_store
@@ -48,7 +49,9 @@ async def save_skill_from_draft(
             route_scope=draft.route_scope,
         )
 
-    return await hass.async_add_executor_job(_save)
+    skill = await hass.async_add_executor_job(_save)
+    await async_mirror_skill_to_file(hass, entry_id, skill)
+    return skill
 
 
 async def create_skill_from_trace(

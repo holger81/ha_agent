@@ -33,6 +33,8 @@ class HaAgentPanel extends HTMLElement {
     this._viewingSkill = null;
     this._skillRevisions = [];
     this._skillNotice = null;
+    this._skillsDirectory = "";
+    this._skillTemplate = "";
     this._playbooks = [];
     this._editingPlaybook = null;
     this._playbookNotice = null;
@@ -465,11 +467,18 @@ class HaAgentPanel extends HTMLElement {
 
   async _loadSkills() {
     if (!this._entryId) return;
-    const data = await this._call("ha_agent/skills/list", {
-      entry_id: this._entryId,
-      limit: 100,
-    });
+    const [data, dir] = await Promise.all([
+      this._call("ha_agent/skills/list", {
+        entry_id: this._entryId,
+        limit: 100,
+      }),
+      this._call("ha_agent/skills/directory", {
+        entry_id: this._entryId,
+      }),
+    ]);
     this._skills = data.skills || [];
+    this._skillsDirectory = dir.directory || "";
+    this._skillTemplate = dir.template || "";
   }
 
   async _loadActivity() {
@@ -2393,6 +2402,7 @@ class HaAgentPanel extends HTMLElement {
           ${skill.version ? ` · v${skill.version}` : ""}
           ${toolStepCount ? ` · ${toolStepCount} tool step(s)` : ""}
         </div>
+        ${skill.file_path ? `<div class="hint">File: ${this._escape(skill.file_path)}</div>` : ""}
         <p>${this._escape(skill.description || "")}</p>
         <div class="skill-body">${this._escape(skill.body || "")}</div>
         ${triggers ? `<ul class="skill-triggers">${triggers}</ul>` : ""}
@@ -2408,27 +2418,18 @@ class HaAgentPanel extends HTMLElement {
   _renderSkillEditor() {
     const skill = this._editingSkill;
     if (!skill) return "";
-    const toolStepsJson = this._escape(
-      JSON.stringify(skill.tool_steps || [], null, 2)
-    );
     return `
       <div class="skill-editor">
         <h3>${skill.id ? "Edit skill" : "New skill"}</h3>
+        <p class="activity-hint">
+          Skills are markdown files with YAML frontmatter.
+          ${this._skillsDirectory
+            ? `On disk: <code>${this._escape(this._skillsDirectory)}</code>`
+            : ""}
+        </p>
         <div class="form-grid">
-          <label>Title<input id="skill-title" value="${this._escape(skill.title || "")}" /></label>
-          <label>Description<textarea id="skill-description" rows="2">${this._escape(skill.description || "")}</textarea></label>
-          <label>Triggers (one per line)<textarea id="skill-triggers" rows="3">${this._escape((skill.triggers || []).join("\n"))}</textarea></label>
-          <label>Workflow<textarea id="skill-body" rows="12">${this._escape(skill.body || "")}</textarea></label>
-          <p class="activity-hint">Write markdown steps. Mention tools in backticks (e.g. <code>mcp_news__news_curate</code>) — structured tool steps are derived automatically when you save.</p>
-          <div class="actions">
-            <button type="button" data-action="skill-derive-tool-steps">Recreate tool steps from workflow</button>
-          </div>
-          <details class="skill-advanced">
-            <summary>Advanced: override tool steps JSON</summary>
-            <label><input type="checkbox" id="skill-tool-steps-override" ${(skill.tool_steps || []).length ? "checked" : ""}/> Use manual tool steps instead of auto-derivation</label>
-            <label>Tool steps JSON<textarea id="skill-tool-steps" rows="8">${toolStepsJson}</textarea></label>
-          </details>
-          <label><input type="checkbox" id="skill-enabled" ${skill.enabled !== false ? "checked" : ""}/> Enabled</label>
+          <label>Skill markdown<textarea id="skill-markdown" rows="24" spellcheck="false">${this._escape(skill.markdown || "")}</textarea></label>
+          ${skill.file_path ? `<p class="hint">File: ${this._escape(skill.file_path)}</p>` : ""}
           <div class="actions">
             <button data-action="skill-save">Save</button>
             <button data-action="skill-cancel">Cancel</button>
@@ -2464,9 +2465,11 @@ class HaAgentPanel extends HTMLElement {
         <input id="skill-search" placeholder="Search skills..." />
         <button data-action="skill-search">Search</button>
         <button data-action="skill-new">New skill</button>
-        <button data-action="skill-export">Export</button>
+        <button data-action="skill-sync">Sync from disk</button>
+        <button data-action="skill-export">Export JSON</button>
         <button data-action="skill-import">Import</button>
       </div>
+      ${this._skillsDirectory ? `<p class="hint">Skill files: <code>${this._escape(this._skillsDirectory)}</code> — drop <code>.md</code> files here, then Sync.</p>` : ""}
       <table>
         <thead><tr><th>Title</th><th>Enabled</th><th>Uses</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="4">No skills yet.</td></tr>'}</tbody>
@@ -2904,17 +2907,17 @@ class HaAgentPanel extends HTMLElement {
   _openSkillEditor(skill = null) {
     this._viewingSkill = null;
     this._editingSkill = skill
-      ? { ...skill }
+      ? {
+          id: skill.id,
+          markdown: skill.markdown || "",
+          file_path: skill.file_path || "",
+        }
       : {
-          title: "",
-          description: "",
-          triggers: [],
-          body:
-            "1. Describe what the agent should do in numbered steps.\n" +
-            "2. Name tools in backticks, e.g. `mcp_news__news_curate`.\n" +
-            "3. Tool steps are derived automatically when you save.",
-          tool_steps: [],
-          enabled: true,
+          id: null,
+          markdown:
+            this._skillTemplate ||
+            "---\ntitle: My Skill\ndescription: What this skill does\ntriggers:\n  - example\nenabled: true\n---\n\n# Workflow\n",
+          file_path: "",
         };
     this._tab = "skills";
     this._render();
@@ -3023,49 +3026,27 @@ class HaAgentPanel extends HTMLElement {
   async _saveSkillEditor() {
     const editor = this.shadowRoot.querySelector(".skill-editor");
     if (!editor || !this._editingSkill) return;
-    const override = Boolean(
-      editor.querySelector("#skill-tool-steps-override")?.checked
-    );
-    const payload = {
-      title: editor.querySelector("#skill-title")?.value || "",
-      description: editor.querySelector("#skill-description")?.value || "",
-      triggers: String(editor.querySelector("#skill-triggers")?.value || "")
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean),
-      body: editor.querySelector("#skill-body")?.value || "",
-      enabled: Boolean(editor.querySelector("#skill-enabled")?.checked),
-    };
-    if (override) {
-      try {
-        const toolSteps = JSON.parse(
-          editor.querySelector("#skill-tool-steps")?.value || "[]"
-        );
-        if (!Array.isArray(toolSteps)) {
-          throw new Error("Tool steps must be a JSON array");
-        }
-        payload.tool_steps = toolSteps;
-      } catch (err) {
-        this._skillNotice = `Invalid tool steps JSON: ${err?.message || err}`;
-        this._render();
-        return;
-      }
+    const markdown = editor.querySelector("#skill-markdown")?.value || "";
+    if (!markdown.trim()) {
+      this._skillNotice = "Skill markdown cannot be empty.";
+      this._render();
+      return;
     }
 
     try {
       if (this._editingSkill.id) {
-        await this._call("ha_agent/skills/update", {
+        const data = await this._call("ha_agent/skills/update", {
           entry_id: this._entryId,
           skill_id: this._editingSkill.id,
-          skill: payload,
+          skill: { markdown },
         });
-        this._skillNotice = `Updated skill: ${payload.title}.`;
+        this._skillNotice = `Updated skill: ${data.skill?.title || "skill"}.`;
       } else {
-        await this._call("ha_agent/skills/create", {
+        const data = await this._call("ha_agent/skills/create", {
           entry_id: this._entryId,
-          skill: payload,
+          skill: { markdown },
         });
-        this._skillNotice = `Created skill: ${payload.title}.`;
+        this._skillNotice = `Created skill: ${data.skill?.title || "skill"}.`;
       }
       this._editingSkill = null;
       await this._loadSkills();
@@ -3801,8 +3782,23 @@ class HaAgentPanel extends HTMLElement {
     });
 
     this.shadowRoot.querySelector('[data-action="new-thread"]')?.addEventListener("click", async () => {
+      const previousId = this._conversationId;
+      if (this._streaming && previousId && this._entryId) {
+        try {
+          await this._call("ha_agent/chat/cancel", {
+            entry_id: this._entryId,
+            conversation_id: previousId,
+          });
+        } catch (_err) {
+          /* best effort */
+        }
+      }
+      this._clearTurnTimeout();
+      this._streaming = false;
       this._conversationId = this._newConversationId();
       this._messages = [];
+      this._pendingDraft = null;
+      this._stickToBottom = true;
       await this._loadHistory();
       this._render();
     });
@@ -3823,7 +3819,8 @@ class HaAgentPanel extends HTMLElement {
         if (this._streaming) return;
         this._conversationId = el.getAttribute("data-thread");
         this._stickToBottom = true;
-        await this._loadHistory();
+        this._pendingDraft = null;
+        await Promise.all([this._loadHistory(), this._loadPendingDraft()]);
         this._render();
       };
     });
@@ -3880,6 +3877,22 @@ class HaAgentPanel extends HTMLElement {
       this._openSkillEditor();
     });
 
+    this.shadowRoot.querySelector('[data-action="skill-sync"]')?.addEventListener("click", async () => {
+      try {
+        const data = await this._call("ha_agent/skills/sync", {
+          entry_id: this._entryId,
+        });
+        this._skillNotice =
+          `Synced skills from disk: ${data.imported || 0} imported, ` +
+          `${data.written || 0} written.`;
+        await this._loadSkills();
+        this._render();
+      } catch (err) {
+        this._skillNotice = `Sync failed: ${err?.message || err}`;
+        this._render();
+      }
+    });
+
     this.shadowRoot.querySelector('[data-action="skill-export"]')?.addEventListener("click", async () => {
       const data = await this._call("ha_agent/skills/export", { entry_id: this._entryId });
       const blob = new Blob([JSON.stringify(data.skills, null, 2)], { type: "application/json" });
@@ -3894,18 +3907,33 @@ class HaAgentPanel extends HTMLElement {
     this.shadowRoot.querySelector('[data-action="skill-import"]')?.addEventListener("click", async () => {
       const input = document.createElement("input");
       input.type = "file";
-      input.accept = "application/json";
+      input.accept = "application/json,.md,text/markdown";
       input.onchange = async () => {
         const file = input.files?.[0];
         if (!file) return;
         const text = await file.text();
-        const skills = JSON.parse(text);
-        await this._call("ha_agent/skills/import", {
-          entry_id: this._entryId,
-          skills,
-        });
-        await this._loadSkills();
-        this._render();
+        try {
+          if (file.name.toLowerCase().endsWith(".md")) {
+            await this._call("ha_agent/skills/create", {
+              entry_id: this._entryId,
+              skill: { markdown: text },
+            });
+            this._skillNotice = `Imported skill from ${file.name}.`;
+          } else {
+            const skills = JSON.parse(text);
+            const payload = Array.isArray(skills) ? skills : skills.skills;
+            await this._call("ha_agent/skills/import", {
+              entry_id: this._entryId,
+              skills: payload,
+            });
+            this._skillNotice = "Imported skills from JSON.";
+          }
+          await this._loadSkills();
+          this._render();
+        } catch (err) {
+          this._skillNotice = `Import failed: ${err?.message || err}`;
+          this._render();
+        }
       };
       input.click();
     });

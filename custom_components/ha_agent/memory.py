@@ -42,6 +42,31 @@ def get_history(
 
 
 @callback
+def conversation_history_for_turn(
+    hass: HomeAssistant,
+    conversation_id: str | None,
+    user_text: str,
+    *,
+    max_turns: int,
+) -> list[dict[str, Any]]:
+    """Return prior turns only, excluding the in-flight user message for this turn."""
+    history = get_history(
+        hass,
+        conversation_id,
+        max_turns=max_turns,
+    )
+    if not history:
+        return []
+    last = history[-1]
+    if (
+        last.get("role") == "user"
+        and str(last.get("content", "")).strip() == user_text.strip()
+    ):
+        return list(history[:-1])
+    return history
+
+
+@callback
 def append_user_message(
     hass: HomeAssistant,
     conversation_id: str | None,

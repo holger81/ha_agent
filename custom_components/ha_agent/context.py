@@ -516,7 +516,14 @@ def build_messages(
     """Build OpenAI-style messages for the agent."""
     messages: list[dict[str, str]] = [{"role": "system", "content": system_message}]
     messages.extend(history)
-    messages.append({"role": "user", "content": user_text})
+    trimmed_user = user_text.strip()
+    last = messages[-1] if messages else None
+    if not (
+        last
+        and last.get("role") == "user"
+        and str(last.get("content", "")).strip() == trimmed_user
+    ):
+        messages.append({"role": "user", "content": trimmed_user})
     return messages
 
 

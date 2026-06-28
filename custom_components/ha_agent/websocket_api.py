@@ -450,6 +450,32 @@ async def ws_skills_import(hass: HomeAssistant, connection, msg: dict) -> None:
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "ha_agent/skills/sync",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_skills_sync(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await skills_api.sync_skill_files(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/directory",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_skills_directory(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    info = await skills_api.get_skills_directory(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], info))
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "ha_agent/skills/revisions/list",
         vol.Required("entry_id"): str,
         vol.Required("skill_id"): str,

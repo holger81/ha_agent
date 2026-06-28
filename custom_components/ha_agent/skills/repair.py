@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 
 from ..const import LOGGER
 from .defaults import apply_route_defaults, default_slots_for_route
+from .files import mirror_skill_to_file
 from .models import Skill, SkillSlot, TurnTrace
 from .observer import is_discovery_tool
 from .store import get_skill_store
@@ -256,6 +257,7 @@ def auto_repair_skill(
     updated.version = skill.version + 1
     updated.last_improved_at = time.time()
     saved = store.update_skill(updated)
+    mirror_skill_to_file(hass, entry_id, saved)
     _last_repair_at[skill.id] = time.time()
     LOGGER.info(
         "Auto-repaired skill %s v%s→v%s: %s",

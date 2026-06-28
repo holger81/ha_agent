@@ -16,6 +16,19 @@ from ..skills.body import (
     normalize_skill_draft,
 )
 from ..skills.creator import create_skill_from_trace, save_skill_from_draft
+from ..skills.files import (
+    async_mirror_skill_to_file,
+    async_sync_skill_files,
+    delete_skill_file,
+    new_skill_markdown,
+    skill_file_path,
+    skills_directory,
+)
+from ..skills.markdown import (
+    apply_draft_to_skill,
+    draft_from_markdown,
+    skill_to_markdown,
+)
 from ..skills.models import Skill, SkillDraft
 from ..skills.runtime import get_pending_draft as runtime_get_pending_draft
 from ..skills.runtime import pop_pending_draft
@@ -82,7 +95,11 @@ async def get_skill(
     skill = await hass.async_add_executor_job(_get)
     if skill is None:
         raise HomeAssistantError(f"Skill not found: {skill_id}")
-    return skill_to_dict(skill)
+    payload = skill_to_dict(skill)
+    directory = skills_directory(hass, entry_id)
+    payload["markdown"] = skill_to_markdown(skill)
+    payload["file_path"] = str(skill_file_path(directory, skill.slug))
+    return payload
 
 
 async def derive_skill_tool_steps(body: str) -> list[dict[str, Any]]:
@@ -112,13 +129,21 @@ async def set_skill_enabled(
 async def delete_skill(hass: HomeAssistant, entry_id: str, skill_id: str) -> bool:
     """Delete a skill."""
     store = get_skill_store(hass, entry_id)
+    directory = skills_directory(hass, entry_id)
 
-    def _delete() -> bool:
-        return store.delete_skill(skill_id)
+    def _delete() -> tuple[bool, str | None]:
+        skill = store.get_skill(skill_id)
+        if skill is None:
+            return False, None
+        slug = skill.slug
+        deleted = store.delete_skill(skill_id)
+        return deleted, slug if deleted else None
 
-    deleted = await hass.async_add_executor_job(_delete)
+    deleted, slug = await hass.async_add_executor_job(_delete)
     if not deleted:
         raise HomeAssistantError(f"Skill not found: {skill_id}")
+    if slug:
+        await hass.async_add_executor_job(delete_skill_file, directory, slug)
     return True
 
 
@@ -127,7 +152,38 @@ async def create_skill(
     entry_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create a skill from console form data."""
+    """Create a skill from markdown or legacy form fields."""
+    if markdown := str(payload.get("markdown", "")).strip():
+        draft, slug, explicit_tool_steps = draft_from_markdown(markdown)
+        draft = normalize_skill_draft(draft, explicit_tool_steps=explicit_tool_steps)
+        store = get_skill_store(hass, entry_id)
+
+        def _insert() -> Skill:
+            if slug and store.get_skill_by_slug(slug):
+                raise HomeAssistantError(f"Skill already exists for slug: {slug}")
+            return store.insert_skill(
+                title=draft.title,
+                description=draft.description,
+                triggers=draft.triggers,
+                body=draft.body,
+                tool_steps=draft.tool_steps,
+                slots=draft.slots,
+                preconditions=draft.preconditions,
+                parent_id=draft.parent_id,
+                route_scope=draft.route_scope,
+                slug=slug,
+                enabled=bool(payload.get("enabled", True)),
+            )
+
+        skill = await hass.async_add_executor_job(_insert)
+        await async_mirror_skill_to_file(hass, entry_id, skill)
+        result = skill_to_dict(skill)
+        result["markdown"] = skill_to_markdown(skill)
+        result["file_path"] = str(
+            skill_file_path(skills_directory(hass, entry_id), skill.slug)
+        )
+        return result
+
     title = str(payload.get("title", "")).strip()
     description = str(payload.get("description", "")).strip()
     body = str(payload.get("body", "")).strip()
@@ -150,7 +206,12 @@ async def create_skill(
         explicit_tool_steps=explicit_tool_steps,
     )
     skill = await save_skill_from_draft(hass, entry_id, draft)
-    return skill_to_dict(skill)
+    result = skill_to_dict(skill)
+    result["markdown"] = skill_to_markdown(skill)
+    result["file_path"] = str(
+        skill_file_path(skills_directory(hass, entry_id), skill.slug)
+    )
+    return result
 
 
 async def update_skill(
@@ -161,38 +222,65 @@ async def update_skill(
 ) -> dict[str, Any]:
     """Update an existing skill."""
     store = get_skill_store(hass, entry_id)
+    directory = skills_directory(hass, entry_id)
 
     def _update() -> Skill:
         skill = store.get_skill(skill_id)
         if skill is None:
             raise HomeAssistantError(f"Skill not found: {skill_id}")
-        if "title" in payload:
-            skill.title = str(payload["title"]).strip()
-        if "description" in payload:
-            skill.description = str(payload["description"]).strip()
-        if "body" in payload:
-            skill.body = str(payload["body"]).strip()
-        if "triggers" in payload:
-            triggers = payload["triggers"]
-            if not isinstance(triggers, list) or not triggers:
-                raise HomeAssistantError("At least one trigger is required")
-            skill.triggers = [str(t).strip() for t in triggers if str(t).strip()]
-        explicit_tool_steps = "tool_steps" in payload
-        if explicit_tool_steps:
-            steps = payload["tool_steps"]
-            skill.tool_steps = (
-                [step for step in steps if isinstance(step, dict)]
-                if isinstance(steps, list)
-                else []
+        if skill.is_builtin:
+            raise HomeAssistantError("Built-in route skills cannot be edited")
+
+        old_slug = skill.slug
+        if markdown := str(payload.get("markdown", "")).strip():
+            draft, slug, explicit_tool_steps = draft_from_markdown(
+                markdown,
+                filename_slug=skill.slug,
             )
-        if "enabled" in payload:
-            skill.enabled = bool(payload["enabled"])
-        normalize_skill(skill, explicit_tool_steps=explicit_tool_steps)
+            apply_draft_to_skill(skill, draft)
+            normalize_skill(skill, explicit_tool_steps=explicit_tool_steps)
+            if slug and slug != skill.slug:
+                if store.get_skill_by_slug(slug):
+                    raise HomeAssistantError(f"Skill already exists for slug: {slug}")
+                skill.slug = slug
+            if "enabled" in payload:
+                skill.enabled = bool(payload["enabled"])
+        else:
+            if "title" in payload:
+                skill.title = str(payload["title"]).strip()
+            if "description" in payload:
+                skill.description = str(payload["description"]).strip()
+            if "body" in payload:
+                skill.body = str(payload["body"]).strip()
+            if "triggers" in payload:
+                triggers = payload["triggers"]
+                if not isinstance(triggers, list) or not triggers:
+                    raise HomeAssistantError("At least one trigger is required")
+                skill.triggers = [str(t).strip() for t in triggers if str(t).strip()]
+            explicit_tool_steps = "tool_steps" in payload
+            if explicit_tool_steps:
+                steps = payload["tool_steps"]
+                skill.tool_steps = (
+                    [step for step in steps if isinstance(step, dict)]
+                    if isinstance(steps, list)
+                    else []
+                )
+            if "enabled" in payload:
+                skill.enabled = bool(payload["enabled"])
+            normalize_skill(skill, explicit_tool_steps=explicit_tool_steps)
+
         skill.version += 1
-        return store.update_skill(skill)
+        updated = store.update_skill(skill)
+        if old_slug != updated.slug:
+            delete_skill_file(directory, old_slug)
+        return updated
 
     skill = await hass.async_add_executor_job(_update)
-    return skill_to_dict(skill)
+    await async_mirror_skill_to_file(hass, entry_id, skill)
+    result = skill_to_dict(skill)
+    result["markdown"] = skill_to_markdown(skill)
+    result["file_path"] = str(skill_file_path(directory, skill.slug))
+    return result
 
 
 async def fetch_pending_draft(
@@ -253,13 +341,21 @@ def dismiss_pending_draft(
 async def export_skills(hass: HomeAssistant, entry_id: str) -> list[dict[str, Any]]:
     """Export all skills as JSON-serializable dicts."""
     store = get_skill_store(hass, entry_id)
+    directory = skills_directory(hass, entry_id)
 
     def _export() -> list[Skill]:
         total = store.count_skills()
         return store.list_recent(limit=max(total, 1))
 
     skills = await hass.async_add_executor_job(_export)
-    return [skill_to_dict(skill) for skill in skills]
+    payload: list[dict[str, Any]] = []
+    for skill in skills:
+        item = skill_to_dict(skill)
+        if not skill.is_builtin:
+            item["markdown"] = skill_to_markdown(skill)
+            item["file_path"] = str(skill_file_path(directory, skill.slug))
+        payload.append(item)
+    return payload
 
 
 async def import_skills(
@@ -267,13 +363,16 @@ async def import_skills(
     entry_id: str,
     skills_payload: list[dict[str, Any]],
 ) -> int:
-    """Import skills from a JSON bundle. Returns count imported."""
+    """Import skills from JSON bundles or markdown strings."""
     count = 0
     for item in skills_payload:
         if not isinstance(item, dict):
             continue
         try:
-            await create_skill(hass, entry_id, item)
+            if item.get("markdown"):
+                await create_skill(hass, entry_id, {"markdown": item["markdown"]})
+            else:
+                await create_skill(hass, entry_id, item)
             count += 1
         except HomeAssistantError:
             continue
@@ -320,4 +419,31 @@ async def restore_skill_revision(
     skill = await hass.async_add_executor_job(_restore)
     if skill is None:
         raise HomeAssistantError(f"Revision not found: {revision_id}")
-    return skill_to_dict(skill)
+    await async_mirror_skill_to_file(hass, entry_id, skill)
+    result = skill_to_dict(skill)
+    result["markdown"] = skill_to_markdown(skill)
+    result["file_path"] = str(
+        skill_file_path(skills_directory(hass, entry_id), skill.slug)
+    )
+    return result
+
+
+async def sync_skill_files(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
+    """Import markdown skill files from disk and backfill missing files."""
+    result = await async_sync_skill_files(hass, entry_id)
+    return {
+        "directory": result.directory,
+        "imported": result.imported,
+        "written": result.written,
+        "skipped": result.skipped,
+    }
+
+
+async def get_skills_directory(hass: HomeAssistant, entry_id: str) -> dict[str, str]:
+    """Return the on-disk skills directory and starter template."""
+    directory = skills_directory(hass, entry_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    return {
+        "directory": str(directory),
+        "template": new_skill_markdown(),
+    }

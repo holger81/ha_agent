@@ -55,6 +55,7 @@ from .playbooks import close_playbook_store, get_playbook_store
 from .recovery_hints import close_recovery_hint_store, get_recovery_hint_store
 from .route_keywords import close_route_keyword_store, get_route_keyword_store
 from .skills.commands import async_setup_services
+from .skills.files import async_sync_skill_files
 from .skills.store import close_skill_store, get_skill_store
 from .thinking import normalize_thinking_level
 from .threads import async_load_threads
@@ -173,6 +174,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         model=entry.data.get(CONF_LLM_MODEL),
     )
     get_skill_store(hass, entry.entry_id)
+    await async_sync_skill_files(hass, entry.entry_id)
     get_playbook_store(hass, entry.entry_id)
     get_route_keyword_store(hass, entry.entry_id)
     get_recovery_hint_store(hass, entry.entry_id)
