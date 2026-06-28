@@ -27,6 +27,23 @@ _FAILED_OUTPUT_PATTERN = re.compile(
     r"deserialization error|unexpected token"
     r")\b"
 )
+_MISSING_FIELD_PATTERN = re.compile(r"missing field ['\"]?(\w+)", re.IGNORECASE)
+
+
+def classify_tool_error(output: str) -> tuple[str | None, str, list[str]]:
+    """Classify a tool error output. Returns (kind, message, missing_fields)."""
+    if not output.startswith("Tool error:"):
+        return None, "", []
+    message = output[len("Tool error:") :].strip()
+    missing = list(dict.fromkeys(_MISSING_FIELD_PATTERN.findall(message)))
+    if missing:
+        return "param", message, missing
+    lowered = message.lower()
+    if re.search(r"\b(unauthorized|authentication|401|403|forbidden)\b", lowered):
+        return "auth", message, []
+    if re.search(r"\b(timeout|timed out)\b", lowered):
+        return "timeout", message, []
+    return "other", message, []
 
 
 def parse_tool_arguments(raw: str) -> dict[str, Any]:
@@ -273,7 +290,7 @@ async def execute_tool(
             exposed_entities=exposed_entities,
         )
     except ValueError as err:
-        return str(err)
+        return f"Tool error: {err}"
 
     try:
         result = await mcp_client.call_tool(tool_name, tool_args)

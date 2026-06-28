@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from .models import Skill
-from .params import bind_slot_value, default_slots_for_skill
+from .params import bind_slot_value, bind_tool_steps, default_slots_for_skill
 
 _ROUTE_SKILL_PRIORITY = frozenset({"email", "news", "action"})
 
@@ -29,6 +29,9 @@ def format_skills_for_context(
         return ""
 
     bindings = slot_bindings or {}
+    learned = [s for s in skills if not s.is_builtin]
+    builtin = [s for s in skills if s.is_builtin]
+    ordered = [*learned, *builtin]
     if route in _ROUTE_SKILL_PRIORITY:
         header = (
             "ACTIVE SKILLS (PRIORITY — selected for this turn): "
@@ -50,8 +53,9 @@ def format_skills_for_context(
         )
 
     lines = [header]
-    for skill in skills:
-        lines.append(f"- [{skill.slug}] {skill.title}: {skill.description}")
+    for skill in ordered:
+        role = " (learned — primary)" if not skill.is_builtin else " (route baseline)"
+        lines.append(f"- [{skill.slug}] {skill.title}{role}: {skill.description}")
         slots = default_slots_for_skill(skill)
         if slots:
             slot_desc = ", ".join(
@@ -64,8 +68,6 @@ def format_skills_for_context(
         if body_preview:
             lines.append(f"  Workflow:\n{body_preview}")
         if skill.tool_steps:
-            from .params import bind_tool_steps
-
             steps = bind_tool_steps(skill.tool_steps, bindings)
             steps_json = json.dumps(steps, ensure_ascii=True)
             lines.append(f"  Tool steps: {steps_json}")

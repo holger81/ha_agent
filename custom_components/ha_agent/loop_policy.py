@@ -620,6 +620,15 @@ def _default_recovery_hints(name_lower: str, lowered: str) -> list[str]:
             "Derive domain from the entity_id prefix (light.example -> light)."
         )
 
+    missing_field = re.search(r"missing field ['\"]?(\w+)", lowered)
+    if missing_field:
+        field_name = missing_field.group(1)
+        hints.append(
+            f"Re-call with required argument `{field_name}`. "
+            "For email IMAP tools use mailbox INBOX unless the user specified "
+            "Junk or another folder."
+        )
+
     return hints
 
 

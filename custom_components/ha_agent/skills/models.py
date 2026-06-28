@@ -78,6 +78,21 @@ class TurnTrace:
     verifier_detail: str = ""
     subtask_results: list[dict[str, Any]] = field(default_factory=list)
     orchestration_plan: list[dict[str, Any]] = field(default_factory=list)
+    matched_learned_skill_ids: list[str] = field(default_factory=list)
+    skill_followed: bool | None = None
+    recovery_hints: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class SkillRevision:
+    """Snapshot of a skill before an auto-repair or manual edit."""
+
+    id: str
+    skill_id: str
+    version: int
+    snapshot_json: str
+    reason: str
+    created_at: float
 
 
 @dataclass(slots=True)

@@ -31,6 +31,7 @@ class HaAgentPanel extends HTMLElement {
     this._skillSaveNotice = null;
     this._editingSkill = null;
     this._viewingSkill = null;
+    this._skillRevisions = [];
     this._skillNotice = null;
     this._playbooks = [];
     this._editingPlaybook = null;
@@ -1193,6 +1194,14 @@ class HaAgentPanel extends HTMLElement {
     if (m.verifier?.model && !m.verifier_verdict) {
       const host = m.verifier.host ? ` @ ${m.verifier.host}` : "";
       add("Verifier model", `${m.verifier.model}${host}`);
+    }
+    if (m.skill_update?.title) {
+      const fromV = m.skill_update.from_version;
+      const toV = m.skill_update.to_version;
+      add(
+        "Skill updated",
+        `${m.skill_update.title} v${fromV}→v${toV}: ${m.skill_update.reason || ""}`
+      );
     }
     if (m.slot_bindings && typeof m.slot_bindings === "object") {
       const bound = Object.entries(m.slot_bindings)
@@ -2367,6 +2376,15 @@ class HaAgentPanel extends HTMLElement {
       .map((t) => `<li>${this._escape(t)}</li>`)
       .join("");
     const toolStepCount = (skill.tool_steps || []).length;
+    const revisions = (this._skillRevisions || [])
+      .map(
+        (rev) =>
+          `<li><button type="button" data-action="skill-revision-restore" data-revision-id="${this._escape(rev.id)}">` +
+          `Restore v${this._escape(String(rev.version))}</button> ` +
+          `${this._escape(rev.reason || "revision")} ` +
+          `<span class="hint">${this._escape(new Date(rev.created_at * 1000).toLocaleString())}</span></li>`
+      )
+      .join("");
     return `
       <div class="skill-detail">
         <h3>${this._escape(skill.title || "Skill")}</h3>
@@ -2378,6 +2396,7 @@ class HaAgentPanel extends HTMLElement {
         <p>${this._escape(skill.description || "")}</p>
         <div class="skill-body">${this._escape(skill.body || "")}</div>
         ${triggers ? `<ul class="skill-triggers">${triggers}</ul>` : ""}
+        ${revisions ? `<div class="skill-revisions"><h4>Revision history</h4><ul>${revisions}</ul></div>` : ""}
         <div class="actions">
           <button data-action="skill-detail-edit">Edit</button>
           <button data-action="skill-detail-delete">Delete</button>
@@ -2908,7 +2927,37 @@ class HaAgentPanel extends HTMLElement {
     });
     this._viewingSkill = data.skill;
     this._editingSkill = null;
+    try {
+      const revData = await this._call("ha_agent/skills/revisions/list", {
+        entry_id: this._entryId,
+        skill_id: skillId,
+        limit: 10,
+      });
+      this._skillRevisions = revData.revisions || [];
+    } catch {
+      this._skillRevisions = [];
+    }
     this._render();
+  }
+
+  async _restoreSkillRevision(revisionId) {
+    if (!revisionId || !this._viewingSkill?.id) return;
+    if (!confirm("Restore this skill revision? Current version will be saved first.")) {
+      return;
+    }
+    try {
+      const data = await this._call("ha_agent/skills/revisions/restore", {
+        entry_id: this._entryId,
+        revision_id: revisionId,
+      });
+      this._viewingSkill = data.skill;
+      this._skillNotice = `Restored ${data.skill.title} to earlier revision.`;
+      await this._loadSkills();
+      await this._viewSkill(data.skill.id);
+    } catch (err) {
+      this._skillNotice = `Could not restore revision: ${err?.message || err}`;
+      this._render();
+    }
   }
 
   async _deleteSkill(skillId) {
@@ -3916,7 +3965,16 @@ class HaAgentPanel extends HTMLElement {
       .querySelector('[data-action="skill-detail-close"]')
       ?.addEventListener("click", () => {
         this._viewingSkill = null;
+        this._skillRevisions = [];
         this._render();
+      });
+
+    this.shadowRoot
+      .querySelectorAll('[data-action="skill-revision-restore"]')
+      .forEach((el) => {
+        el.onclick = async () => {
+          await this._restoreSkillRevision(el.getAttribute("data-revision-id"));
+        };
       });
 
     this.shadowRoot

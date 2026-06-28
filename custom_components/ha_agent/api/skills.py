@@ -278,3 +278,46 @@ async def import_skills(
         except HomeAssistantError:
             continue
     return count
+
+
+async def list_skill_revisions(
+    hass: HomeAssistant,
+    entry_id: str,
+    skill_id: str,
+    *,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return revision history for a skill."""
+    store = get_skill_store(hass, entry_id)
+
+    def _load():
+        return store.list_revisions(skill_id, limit=limit)
+
+    revisions = await hass.async_add_executor_job(_load)
+    return [
+        {
+            "id": rev.id,
+            "skill_id": rev.skill_id,
+            "version": rev.version,
+            "reason": rev.reason,
+            "created_at": rev.created_at,
+        }
+        for rev in revisions
+    ]
+
+
+async def restore_skill_revision(
+    hass: HomeAssistant,
+    entry_id: str,
+    revision_id: str,
+) -> dict[str, Any]:
+    """Restore a skill from a saved revision."""
+    store = get_skill_store(hass, entry_id)
+
+    def _restore() -> Skill | None:
+        return store.restore_revision(revision_id)
+
+    skill = await hass.async_add_executor_job(_restore)
+    if skill is None:
+        raise HomeAssistantError(f"Revision not found: {revision_id}")
+    return skill_to_dict(skill)

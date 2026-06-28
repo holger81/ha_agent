@@ -30,6 +30,17 @@ RECOVERY_HINTS_STORE_KEY = "recovery_hint_stores"
 # the tool name; an empty substring matches any tool.
 DEFAULT_RECOVERY_HINTS: list[dict[str, object]] = [
     {
+        "rule_id": "missing_field",
+        "title": "Missing required tool parameter",
+        "tool_substring": "",
+        "error_pattern": r"missing field ['\"]?\w+",
+        "body": (
+            "Re-call the tool with all required arguments from the error message. "
+            "For IMAP email tools, include mailbox (default INBOX) on every call."
+        ),
+        "priority": 0,
+    },
+    {
         "rule_id": "email_status",
         "title": "Email: prefer mailbox_status + unread search",
         "tool_substring": "mail",

@@ -68,10 +68,13 @@ from .skills.observer import (
     observe_skill_fork,
 )
 from .skills.params import (
+    apply_slot_defaults,
     bind_tool_steps,
     bindings_diverge_from_defaults,
     infer_slot_bindings,
+    missing_required_bindings,
 )
+from .skills.repair import auto_repair_skill
 from .skills.route_skills import load_route_skill, merge_route_and_learned_skills
 from .skills.runtime import should_offer_skill_creation
 from .skills.selection import filter_tool_steps_for_route, resolve_skills_for_turn
@@ -79,6 +82,7 @@ from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
 from .subagent import WorkerResult, run_worker
 from .tools import (
+    classify_tool_error,
     execute_tool,
     ha_service_entity_id,
     is_discovery_tool_name,
@@ -196,16 +200,21 @@ def thinking_from_tool_event(tool: dict[str, Any]) -> str:
 def _record_tool_call(trace: TurnTrace, call: ToolCall, output: str) -> None:
     """Append a tool call to the turn trace."""
     tool_name, arguments = _tool_call_payload(call)
+    error_kind, error_message, missing_fields = classify_tool_error(output)
+    succeeded = error_kind is None
     trace.tool_calls.append(
         {
             "toolName": tool_name,
             "name": tool_name,
             "arguments": arguments,
-            "succeeded": not output.startswith("Tool error:"),
+            "succeeded": succeeded,
             "discovery": is_discovery_tool(tool_name),
+            "error": error_message or None,
+            "error_kind": error_kind,
+            "missing_fields": missing_fields,
         }
     )
-    if output.startswith("Tool error:"):
+    if not succeeded:
         trace.tool_errors += 1
 
 
@@ -348,6 +357,34 @@ async def _process_tool_calls(
         if call.id in blocked_ids:
             continue
         tool_name, arguments = _tool_call_payload(call)
+        if (
+            is_discovery_tool_name(tool_name)
+            and loop_state.plan_steps
+            and len(loop_state.plan_steps) >= 2
+            and loop_state.plan_skill_title
+        ):
+            blocked = (
+                "Tool error: Active skill lists concrete tool steps; "
+                "do not run discovery. Follow the skill workflow."
+            )
+            record_iteration_failure(loop_state, tool_name, arguments, blocked)
+            record_plan_tool_result(
+                loop_state,
+                tool_name,
+                arguments,
+                succeeded=False,
+            )
+            yield AgentDelta(
+                tool=_tool_event(
+                    call,
+                    "error",
+                    detail="Discovery blocked — follow skill steps.",
+                )
+            )
+            messages.append(tool_result_message(call, blocked))
+            if trace is not None:
+                _record_tool_call(trace, call, blocked)
+            continue
         if stuck_msg := check_stuck(loop_state, tool_name, arguments):
             loop_state.iteration_had_duplicate_block = True
             record_plan_tool_result(
@@ -569,6 +606,7 @@ async def _run_orchestrated_turn(
     )
     trace.verifier_verdict = "pass" if v_result.passed else "fail"
     trace.verifier_detail = v_result.reason
+    trace.skill_followed = v_result.skill_followed
     yield AgentDelta(
         meta={
             "verifier_verdict": trace.verifier_verdict,
@@ -578,7 +616,7 @@ async def _run_orchestrated_turn(
 
     trace.assistant_text = assistant_text
     trace.outcome = TurnOutcome.SUCCESS if v_result.passed else TurnOutcome.PARTIAL
-    suffix = await _post_turn_skills(
+    suffix, skill_meta = await _post_turn_skills(
         hass,
         entry_id=entry_id,
         llm=llm,
@@ -589,6 +627,8 @@ async def _run_orchestrated_turn(
         history=[],
         matched_skills=[],
     )
+    if skill_meta:
+        yield AgentDelta(meta=skill_meta)
     if suffix:
         assistant_text = f"{assistant_text}{suffix}".strip()
         yield AgentDelta(content=suffix)
@@ -636,12 +676,40 @@ async def _post_turn_skills(
     trace: TurnTrace,
     history: list[dict[str, str]],
     matched_skills: list,
-) -> str:
-    """Run skill learning/evaluation hooks. Return optional reply suffix."""
+) -> tuple[str, dict[str, Any] | None]:
+    """Run skill learning/evaluation hooks. Return suffix and optional meta patch."""
     suffix = ""
+    meta_patch: dict[str, Any] | None = None
+    primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
 
-    if matched_skills and skills_config.use_enabled:
-        primary = matched_skills[0]
+    if primary_learned and skills_config.use_enabled:
+        repair_result = await hass.async_add_executor_job(
+            auto_repair_skill,
+            hass,
+            entry_id,
+            primary_learned,
+            trace,
+        )
+        if repair_result is not None:
+            suffix = (
+                f" Updated skill: {repair_result.skill.title} "
+                f"(v{repair_result.from_version}→v{repair_result.skill.version}) "
+                f"— {repair_result.reason}."
+            )
+            meta_patch = {
+                "skill_update": {
+                    "title": repair_result.skill.title,
+                    "from_version": repair_result.from_version,
+                    "to_version": repair_result.skill.version,
+                    "reason": repair_result.reason,
+                    "revision_id": repair_result.revision_id,
+                }
+            }
+            update_agent_status(
+                hass,
+                entry_id,
+                last_skill_improved=repair_result.skill.title,
+            )
 
         async def _evaluate() -> None:
             try:
@@ -650,7 +718,7 @@ async def _post_turn_skills(
                     entry_id,
                     llm,
                     backend,
-                    skill=primary,
+                    skill=primary_learned,
                     trace=trace,
                 )
                 await _update_skill_status(hass, entry_id)
@@ -659,10 +727,8 @@ async def _post_turn_skills(
 
         hass.async_create_task(_evaluate())
 
-        primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
         if (
-            primary_learned
-            and trace.slot_bindings
+            trace.slot_bindings
             and bindings_diverge_from_defaults(primary_learned, trace.slot_bindings)
             and skills_config.learning_enabled
         ):
@@ -689,7 +755,10 @@ async def _post_turn_skills(
                             LOGGER.warning("Skill fork save failed: %s", err)
 
                     hass.async_create_task(_save_fork())
-                    return f" Saving skill variant: {forked.draft.title}."
+                    return (
+                        f" Saving skill variant: {forked.draft.title}.",
+                        meta_patch,
+                    )
                 queue_pending_save(
                     hass,
                     entry_id,
@@ -701,7 +770,8 @@ async def _post_turn_skills(
                 )
                 return (
                     f" I can save a variant skill: {forked.draft.title}. "
-                    "Reply yes to confirm."
+                    "Reply yes to confirm.",
+                    meta_patch,
                 )
 
     manual_save = bool(_MANUAL_SAVE.search(trace.user_text))
@@ -711,12 +781,15 @@ async def _post_turn_skills(
             learning_enabled=skills_config.learning_enabled,
             manual_save=True,
         ):
-            return " I couldn't save that — this turn has no successful tool workflow."
+            return (
+                " I couldn't save that — this turn has no successful tool workflow.",
+                meta_patch,
+            )
     elif not should_offer_skill_creation(
         trace,
         learning_enabled=skills_config.learning_enabled,
     ):
-        return suffix
+        return suffix, meta_patch
 
     observed = await observe_skill_candidate(
         llm,
@@ -729,9 +802,10 @@ async def _post_turn_skills(
         if manual_save:
             return (
                 " I don't think this turn has a reusable workflow worth saving "
-                "as a skill."
+                "as a skill.",
+                meta_patch,
             )
-        return suffix
+        return suffix, meta_patch
 
     if manual_save or skills_config.auto_save:
 
@@ -754,8 +828,7 @@ async def _post_turn_skills(
                 LOGGER.warning("Skill creation failed: %s", err)
 
         hass.async_create_task(_save())
-        suffix = f" Saving skill: {observed.draft.title}."
-        return suffix
+        return f" Saving skill: {observed.draft.title}.", meta_patch
 
     queue_pending_save(
         hass,
@@ -766,7 +839,7 @@ async def _post_turn_skills(
         skill_draft=observed.draft,
         observer_reason=observed.reason,
     )
-    return f" Save skill “{observed.draft.title}”?"
+    return f" Save skill “{observed.draft.title}”?", meta_patch
 
 
 async def run_agent(
@@ -908,6 +981,11 @@ async def run_agent(
                 skill=primary_learned,
                 route=route.value,
             )
+            slot_bindings = apply_slot_defaults(
+                slot_bindings,
+                primary_learned,
+                route=route.value,
+            )
         skill_hints = build_skill_hints(
             matched_skills,
             route=route.value,
@@ -916,10 +994,14 @@ async def run_agent(
         update_agent_status(
             hass,
             entry_id,
-            active_skill=matched_skills[0].title if matched_skills else "none",
+            active_skill=(
+                primary_learned.title
+                if primary_learned
+                else (matched_skills[0].title if matched_skills else "none")
+            ),
         )
         if matched_skills:
-            primary = matched_skills[0]
+            primary = primary_learned or matched_skills[0]
             yield AgentDelta(
                 skill={
                     "id": primary.id,
@@ -934,6 +1016,9 @@ async def run_agent(
         user_text=user_text,
         history_len=len(history),
         matched_skill_ids=[skill.id for skill in matched_skills],
+        matched_learned_skill_ids=[
+            skill.id for skill in matched_skills if not skill.is_builtin
+        ],
         conversation_id=conversation_id,
         route=route.value,
         exposed_entities=list(exposed_entities),
@@ -1042,6 +1127,20 @@ async def run_agent(
         skill_title=matched_skills[0].title if matched_skills else "",
         slot_bindings=slot_bindings or None,
     )
+    if matched_skills and slot_bindings:
+        primary_learned = next(
+            (s for s in matched_skills if not s.is_builtin), None
+        )
+        if primary_learned:
+            missing_slots = missing_required_bindings(primary_learned, slot_bindings)
+            if missing_slots:
+                loop_state.mcp_guidance.insert(
+                    0,
+                    (
+                        "Bind required skill slots before calling tools: "
+                        + ", ".join(missing_slots)
+                    ),
+                )
 
     classifier_backend = router_config.classifier_backend or backend
     turn_meta: dict[str, Any] = {
@@ -1311,6 +1410,7 @@ async def run_agent(
             v_result = VerifierResult(passed=True, reason="no skill workflow")
         trace.verifier_verdict = "pass" if v_result.passed else "fail"
         trace.verifier_detail = v_result.reason
+        trace.skill_followed = v_result.skill_followed
         yield AgentDelta(
             meta={
                 "verifier_verdict": trace.verifier_verdict,
@@ -1342,13 +1442,14 @@ async def run_agent(
             trace.outcome = TurnOutcome.FAILED
         else:
             trace.outcome = TurnOutcome.SUCCESS
+        trace.recovery_hints = list(loop_state.mcp_guidance)
         turn_meta.update(
             {
                 "verifier_verdict": trace.verifier_verdict,
                 "verifier_detail": trace.verifier_detail,
             }
         )
-        suffix = await _post_turn_skills(
+        suffix, skill_meta = await _post_turn_skills(
             hass,
             entry_id=entry_id,
             llm=llm,
@@ -1359,6 +1460,9 @@ async def run_agent(
             history=history,
             matched_skills=matched_skills,
         )
+        if skill_meta:
+            turn_meta.update(skill_meta)
+            yield AgentDelta(meta=skill_meta)
         if suffix:
             assistant_text = f"{assistant_text}{suffix}".strip()
             yield AgentDelta(content=suffix)

@@ -143,17 +143,31 @@ def test_should_offer_tool_with_history() -> None:
     assert should_offer_skill_creation(trace, learning_enabled=True) is True
 
 
-def test_should_not_offer_when_skill_matched() -> None:
-    """Matched skills skip creation."""
+def test_should_not_offer_when_learned_skill_matched() -> None:
+    """Matched learned skills skip creation."""
     trace = TurnTrace(
         user_text="turn on lights",
         history_len=4,
-        tool_calls=[{"toolName": "a"}],
-        matched_skill_ids=["existing"],
+        tool_calls=[{"toolName": "a"}, {"toolName": "b"}],
+        matched_learned_skill_ids=["existing"],
         assistant_text="Done.",
         iterations=2,
     )
     assert should_offer_skill_creation(trace, learning_enabled=True) is False
+
+
+def test_should_offer_when_only_builtin_matched() -> None:
+    """Builtin route skills do not block auto-learn."""
+    trace = TurnTrace(
+        user_text="turn on lights",
+        history_len=0,
+        tool_calls=[{"toolName": "a"}, {"toolName": "b"}],
+        matched_skill_ids=["builtin-general"],
+        matched_learned_skill_ids=[],
+        assistant_text="Done.",
+        iterations=2,
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is True
 
 
 def test_learning_disabled() -> None:
@@ -167,17 +181,33 @@ def test_learning_disabled() -> None:
     assert should_offer_skill_creation(trace, learning_enabled=False) is False
 
 
-def test_should_not_offer_news_route() -> None:
-    """News summaries are not auto-learned."""
+def test_should_not_offer_news_content_extraction() -> None:
+    """News content summaries are not auto-learned."""
     trace = TurnTrace(
         user_text="what are today's headlines",
         history_len=0,
         route="news",
-        tool_calls=[{"toolName": "mcp_news__news_curate"}, {"toolName": "b"}],
+        tool_calls=[{"toolName": "mcp_news__news_curate"}],
         assistant_text="Here are headlines.",
-        iterations=2,
+        iterations=1,
     )
     assert should_offer_skill_creation(trace, learning_enabled=True) is False
+
+
+def test_should_offer_email_multi_step_workflow() -> None:
+    """Multi-step email tool workflows may be auto-learned."""
+    trace = TurnTrace(
+        user_text="check my inbox for urgent mail",
+        history_len=0,
+        route="email",
+        tool_calls=[
+            {"toolName": "mail_mcp__imap_mailbox_status"},
+            {"toolName": "mail_mcp__imap_search_messages"},
+        ],
+        assistant_text="You have 2 urgent messages.",
+        iterations=2,
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is True
 
 
 def test_manual_save_requires_successful_tools() -> None:

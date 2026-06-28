@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from .defaults import default_slots_for_route
 from .models import Skill, SkillSlot
 
 _SLOT_PATTERN = re.compile(r"\{\{(\w+)\}\}")
@@ -157,3 +158,37 @@ async def infer_slot_bindings(
     if not isinstance(bindings, dict):
         return {}
     return {str(k): str(v) for k, v in bindings.items() if v is not None}
+
+
+def apply_slot_defaults(
+    bindings: dict[str, str],
+    skill: Skill,
+    *,
+    route: str | None = None,
+) -> dict[str, str]:
+    """Fill empty slot bindings from skill defaults and route defaults."""
+    result = dict(bindings)
+    for slot in default_slots_for_skill(skill):
+        if slot.default and not str(result.get(slot.name, "")).strip():
+            result[slot.name] = str(slot.default)
+    route_value = route or skill.route_scope or ""
+    for slot in default_slots_for_route(route_value):
+        if slot.default and not str(result.get(slot.name, "")).strip():
+            result[slot.name] = str(slot.default)
+    return result
+
+
+def missing_required_bindings(
+    skill: Skill,
+    bindings: dict[str, str],
+) -> list[str]:
+    """Return slot names referenced in tool_steps/body but not bound."""
+    required = extract_slots_from_text(skill.body)
+    for step in skill.tool_steps:
+        for value in step.values():
+            if isinstance(value, str):
+                required.extend(extract_slots_from_text(value))
+            elif isinstance(value, dict):
+                required.extend(extract_slots_from_text(json.dumps(value)))
+    unique = list(dict.fromkeys(required))
+    return [name for name in unique if not str(bindings.get(name, "")).strip()]

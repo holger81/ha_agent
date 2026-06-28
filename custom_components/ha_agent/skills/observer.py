@@ -11,7 +11,7 @@ from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..llm_client import LlmClient
 from .body import normalize_skill_draft
-from .models import SkillDraft, TurnTrace
+from .models import SkillDraft, SkillSlot, TurnTrace
 
 _DISCOVERY_TOOL = re.compile(
     r"(searchToolsForDomain|searchTool|tools/list|tools_list)",
@@ -89,6 +89,9 @@ def build_observer_payload(
                 "discovery": bool(
                     call.get("discovery") or is_discovery_tool(name)
                 ),
+                "error": call.get("error"),
+                "error_kind": call.get("error_kind"),
+                "missing_fields": call.get("missing_fields") or [],
             }
         )
 
@@ -106,6 +109,8 @@ def build_observer_payload(
         "matched_existing_skills": bool(trace.matched_skill_ids),
         "slot_bindings": trace.slot_bindings,
         "verifier_verdict": trace.verifier_verdict,
+        "skill_followed": trace.skill_followed,
+        "recovery_hints": trace.recovery_hints[-4:],
         "complexity": trace.complexity,
         "subtask_results": trace.subtask_results[:8],
         "orchestration_plan": trace.orchestration_plan[:8],
@@ -169,6 +174,21 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
     if not triggers:
         triggers = [title]
 
+    slots_raw = data.get("slots", [])
+    slots = []
+    if isinstance(slots_raw, list):
+        for item in slots_raw:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            slots.append(
+                SkillSlot(
+                    name=str(item["name"]),
+                    description=str(item.get("description", "")),
+                    source=str(item.get("source", "user")),
+                    default=item.get("default"),
+                )
+            )
+
     draft = normalize_skill_draft(
         SkillDraft(
             title=title,
@@ -176,6 +196,7 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
             triggers=triggers,
             body=body,
             tool_steps=tool_steps,
+            slots=slots,
             parent_id=(
                 str(data["parent_id"]).strip() if data.get("parent_id") else None
             ),

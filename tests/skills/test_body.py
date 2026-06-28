@@ -12,6 +12,31 @@ COMPONENT = (
 
 
 def _load_body_module():
+    if "ha_agent" not in sys.modules:
+        import types
+
+        package = types.ModuleType("ha_agent")
+        package.__path__ = [str(COMPONENT)]  # type: ignore[attr-defined]
+        sys.modules["ha_agent"] = package
+
+    if "ha_agent.skills" not in sys.modules:
+        import types
+
+        skills_pkg = types.ModuleType("ha_agent.skills")
+        skills_pkg.__path__ = [str(COMPONENT / "skills")]  # type: ignore[attr-defined]
+        sys.modules["ha_agent.skills"] = skills_pkg
+
+    for name in ("defaults",):
+        mod_name = f"ha_agent.skills.{name}"
+        if mod_name in sys.modules:
+            continue
+        path = COMPONENT / "skills" / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(mod_name, path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec is not None and spec.loader is not None
+        sys.modules[mod_name] = module
+        spec.loader.exec_module(module)
+
     path = COMPONENT / "skills" / "models.py"
     spec = importlib.util.spec_from_file_location("ha_agent.skills.models", path)
     models = importlib.util.module_from_spec(spec)

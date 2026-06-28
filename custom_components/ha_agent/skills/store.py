@@ -13,7 +13,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from ..const import DATA_KEY, LOGGER
-from .models import Skill, SkillIndexRow, SkillSlot
+from .models import Skill, SkillIndexRow, SkillRevision, SkillSlot
 
 SKILLS_STORE_KEY = "skill_stores"
 _IMPROVEMENT_COOLDOWN_SECONDS = 3600
@@ -54,6 +54,17 @@ _ADDED_COLUMNS = {
     "score": "REAL NOT NULL DEFAULT 1.0",
     "is_builtin": "INTEGER NOT NULL DEFAULT 0",
 }
+
+_REVISIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS skill_revisions (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+"""
 
 
 def _slugify(title: str) -> str:
@@ -130,6 +141,7 @@ class SkillStore:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_REVISIONS_SCHEMA)
         self._migrate(self._conn)
         self._conn.commit()
 
@@ -384,28 +396,37 @@ class SkillStore:
         try:
             rows = conn.execute(
                 f"""
-                SELECT s.id, s.slug, s.title, s.description, bm25(skills_fts) AS rank
+                SELECT s.id, s.slug, s.title, s.description,
+                       bm25(skills_fts) AS rank, s.score AS skill_score
                 FROM skills_fts
                 JOIN skills s ON s.id = skills_fts.skill_id
                 WHERE skills_fts MATCH ? {enabled_clause}
-                ORDER BY rank
                 LIMIT ?
                 """,
-                (fts_query, limit),
+                (fts_query, limit * 3),
             ).fetchall()
         except sqlite3.OperationalError as err:
             LOGGER.debug("Skill FTS query failed for %r: %s", fts_query, err)
             return []
-        return [
-            SkillIndexRow(
-                id=row["id"],
-                slug=row["slug"],
-                title=row["title"],
-                description=row["description"],
-                rank=float(row["rank"]),
+        scored: list[tuple[float, SkillIndexRow]] = []
+        for row in rows:
+            bm25_rank = float(row["rank"])
+            skill_score = float(row["skill_score"]) if row["skill_score"] else 1.0
+            composite = bm25_rank * 0.7 - skill_score * 0.3
+            scored.append(
+                (
+                    composite,
+                    SkillIndexRow(
+                        id=row["id"],
+                        slug=row["slug"],
+                        title=row["title"],
+                        description=row["description"],
+                        rank=composite,
+                    ),
+                )
             )
-            for row in rows
-        ]
+        scored.sort(key=lambda item: item[0])
+        return [item[1] for item in scored[:limit]]
 
     def load_skills_by_ids(self, skill_ids: list[str]) -> list[Skill]:
         """Load full skill records for the given ids."""
@@ -443,14 +464,116 @@ class SkillStore:
         skill.score = max(0.1, min(5.0, skill.score + delta))
         return self.update_skill(skill)
 
-    def can_improve(self, skill_id: str) -> bool:
+    def can_improve(self, skill_id: str, *, bypass_cooldown: bool = False) -> bool:
         """Return True when the hourly improvement cooldown has elapsed."""
+        if bypass_cooldown:
+            return True
         skill = self.get_skill(skill_id)
         if skill is None:
             return False
         if skill.last_improved_at is None:
             return True
         return (time.time() - skill.last_improved_at) >= _IMPROVEMENT_COOLDOWN_SECONDS
+
+    def _skill_snapshot_json(self, skill: Skill) -> str:
+        return json.dumps(
+            {
+                "id": skill.id,
+                "slug": skill.slug,
+                "title": skill.title,
+                "description": skill.description,
+                "triggers": skill.triggers,
+                "body": skill.body,
+                "tool_steps": skill.tool_steps,
+                "enabled": skill.enabled,
+                "version": skill.version,
+                "slots": [
+                    {
+                        "name": s.name,
+                        "description": s.description,
+                        "source": s.source,
+                        "default": s.default,
+                    }
+                    for s in skill.slots
+                ],
+                "preconditions": skill.preconditions,
+                "parent_id": skill.parent_id,
+                "route_scope": skill.route_scope,
+                "score": skill.score,
+            },
+            ensure_ascii=True,
+        )
+
+    def save_revision(self, skill: Skill, *, reason: str) -> str:
+        """Persist a snapshot before modifying a skill."""
+        revision_id = str(uuid.uuid4())
+        conn = self._connection()
+        conn.execute(
+            "INSERT INTO skill_revisions "
+            "(id, skill_id, version, snapshot_json, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                revision_id,
+                skill.id,
+                skill.version,
+                self._skill_snapshot_json(skill),
+                reason[:512],
+                time.time(),
+            ),
+        )
+        conn.commit()
+        return revision_id
+
+    def list_revisions(self, skill_id: str, *, limit: int = 20) -> list[SkillRevision]:
+        """Return revision history for one skill, newest first."""
+        rows = self._connection().execute(
+            "SELECT * FROM skill_revisions WHERE skill_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (skill_id, limit),
+        ).fetchall()
+        return [
+            SkillRevision(
+                id=row["id"],
+                skill_id=row["skill_id"],
+                version=int(row["version"]),
+                snapshot_json=row["snapshot_json"],
+                reason=row["reason"],
+                created_at=float(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def restore_revision(self, revision_id: str) -> Skill | None:
+        """Restore a skill from a revision snapshot."""
+        row = self._connection().execute(
+            "SELECT * FROM skill_revisions WHERE id = ?",
+            (revision_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            data = json.loads(row["snapshot_json"])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        skill = self.get_skill(str(data.get("id") or row["skill_id"]))
+        if skill is None:
+            return None
+        self.save_revision(skill, reason=f"Before restore to v{row['version']}")
+        skill.title = str(data.get("title", skill.title))
+        skill.description = str(data.get("description", skill.description))
+        skill.triggers = list(data.get("triggers") or skill.triggers)
+        skill.body = str(data.get("body", skill.body))
+        skill.tool_steps = list(data.get("tool_steps") or skill.tool_steps)
+        skill.slots = _parse_slots(json.dumps(data.get("slots", [])))
+        skill.preconditions = str(data.get("preconditions", skill.preconditions))
+        skill.parent_id = data.get("parent_id")
+        skill.route_scope = data.get("route_scope")
+        skill.score = float(data.get("score", skill.score))
+        skill.version += 1
+        skill.last_improved_at = time.time()
+        return self.update_skill(skill)
 
     def find_duplicate(
         self,

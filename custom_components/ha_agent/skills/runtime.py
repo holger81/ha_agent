@@ -6,6 +6,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from ..const import DATA_KEY
 from .models import PendingSkillDraft, TurnTrace
+from .observer import is_discovery_tool
 
 PENDING_DRAFTS_KEY = "skill_pending_drafts"
 EVAL_PENDING_KEY = "skill_eval_pending"
@@ -69,6 +70,24 @@ def pop_eval_pending(hass: HomeAssistant, conversation_id: str | None) -> dict |
     return _eval_pending_store(hass).pop(conversation_id, None)
 
 
+def _is_content_extraction_turn(trace: TurnTrace) -> bool:
+    """Return True when an email/news turn is mostly content, not a workflow."""
+    route = (trace.route or "").lower()
+    if route not in {"news", "email"}:
+        return False
+    non_discovery = [
+        call
+        for call in trace.tool_calls
+        if not is_discovery_tool(str(call.get("toolName") or call.get("name") or ""))
+    ]
+    if len(non_discovery) >= 2:
+        return False
+    assistant = (trace.assistant_text or "").strip()
+    if len(assistant) > 800:
+        return True
+    return len(non_discovery) <= 1 and trace.iterations <= 1
+
+
 def should_offer_skill_creation(
     trace: TurnTrace,
     *,
@@ -81,18 +100,32 @@ def should_offer_skill_creation(
 
     if not learning_enabled:
         return False
-    if trace.fallback or trace.tool_errors > 0:
+    if trace.fallback:
         return False
     if not trace.tool_calls:
         return False
-    if trace.matched_skill_ids:
+    if trace.matched_learned_skill_ids:
         return False
     if not trace.assistant_text.strip():
         return False
 
     route = (trace.route or "").lower()
-    if route in {"news", "email"}:
+    if route in {"news", "email"} and _is_content_extraction_turn(trace):
         return False
+
+    if trace.tool_errors > 0:
+        non_discovery = [
+            c
+            for c in trace.tool_calls
+            if not is_discovery_tool(str(c.get("toolName") or c.get("name") or ""))
+        ]
+        recovered = (
+            trace.tool_errors > 0
+            and bool(trace.assistant_text.strip())
+            and len(non_discovery) >= 2
+        )
+        if not recovered:
+            return False
 
     multi_step = len(trace.tool_calls) >= 2 or trace.iterations >= 2
     return multi_step

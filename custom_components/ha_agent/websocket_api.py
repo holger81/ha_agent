@@ -450,6 +450,50 @@ async def ws_skills_import(hass: HomeAssistant, connection, msg: dict) -> None:
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "ha_agent/skills/revisions/list",
+        vol.Required("entry_id"): str,
+        vol.Required("skill_id"): str,
+        vol.Optional("limit", default=20): int,
+    }
+)
+@websocket_api.async_response
+async def ws_skills_revisions_list(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    revisions = await skills_api.list_skill_revisions(
+        hass,
+        msg["entry_id"],
+        msg["skill_id"],
+        limit=int(msg.get("limit", 20)),
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"revisions": revisions})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/revisions/restore",
+        vol.Required("entry_id"): str,
+        vol.Required("revision_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_skills_revisions_restore(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    skill = await skills_api.restore_skill_revision(
+        hass,
+        msg["entry_id"],
+        msg["revision_id"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], {"skill": skill}))
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "ha_agent/playbooks/list",
         **_entry_id_schema(),
     }

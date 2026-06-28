@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from .defaults import apply_route_defaults_to_draft
 from .models import Skill, SkillDraft
 
 _TOOL_STEPS_FENCE = re.compile(
@@ -121,12 +122,17 @@ def normalize_skill_draft(
         draft.tool_steps,
         explicit_override=explicit_tool_steps,
     )
+    apply_route_defaults_to_draft(draft)
     return SkillDraft(
         title=draft.title,
         description=draft.description,
         triggers=draft.triggers,
         body=draft.body,
         tool_steps=steps,
+        slots=draft.slots,
+        preconditions=draft.preconditions,
+        parent_id=draft.parent_id,
+        route_scope=draft.route_scope,
     )
 
 
