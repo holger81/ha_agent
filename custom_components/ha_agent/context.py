@@ -113,6 +113,37 @@ def _keyword_regex(keywords: list[str] | None) -> re.Pattern[str] | None:
     return re.compile(r"\b(" + "|".join(parts) + r")\b", re.IGNORECASE)
 
 
+def route_keyword_match(
+    query: str,
+    route_name: str,
+    keywords: list[str] | None = None,
+) -> str | None:
+    """Return a short label when a route keyword matches, else None."""
+    if route_name == "email":
+        pattern = _keyword_regex(keywords) or _EMAIL_QUERY
+    elif route_name == "news":
+        pattern = _keyword_regex(keywords) or _NEWS_QUERY
+    elif route_name == "action":
+        if override := _keyword_regex(keywords):
+            pattern = override
+        elif _CAMERA_ACTION.search(query):
+            pattern = _CAMERA_ACTION
+        elif _DEVICE_ACTION.search(query):
+            pattern = _DEVICE_ACTION
+        else:
+            return None
+    else:
+        return None
+
+    match = pattern.search(query)
+    if not match:
+        return None
+    label = match.group(0).strip()
+    if keywords:
+        return label
+    return f"{route_name}: {label}"
+
+
 def is_affirmative(query: str) -> bool:
     """Return True for short affirmative replies."""
     return bool(_AFFIRMATIVE.match(query.strip()))

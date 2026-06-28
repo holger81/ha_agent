@@ -36,6 +36,12 @@ async def _fake_run_agent(*_args, **_kwargs):
 
     yield Delta(content="Hello")
     yield Delta(
+        meta={
+            "route": "news",
+            "classification": "keyword → news (news: news)",
+        }
+    )
+    yield Delta(
         tool={
             "phase": "start",
             "name": "mcp_news__news_curate",
@@ -163,8 +169,11 @@ async def test_stream_chat_fires_delta_and_done_events() -> None:
 
     fired = [call.args for call in hass.bus.async_fire.call_args_list]
     assert fired[0][1]["content"] == "Hello"
-    assert fired[1][0] == "ha_agent_chat_delta"
-    assert fired[1][1]["tool"]["phase"] == "start"
-    assert fired[2][1]["tool"]["phase"] == "done"
-    assert fired[3][0] == "ha_agent_chat_done"
-    assert fired[3][1]["last_route"] == "chat"
+    assert fired[1][1]["meta"]["route"] == "news"
+    assert fired[2][0] == "ha_agent_chat_delta"
+    assert fired[2][1]["tool"]["phase"] == "start"
+    assert fired[3][1]["tool"]["phase"] == "done"
+    assert fired[4][0] == "ha_agent_chat_done"
+    assert fired[4][1]["last_route"] == "chat"
+    assert fired[4][1]["turn_meta"]["route"] == "news"
+    assert "classification" in fired[4][1]["turn_meta"]

@@ -29,6 +29,22 @@ CHAT_TASKS_KEY = "chat_tasks"
 CHAT_TURN_TIMEOUT_PADDING = 60
 
 
+def merge_turn_meta(
+    base: dict[str, Any],
+    patch: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Deep-merge turn metadata patches for chat UI chips."""
+    if not patch:
+        return base
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = {**merged[key], **value}
+        elif value is not None:
+            merged[key] = value
+    return merged
+
+
 def _chat_turn_timeout_seconds(entry) -> float:
     """Upper bound for one console chat turn (MCP + agent loop)."""
     llm_timeout = get_llm_backend(entry).timeout
@@ -99,6 +115,7 @@ def start_chat(
             "conversation_id": conversation_id,
         }
         done_payload: dict[str, Any] = {}
+        turn_meta: dict[str, Any] = {}
         cancelled = False
         try:
             async with asyncio.timeout(turn_timeout):
@@ -115,6 +132,8 @@ def start_chat(
                     user_text=text,
                     exposed_entities=exposed,
                 ):
+                    if delta.meta:
+                        turn_meta = merge_turn_meta(turn_meta, delta.meta)
                     if (
                         not delta.content
                         and not delta.thinking
@@ -140,6 +159,7 @@ def start_chat(
             done_payload = {
                 "last_route": status.get("last_route"),
                 "active_skill": status.get("active_skill"),
+                "turn_meta": turn_meta,
             }
         except TimeoutError:
             LOGGER.warning(
@@ -202,7 +222,7 @@ def list_history(
     hass: HomeAssistant,
     entry: str,
     conversation_id: str,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Return conversation history for the console."""
     config_entry = get_entry(hass, entry)
     agent_config = get_agent_config(config_entry)

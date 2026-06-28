@@ -129,6 +129,16 @@ class Playbook:
     priority: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class PlaybookSelection:
+    """Playbook chosen for one agent turn."""
+
+    body: str
+    key: str
+    method: str
+    detail: str
+
+
 def playbook_key_for_route(route_value: str) -> str:
     """Return the playbook key for a router route value."""
     return _ROUTE_TO_PLAYBOOK.get(route_value, "general")
@@ -486,8 +496,8 @@ async def async_select_playbook(
     user_text: str,
     route_value: str,
     history: list[dict[str, str]] | None = None,
-) -> str:
-    """Return the playbook body to inject for this turn.
+) -> PlaybookSelection:
+    """Return the playbook to inject for this turn and how it was chosen.
 
     When the user has added custom rules, an LLM classifier chooses among all
     enabled playbooks; otherwise (and on any failure) the keyword route's
@@ -501,11 +511,22 @@ async def async_select_playbook(
         )
     except Exception as err:
         LOGGER.debug("Playbook store unavailable, using default: %s", err)
-        return default_playbook_body(key)
+        body = default_playbook_body(key)
+        return PlaybookSelection(
+            body=body,
+            key=key,
+            method="route",
+            detail="default playbook (store unavailable)",
+        )
 
     if custom == 0:
-        # No user rules: keep the deterministic, zero-cost route mapping.
-        return await hass.async_add_executor_job(store.active_body, key)
+        body = await hass.async_add_executor_job(store.active_body, key)
+        return PlaybookSelection(
+            body=body,
+            key=key,
+            method="route",
+            detail=f"route playbook ({key})",
+        )
 
     selected = await select_playbook_with_llm(
         llm,
@@ -515,8 +536,19 @@ async def async_select_playbook(
         catalog=catalog,
     )
     if selected is not None:
-        return selected.body
-    return await hass.async_add_executor_job(store.active_body, key)
+        return PlaybookSelection(
+            body=selected.body,
+            key=selected.route,
+            method="llm",
+            detail=f"LLM picked {selected.route}",
+        )
+    body = await hass.async_add_executor_job(store.active_body, key)
+    return PlaybookSelection(
+        body=body,
+        key=key,
+        method="route",
+        detail=f"route fallback ({key})",
+    )
 
 
 def _selection_inputs(store: PlaybookStore) -> tuple[list[Playbook], int]:

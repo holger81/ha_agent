@@ -1175,7 +1175,11 @@ class HaAgentPanel extends HTMLElement {
       }
     };
     add("Route", m.route);
+    add("Classification", m.classification);
     add("Playbook", m.playbook);
+    if (m.playbook_detail) {
+      add("Playbook picker", m.playbook_detail);
+    }
     if (m.skill) {
       add("Skill", m.skill);
     } else if (msg.activeSkill?.title) {
@@ -1186,7 +1190,8 @@ class HaAgentPanel extends HTMLElement {
       add(m.model_role, `${m.model}${host}`);
     }
     if (m.classifier?.model) {
-      add("Classifier", m.classifier.model);
+      const host = m.classifier.host ? ` @ ${m.classifier.host}` : "";
+      add("Classifier", `${m.classifier.model}${host}`);
     }
     add("LLM step", m.iteration);
     add("MCP tools", m.mcp_tools);
@@ -1201,19 +1206,30 @@ class HaAgentPanel extends HTMLElement {
           `</span>`
       )
       .join("");
-    return `<div class="turn-meta">${items}</div>`;
+    return `<div class="turn-meta"><span class="turn-meta-heading">Turn info</span>${items}</div>`;
   }
 
   _applyHistory(history) {
     if (this._streaming) return;
+    const priorMeta = new Map();
+    for (const msg of this._messages) {
+      if (msg.role === "assistant" && msg.content && msg.turnMeta) {
+        priorMeta.set(String(msg.content).trim(), msg.turnMeta);
+      }
+    }
     this._messages = (history || []).map((item) => {
       const thinking = String(item.thinking || "");
+      const content = item.content || "";
       return {
         id: this._msgId++,
         role: item.role,
-        content: item.content,
+        content,
         thinking,
         tools: item.tools || [],
+        turnMeta:
+          item.turn_meta ||
+          priorMeta.get(String(content).trim()) ||
+          null,
         thinkingCollapsed: Boolean(thinking.trim()),
         thinkingUserToggled: false,
       };
@@ -1547,31 +1563,26 @@ class HaAgentPanel extends HTMLElement {
     this._clearTurnTimeout();
     this._closeOpenStreamMessages();
     this._streaming = false;
-    if (
-      data.active_skill &&
-      data.active_skill !== "none"
-    ) {
-      for (let index = this._messages.length - 1; index >= 0; index -= 1) {
-        const msg = this._messages[index];
-        if (msg.role !== "assistant") continue;
+    for (let index = this._messages.length - 1; index >= 0; index -= 1) {
+      const msg = this._messages[index];
+      if (msg.role !== "assistant") continue;
+      const patch = {};
+      if (data.turn_meta) {
+        Object.assign(patch, data.turn_meta);
+      }
+      if (data.active_skill && data.active_skill !== "none") {
         if (!msg.activeSkill) {
           msg.activeSkill = { title: data.active_skill };
         }
-        msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, {
-          skill: data.active_skill,
-        });
-        break;
+        patch.skill = data.active_skill;
       }
-    }
-    if (data.last_route) {
-      for (let index = this._messages.length - 1; index >= 0; index -= 1) {
-        const msg = this._messages[index];
-        if (msg.role !== "assistant") continue;
-        msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, {
-          route: data.last_route,
-        });
-        break;
+      if (data.last_route) {
+        patch.route = data.last_route;
       }
+      if (Object.keys(patch).length) {
+        msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, patch);
+      }
+      break;
     }
     if (data.error) {
       this._messages.push({
@@ -1770,11 +1781,11 @@ class HaAgentPanel extends HTMLElement {
       .bubble { padding: 10px 12px; border-radius: 12px; max-width: 90%; word-break: break-word; }
       .bubble.user { align-self: flex-end; background: var(--primary-color); color: var(--text-primary-color, #fff); white-space: pre-wrap; }
       .assistant-turn {
-        align-self: flex-start;
+        align-self: stretch;
         display: flex;
         flex-direction: column;
         gap: 6px;
-        max-width: 90%;
+        max-width: 100%;
       }
       .skill-badge {
         align-self: flex-start;
@@ -1794,7 +1805,22 @@ class HaAgentPanel extends HTMLElement {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
-        align-self: flex-start;
+        align-items: center;
+        align-self: stretch;
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--primary-color) 8%, transparent);
+        border: 1px solid color-mix(in srgb, var(--primary-color) 22%, transparent);
+      }
+      .turn-meta-heading {
+        flex: 0 0 100%;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--primary-color);
+        margin-bottom: 2px;
       }
       .turn-meta-chip {
         display: inline-flex;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 
@@ -17,7 +18,7 @@ def _memory_file(hass: HomeAssistant, entry_id: str) -> Path:
 
 
 @callback
-def _memory_store(hass: HomeAssistant) -> dict[str, list[dict[str, str]]]:
+def _memory_store(hass: HomeAssistant) -> dict[str, list[dict[str, Any]]]:
     domain_data = hass.data.setdefault(DATA_KEY, {})
     return domain_data.setdefault(MEMORY_KEY, {})
 
@@ -28,7 +29,7 @@ def get_history(
     conversation_id: str | None,
     *,
     max_turns: int,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Return stored history for a conversation."""
     if not conversation_id or max_turns <= 0:
         return []
@@ -77,6 +78,7 @@ def append_turn(
     *,
     max_turns: int,
     entry_id: str | None = None,
+    turn_meta: dict[str, Any] | None = None,
 ) -> None:
     """Append a user/assistant turn to memory."""
     if not conversation_id or max_turns <= 0:
@@ -95,7 +97,13 @@ def append_turn(
         ):
             history.append({"role": "user", "content": user_text.strip()})
     if assistant_text.strip():
-        history.append({"role": "assistant", "content": assistant_text.strip()})
+        assistant_entry: dict[str, Any] = {
+            "role": "assistant",
+            "content": assistant_text.strip(),
+        }
+        if turn_meta:
+            assistant_entry["turn_meta"] = turn_meta
+        history.append(assistant_entry)
 
     max_messages = max_turns * 2
     if len(history) > max_messages:

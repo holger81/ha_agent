@@ -181,6 +181,19 @@ def test_classify_route_news_follow_up_after_briefing() -> None:
     assert route == router.TaskRoute.NEWS
 
 
+def test_classify_route_with_detail_news_keyword() -> None:
+    """News classification includes the matched keyword."""
+    decision = router.classify_route_with_detail(
+        "what are todays news",
+        [],
+        _router_config(enabled=True),
+    )
+    assert decision.route == router.TaskRoute.NEWS
+    assert decision.method == "keyword"
+    assert "news" in decision.detail.lower()
+    assert "news" in decision.summary
+
+
 def test_backend_for_route_returns_email_backend() -> None:
     chat = config_helpers.LlmBackend(
         base_url="http://example/v1",

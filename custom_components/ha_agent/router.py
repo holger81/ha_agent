@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from .config_helpers import LlmBackend, RouterConfig
@@ -9,10 +10,10 @@ from .context import (
     _recent_email_context,
     _recent_news_context,
     entity_matches_query,
-    is_device_action_query,
     is_email_query,
     is_informational_follow_up,
     is_news_query,
+    route_keyword_match,
 )
 from .playbooks import default_playbook_body, playbook_key_for_route
 
@@ -26,6 +27,83 @@ class TaskRoute(StrEnum):
     NEWS = "news"
 
 
+@dataclass(frozen=True)
+class RouteDecision:
+    """Keyword routing outcome for one user turn."""
+
+    route: TaskRoute
+    method: str
+    detail: str
+
+    @property
+    def summary(self) -> str:
+        """Human-readable classification label for the chat UI."""
+        if self.method == "default":
+            return "default chat (no route keyword)"
+        if self.method == "follow_up":
+            return f"follow-up → {self.route.value} ({self.detail})"
+        return f"keyword → {self.route.value} ({self.detail})"
+
+
+def classify_route_with_detail(
+    user_text: str,
+    exposed_entities: list[dict],
+    router_config: RouterConfig,
+    *,
+    route_keywords: dict[str, list[str]] | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> RouteDecision:
+    """Pick the route for this user turn and explain how it was chosen.
+
+    ``route_keywords`` carries optional per-route UI keyword overrides
+    (``{"email": [...], "news": [...], "action": [...]}``). A route absent
+    from the map uses its shipped default matcher.
+    """
+    del exposed_entities  # reserved for future entity-aware routing
+    overrides = route_keywords or {}
+    prior = history or []
+    if match := route_keyword_match(user_text, "email", overrides.get("email")):
+        return RouteDecision(TaskRoute.EMAIL, "keyword", match)
+
+    if match := route_keyword_match(user_text, "news", overrides.get("news")):
+        return RouteDecision(TaskRoute.NEWS, "keyword", match)
+
+    if (
+        router_config.action_enabled
+        and router_config.action_backend
+        and (
+            match := route_keyword_match(
+                user_text, "action", overrides.get("action")
+            )
+        )
+    ):
+        return RouteDecision(TaskRoute.HA_ACTION, "keyword", match)
+
+    if (
+        _recent_news_context(prior)
+        and is_informational_follow_up(user_text)
+        and not is_email_query(user_text, overrides.get("email"))
+    ):
+        return RouteDecision(
+            TaskRoute.NEWS,
+            "follow_up",
+            "recent news context",
+        )
+
+    if (
+        _recent_email_context(prior)
+        and is_informational_follow_up(user_text)
+        and not is_news_query(user_text, overrides.get("news"))
+    ):
+        return RouteDecision(
+            TaskRoute.EMAIL,
+            "follow_up",
+            "recent email context",
+        )
+
+    return RouteDecision(TaskRoute.CHAT, "default", "general chat")
+
+
 def classify_route(
     user_text: str,
     exposed_entities: list[dict],
@@ -34,42 +112,14 @@ def classify_route(
     route_keywords: dict[str, list[str]] | None = None,
     history: list[dict[str, str]] | None = None,
 ) -> TaskRoute:
-    """Pick the route for this user turn.
-
-    ``route_keywords`` carries optional per-route UI keyword overrides
-    (``{"email": [...], "news": [...], "action": [...]}``). A route absent
-    from the map uses its shipped default matcher.
-    """
-    overrides = route_keywords or {}
-    prior = history or []
-    if is_email_query(user_text, overrides.get("email")):
-        return TaskRoute.EMAIL
-
-    if is_news_query(user_text, overrides.get("news")):
-        return TaskRoute.NEWS
-
-    if (
-        router_config.action_enabled
-        and router_config.action_backend
-        and is_device_action_query(user_text, overrides.get("action"))
-    ):
-        return TaskRoute.HA_ACTION
-
-    if (
-        _recent_news_context(prior)
-        and is_informational_follow_up(user_text)
-        and not is_email_query(user_text, overrides.get("email"))
-    ):
-        return TaskRoute.NEWS
-
-    if (
-        _recent_email_context(prior)
-        and is_informational_follow_up(user_text)
-        and not is_news_query(user_text, overrides.get("news"))
-    ):
-        return TaskRoute.EMAIL
-
-    return TaskRoute.CHAT
+    """Pick the route for this user turn."""
+    return classify_route_with_detail(
+        user_text,
+        exposed_entities,
+        router_config,
+        route_keywords=route_keywords,
+        history=history,
+    ).route
 
 
 def has_exposed_match(user_text: str, exposed_entities: list[dict]) -> bool:

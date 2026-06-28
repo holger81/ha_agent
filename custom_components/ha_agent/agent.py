@@ -45,10 +45,10 @@ from .loop_policy import (
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, get_history
-from .playbooks import async_select_playbook, playbook_key_for_route
+from .playbooks import async_select_playbook
 from .recovery_hints import async_recovery_hints
 from .route_keywords import async_route_keyword_map
-from .router import TaskRoute, backend_for_route, classify_route
+from .router import TaskRoute, backend_for_route, classify_route_with_detail
 from .skills.commands import (
     _MANUAL_SAVE,
     is_skill_admin_query,
@@ -624,14 +624,23 @@ async def run_agent(
         return
 
     route_keywords = await async_route_keyword_map(hass, entry_id)
-    route = classify_route(
+    route_decision = classify_route_with_detail(
         user_text,
         exposed_entities,
         router_config,
         route_keywords=route_keywords,
         history=history,
     )
+    route = route_decision.route
     record_route(hass, entry_id, route)
+    yield AgentDelta(
+        meta={
+            "route": route.value,
+            "classification": route_decision.summary,
+            "route_method": route_decision.method,
+            "route_detail": route_decision.detail,
+        }
+    )
     hint_rules = await async_recovery_hints(hass, entry_id)
 
     matched_skills = []
@@ -702,7 +711,7 @@ async def run_agent(
         skill_hints=skill_hints,
         route=route.value,
     )
-    playbook = await async_select_playbook(
+    playbook_selection = await async_select_playbook(
         hass,
         entry_id,
         llm,
@@ -717,7 +726,7 @@ async def run_agent(
         mcp_session_prompt=mcp_session_prompt,
         tool_context=tool_context,
         extra_system_prompt=extra_system_prompt,
-        route_playbook=playbook,
+        route_playbook=playbook_selection.body,
     )
     messages = build_messages(
         system_message=system_message,
@@ -742,18 +751,22 @@ async def run_agent(
     )
 
     classifier_backend = router_config.classifier_backend or backend
-    yield AgentDelta(
-        meta={
-            "route": route.value,
-            "playbook": playbook_key_for_route(route.value),
-            "skill": matched_skills[0].title if matched_skills else None,
-            "skill_slug": matched_skills[0].slug if matched_skills else None,
-            "history_messages": len(history),
-            "mcp_tools": len(llm_tools),
-            "classifier": _model_chip(classifier_backend),
-            "max_iterations": agent_config.max_iterations,
-        }
-    )
+    turn_meta: dict[str, Any] = {
+        "route": route.value,
+        "classification": route_decision.summary,
+        "route_method": route_decision.method,
+        "route_detail": route_decision.detail,
+        "playbook": playbook_selection.key,
+        "playbook_method": playbook_selection.method,
+        "playbook_detail": playbook_selection.detail,
+        "skill": matched_skills[0].title if matched_skills else None,
+        "skill_slug": matched_skills[0].slug if matched_skills else None,
+        "history_messages": len(history),
+        "mcp_tools": len(llm_tools),
+        "classifier": _model_chip(classifier_backend),
+        "max_iterations": agent_config.max_iterations,
+    }
+    yield AgentDelta(meta=turn_meta)
 
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
@@ -767,13 +780,13 @@ async def run_agent(
             prefer_action=route == TaskRoute.HA_ACTION and not use_chat_backend,
         )
         model_role = _agent_model_role(route, use_chat_backend=use_chat_backend)
-        yield AgentDelta(
-            meta={
-                "iteration": iteration + 1,
-                "model_role": model_role,
-                **_model_chip(active_backend),
-            }
-        )
+        iteration_meta = {
+            "iteration": iteration + 1,
+            "model_role": model_role,
+            **_model_chip(active_backend),
+        }
+        turn_meta.update(iteration_meta)
+        yield AgentDelta(meta=iteration_meta)
 
         if iteration > 0 and agent_config.show_reasoning_in_chat:
             yield AgentDelta(thinking_clear=True)
@@ -1008,6 +1021,7 @@ async def run_agent(
             memory_assistant_text(assistant_text, controlled_entity_ids),
             max_turns=agent_config.history_turns,
             entry_id=entry_id,
+            turn_meta=turn_meta,
         )
         record_turn(hass, entry_id, trace)
         return
@@ -1027,5 +1041,6 @@ async def run_agent(
         fallback,
         max_turns=agent_config.history_turns,
         entry_id=entry_id,
+        turn_meta=turn_meta,
     )
     record_turn(hass, entry_id, trace)
