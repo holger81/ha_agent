@@ -48,6 +48,87 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
         max_iterations=8,
     ),
     EvalCase(
+        id="light_on",
+        task="action",
+        user_text="turn on the bedroom light",
+        exposed_entities=[
+            {
+                "entity_id": "light.bedroom",
+                "name": "Bedroom",
+                "state": "off",
+                "area_name": "Bedroom",
+            }
+        ],
+        expected_tool="home_assistant__ha_call_service",
+        expected_tool_args={
+            "domain": "light",
+            "service": "turn_on",
+            "entity_id": "light.bedroom",
+        },
+        expected_text_contains=["on"],
+        mock_mcp_responses=['{"success": true}'],
+    ),
+    EvalCase(
+        id="climate_set_temp",
+        task="action",
+        user_text="set the living room to 21 degrees",
+        exposed_entities=[
+            {
+                "entity_id": "climate.living",
+                "name": "Living room",
+                "state": "heat",
+                "area_name": "Living room",
+            }
+        ],
+        expected_tool="home_assistant__ha_call_service",
+        expected_tool_args={
+            "domain": "climate",
+            "service": "set_temperature",
+            "entity_id": "climate.living",
+        },
+        expected_text_contains=["21"],
+        mock_mcp_responses=['{"success": true}'],
+    ),
+    EvalCase(
+        id="media_pause",
+        task="action",
+        user_text="pause the kitchen speaker",
+        exposed_entities=[
+            {
+                "entity_id": "media_player.kitchen",
+                "name": "Kitchen speaker",
+                "state": "playing",
+                "area_name": "Kitchen",
+            }
+        ],
+        expected_tool="home_assistant__ha_call_service",
+        expected_tool_args={
+            "domain": "media_player",
+            "service": "media_pause",
+            "entity_id": "media_player.kitchen",
+        },
+        expected_text_contains=["pause"],
+        mock_mcp_responses=['{"success": true}'],
+    ),
+    EvalCase(
+        id="scene_movie_night",
+        task="action",
+        user_text="activate the movie night scene",
+        exposed_entities=[],
+        expected_tool="home_assistant__ha_call_service",
+        expected_tool_args={
+            "domain": "scene",
+            "service": "turn_on",
+            "entity_id": "scene.movie_night",
+        },
+        expected_text_contains=["scene"],
+        mock_mcp_responses=[
+            '{"tools":[{"toolName":"home_assistant__ha_call_service"}]}',
+            '{"success": true}',
+        ],
+        max_iterations=8,
+    ),
+    EvalCase(
         id="news_headlines",
         task="news",
         user_text="What's the news?",
@@ -69,6 +150,50 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
         user_text="what is the weather like today",
         expected_tool=None,
         expected_text_contains=["weather"],
+        mock_mcp_responses=[],
+        max_iterations=4,
+    ),
+    EvalCase(
+        id="chat_greeting",
+        task="chat",
+        user_text="hello, how are you?",
+        expected_tool=None,
+        expected_text_contains=["hello"],
+        mock_mcp_responses=[],
+        max_iterations=4,
+    ),
+    EvalCase(
+        id="chat_help",
+        task="chat",
+        user_text="what can you help me with around the house?",
+        expected_tool=None,
+        expected_text_contains=["help"],
+        mock_mcp_responses=[],
+        max_iterations=4,
+    ),
+    EvalCase(
+        id="chat_entity_state",
+        task="chat",
+        user_text="is the dining room light on?",
+        exposed_entities=[
+            {
+                "entity_id": "light.dining",
+                "name": "Dining",
+                "state": "on",
+                "area_name": "Dining room",
+            }
+        ],
+        expected_tool=None,
+        expected_text_contains=["on"],
+        mock_mcp_responses=[],
+        max_iterations=4,
+    ),
+    EvalCase(
+        id="chat_explain",
+        task="chat",
+        user_text="explain what a smart home assistant does in one sentence",
+        expected_tool=None,
+        expected_text_contains=["home"],
         mock_mcp_responses=[],
         max_iterations=4,
     ),

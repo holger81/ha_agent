@@ -93,6 +93,14 @@ def test_list_eval_cases_filters_tasks() -> None:
     assert {case.task for case in cases} == {"news", "email"}
 
 
+def test_builtin_case_counts() -> None:
+    action_cases = eval_cases.cases_for_task("action")
+    chat_cases = eval_cases.cases_for_task("chat")
+    assert len(action_cases) == 6
+    assert len(chat_cases) == 5
+    assert len(eval_cases.list_eval_cases()) == 16
+
+
 def test_score_case_passes_when_tool_and_text_match() -> None:
     case = eval_cases.list_eval_cases(tasks=["news"])[0]
     trace = skills_models.TurnTrace(
