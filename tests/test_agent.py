@@ -155,6 +155,21 @@ agent_mod = _load_module("agent")
 config_helpers = _load_module("config_helpers")
 llm_client = _load_module("llm_client")
 
+
+def _route_classifier_chat(route: str = "chat") -> llm_client.ChatResult:
+    """Mock LLM response for the per-turn route classifier."""
+    payload = json.dumps({"route": route})
+    return llm_client.ChatResult(
+        content=payload,
+        tool_calls=[],
+        assistant_message={"role": "assistant", "content": payload},
+    )
+
+
+def _chat_side_effect_with_route(route: str, *results: llm_client.ChatResult):
+    """Prepend a route-classifier mock response to agent chat side effects."""
+    return [_route_classifier_chat(route), *results]
+
 DEFAULT_SKILLS_CONFIG = config_helpers.SkillsConfig(
     learning_enabled=False,
     auto_save=False,
@@ -202,7 +217,9 @@ async def test_run_agent_executes_tool_then_replies() -> None:
     second = llm_client.ChatResult(content="Done.", tool_calls=[])
 
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(side_effect=[first, second])
+    mock_llm.chat = AsyncMock(
+        side_effect=_chat_side_effect_with_route("chat", first, second)
+    )
 
     mock_mcp = MagicMock()
     mock_mcp.call_tool = AsyncMock(return_value='{"success": true}')
@@ -270,7 +287,7 @@ async def test_run_agent_executes_tool_then_replies() -> None:
     ]
 
     assert _agent_content(chunks) == ["Done."]
-    assert mock_llm.chat.await_count == 2
+    assert mock_llm.chat.await_count == 3
     mock_mcp.call_tool.assert_awaited_once()
 
 
@@ -298,7 +315,7 @@ def _make_incremental_stream(parts: list[str]):
 async def test_run_agent_yields_stream_deltas_to_assist() -> None:
     """Streaming mode forwards LLM deltas instead of one buffered reply."""
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock()
+    mock_llm.chat = AsyncMock(return_value=_route_classifier_chat("chat"))
     mock_llm.chat_stream = _make_stream("Hello there.")
 
     mock_mcp = MagicMock()
@@ -348,7 +365,7 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
 
     assert "".join(_agent_content(chunks)) == "Hello there."
     assert len(chunks) > 1
-    mock_llm.chat.assert_not_called()
+    mock_llm.chat.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -608,7 +625,9 @@ async def test_run_agent_shows_tool_progress_in_chat() -> None:
     second = llm_client.ChatResult(content="Done.", tool_calls=[])
 
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(side_effect=[first, second])
+    mock_llm.chat = AsyncMock(
+        side_effect=_chat_side_effect_with_route("chat", first, second)
+    )
     mock_mcp = MagicMock()
     mock_mcp.call_tool = AsyncMock(return_value='{"success": true}')
     mock_mcp.get_session_prompt = AsyncMock(return_value="")

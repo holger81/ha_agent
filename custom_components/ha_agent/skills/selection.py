@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -67,6 +68,18 @@ _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
 }
 
 _CATALOG_LIMIT = 30
+
+
+@dataclass(frozen=True, slots=True)
+class SkillSelectionResult:
+    """Outcome of skill matching for one agent turn."""
+
+    skills: list[Skill]
+    method: str
+    summary: str
+    detail: str
+    candidate_count: int = 0
+    classifier_raw: str | None = None
 
 
 def _skill_text(skill: Skill) -> str:
@@ -169,10 +182,10 @@ async def select_skills_with_llm(
     route: str | None,
     catalog: list[Skill],
     max_select: int = 1,
-) -> list[Skill]:
-    """Ask the chat model which catalog skill(s) apply to this turn."""
+) -> tuple[list[Skill], str]:
+    """Ask the classifier model which catalog skill(s) apply; return (skills, raw)."""
     if not catalog or max_select <= 0:
-        return []
+        return [], ""
 
     entries = [
         {
@@ -204,16 +217,17 @@ async def select_skills_with_llm(
         result = await llm.chat(messages, backend, tools=[])
     except Exception as err:
         LOGGER.warning("Skill selection LLM call failed: %s", err)
-        return []
+        return [], ""
 
+    raw = (result.content or "").strip()
     by_slug = {skill.slug: skill for skill in catalog}
     selected: list[Skill] = []
-    for slug in parse_skill_selection(result.content or ""):
+    for slug in parse_skill_selection(raw):
         if skill := by_slug.get(slug):
             selected.append(skill)
         if len(selected) >= max_select:
             break
-    return selected
+    return selected, raw
 
 
 def _merge_catalog(*groups: list[Skill]) -> list[Skill]:
@@ -285,10 +299,15 @@ async def resolve_skills_for_turn(
     history: list[dict[str, str]] | None = None,
     route: str | None = None,
     max_inject: int = 3,
-) -> list[Skill]:
+) -> SkillSelectionResult:
     """Pick skill(s) for a turn via FTS candidates and LLM selection."""
     if max_inject <= 0 or is_generic_chitchat(user_text):
-        return []
+        return SkillSelectionResult(
+            skills=[],
+            method="skipped",
+            summary="no skill (chitchat)",
+            detail="Skill classifier skipped for greeting/chitchat.",
+        )
 
     store = get_skill_store(hass, entry_id)
 
@@ -305,17 +324,34 @@ async def resolve_skills_for_turn(
     candidates = _filter_by_route(candidates, route)
     fts_matches = _filter_by_route(fts_matches, route)
     if not candidates and not fts_matches:
-        return []
+        return SkillSelectionResult(
+            skills=[],
+            method="none",
+            summary="no skill (no candidates)",
+            detail="No enabled skills matched this query on the active route.",
+        )
 
     # FTS already pinned a single route-relevant skill — skip the extra LLM call.
     if len(fts_matches) == 1:
-        return fts_matches[:max_inject]
+        skill = fts_matches[0]
+        return SkillSelectionResult(
+            skills=fts_matches[:max_inject],
+            method="fts_only",
+            summary=f"FTS → {skill.slug}",
+            detail=f"Keyword search pinned skill {skill.title!r} ({skill.slug}).",
+            candidate_count=1,
+        )
 
     catalog = _filter_by_route(_merge_catalog(fts_matches, candidates), route)
     if not catalog:
-        return []
+        return SkillSelectionResult(
+            skills=[],
+            method="none",
+            summary="no skill (route filter)",
+            detail="Candidates were filtered out for the active route.",
+        )
 
-    selected = await select_skills_with_llm(
+    selected, raw = await select_skills_with_llm(
         llm,
         backend,
         user_text=user_text,
@@ -323,10 +359,43 @@ async def resolve_skills_for_turn(
         catalog=catalog,
         max_select=max_inject,
     )
+    raw_preview = raw[:240] if raw else None
     if selected:
-        return _filter_by_route(selected, route)[:max_inject]
+        filtered = _filter_by_route(selected, route)[:max_inject]
+        slugs = ", ".join(skill.slug for skill in filtered)
+        return SkillSelectionResult(
+            skills=filtered,
+            method="llm",
+            summary=f"LLM → {slugs}",
+            detail=(
+                f"Classifier picked {len(filtered)} skill(s) from "
+                f"{len(catalog)} candidate(s): {slugs}."
+            ),
+            candidate_count=len(catalog),
+            classifier_raw=raw_preview,
+        )
 
     if fts_matches:
-        return fts_matches[:max_inject]
+        skill = fts_matches[0]
+        return SkillSelectionResult(
+            skills=fts_matches[:max_inject],
+            method="fts_fallback",
+            summary=f"LLM none, FTS → {skill.slug}",
+            detail=(
+                f"Classifier returned no skill from {len(catalog)} candidate(s); "
+                f"using FTS match {skill.title!r} ({skill.slug})."
+            ),
+            candidate_count=len(catalog),
+            classifier_raw=raw_preview,
+        )
 
-    return []
+    return SkillSelectionResult(
+        skills=[],
+        method="llm_empty",
+        summary="LLM → none",
+        detail=(
+            f"Classifier returned no skill from {len(catalog)} candidate(s)."
+        ),
+        candidate_count=len(catalog),
+        classifier_raw=raw_preview,
+    )

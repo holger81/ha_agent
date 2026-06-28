@@ -169,7 +169,7 @@ async def test_select_skills_with_llm_returns_catalog_matches() -> None:
         thinking_level="off",
     )
 
-    selected = await selection.select_skills_with_llm(
+    selected, raw = await selection.select_skills_with_llm(
         llm,
         backend,
         user_text="do I have new email",
@@ -179,6 +179,7 @@ async def test_select_skills_with_llm_returns_catalog_matches() -> None:
 
     assert len(selected) == 1
     assert selected[0].slug == "check-unread-emails"
+    assert "check-unread-emails" in raw
 
 
 @pytest.mark.asyncio
@@ -225,7 +226,8 @@ async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
         "anything",
     )
 
-    assert [skill.slug for skill in result] == ["a"]
+    assert [skill.slug for skill in result.skills] == ["a"]
+    assert result.method == "fts_only"
     llm.chat.assert_not_called()
 
 
@@ -272,7 +274,8 @@ async def test_news_route_does_not_select_email_only_skill(monkeypatch) -> None:
         route="news",
     )
 
-    assert result == []
+    assert result.skills == []
+    assert result.method == "none"
     llm.chat.assert_not_called()
 
 
@@ -354,7 +357,8 @@ async def test_single_fts_match_still_respects_route(monkeypatch) -> None:
         route="news",
     )
 
-    assert result == []
+    assert result.skills == []
+    assert result.method == "none"
     llm.chat.assert_not_called()
 
 
@@ -403,5 +407,6 @@ async def test_greeting_does_not_auto_select_only_skill(monkeypatch) -> None:
         route="chat",
     )
 
-    assert result == []
+    assert result.skills == []
+    assert result.method == "skipped"
     llm.chat.assert_not_called()

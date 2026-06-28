@@ -214,6 +214,14 @@ def _chat_result(
     )
 
 
+def _route_classifier_chat(route: str = "chat") -> llm_client.ChatResult:
+    return _chat_result(content=json.dumps({"route": route}))
+
+
+def _chat_side_effect_with_route(route: str, *results: llm_client.ChatResult):
+    return [_route_classifier_chat(route), *results]
+
+
 @pytest.mark.asyncio
 async def test_phase4_light_off_with_exposed_entity() -> None:
     """Exposed light can be turned off with one MCP service call."""
@@ -230,10 +238,11 @@ async def test_phase4_light_off_with_exposed_entity() -> None:
     )
     mock_llm = MagicMock()
     mock_llm.chat = AsyncMock(
-        side_effect=[
+        side_effect=_chat_side_effect_with_route(
+            "chat",
             _chat_result(tool_calls=[service_call]),
             _chat_result(content="The dining room lights are off."),
-        ]
+        )
     )
     mock_mcp = MagicMock()
     mock_mcp.call_tool = AsyncMock(return_value='{"success": true}')
@@ -293,11 +302,12 @@ async def test_phase4_cover_open_without_exposed_entity() -> None:
     )
     mock_llm = MagicMock()
     mock_llm.chat = AsyncMock(
-        side_effect=[
+        side_effect=_chat_side_effect_with_route(
+            "chat",
             _chat_result(tool_calls=[search_call]),
             _chat_result(tool_calls=[open_call]),
             _chat_result(content="I opened the patio cover."),
-        ]
+        )
     )
     mock_mcp = MagicMock()
     mock_mcp.call_tool = AsyncMock(
@@ -339,10 +349,11 @@ async def test_phase4_news_query_uses_mcp_tool() -> None:
     )
     mock_llm = MagicMock()
     mock_llm.chat = AsyncMock(
-        side_effect=[
+        side_effect=_chat_side_effect_with_route(
+            "news",
             _chat_result(tool_calls=[news_call]),
             _chat_result(content="Here are today's headlines."),
-        ]
+        )
     )
     mock_mcp = MagicMock()
     mock_mcp.call_tool = AsyncMock(return_value='{"headlines":["Example headline"]}')
@@ -385,10 +396,11 @@ async def test_phase4_email_unread_count_uses_mcp_tool() -> None:
     )
     mock_llm = MagicMock()
     mock_llm.chat = AsyncMock(
-        side_effect=[
+        side_effect=_chat_side_effect_with_route(
+            "email",
             _chat_result(tool_calls=[mail_call]),
             _chat_result(content="You have 3 unread emails."),
-        ]
+        )
     )
     mock_mcp = MagicMock()
     mock_mcp.call_tool = AsyncMock(return_value='{"count": 3}')
@@ -424,7 +436,14 @@ async def test_phase4_email_unread_count_uses_mcp_tool() -> None:
 async def test_phase4_conversation_memory_across_turns() -> None:
     """Second turn includes prior user and assistant messages."""
     mock_llm = MagicMock()
-    mock_llm.chat = AsyncMock(return_value=_chat_result(content="Still sunny."))
+    mock_llm.chat = AsyncMock(
+        side_effect=[
+            _route_classifier_chat("chat"),
+            _chat_result(content="Sunny today."),
+            _route_classifier_chat("chat"),
+            _chat_result(content="Still sunny."),
+        ]
+    )
     mock_mcp = MagicMock()
     mock_mcp.get_session_prompt = AsyncMock(return_value="")
     mock_mcp.get_llm_tools = AsyncMock(return_value=[])
@@ -452,12 +471,12 @@ async def test_phase4_conversation_memory_across_turns() -> None:
     await _run("what is the weather")
     await _run("and tomorrow")
 
-    second_messages = mock_llm.chat.await_args_list[1].args[0]
+    second_messages = mock_llm.chat.await_args_list[3].args[0]
     roles = [message["role"] for message in second_messages]
     contents = [message.get("content", "") for message in second_messages]
 
     assert roles.count("user") == 2
     assert roles.count("assistant") == 1
     assert "what is the weather" in contents
-    assert "Still sunny." in contents
+    assert "Sunny today." in contents
     assert second_messages[-1]["content"] == "and tomorrow"

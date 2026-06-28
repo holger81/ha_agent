@@ -48,7 +48,7 @@ from .memory import append_turn, get_history
 from .playbooks import async_select_playbook
 from .recovery_hints import async_recovery_hints
 from .route_keywords import async_route_keyword_map
-from .router import TaskRoute, backend_for_route, classify_route_with_detail
+from .router import TaskRoute, backend_for_route, resolve_route_with_classifier
 from .skills.commands import (
     _MANUAL_SAVE,
     is_skill_admin_query,
@@ -624,38 +624,46 @@ async def run_agent(
         return
 
     route_keywords = await async_route_keyword_map(hass, entry_id)
-    route_decision = classify_route_with_detail(
-        user_text,
-        exposed_entities,
-        router_config,
+    classifier_backend = router_config.classifier_backend or backend
+    route_resolution = await resolve_route_with_classifier(
+        llm,
+        classifier_backend,
+        user_text=user_text,
+        exposed_entities=exposed_entities,
+        router_config=router_config,
         route_keywords=route_keywords,
         history=history,
     )
-    route = route_decision.route
+    route = route_resolution.route
     record_route(hass, entry_id, route)
     yield AgentDelta(
         meta={
             "route": route.value,
-            "classification": route_decision.summary,
-            "route_method": route_decision.method,
-            "route_detail": route_decision.detail,
+            "route_classifier": route_resolution.classifier_summary,
+            "route_classifier_detail": route_resolution.classifier_detail,
+            "route_classifier_raw": route_resolution.classifier_raw,
+            "keyword_hint": route_resolution.keyword_hint,
+            "classification": route_resolution.classifier_summary,
+            "route_method": route_resolution.method,
         }
     )
     hint_rules = await async_recovery_hints(hass, entry_id)
 
     matched_skills = []
+    skill_selection = None
     skill_hints = ""
     if skills_config.use_enabled:
-        matched_skills = await resolve_skills_for_turn(
+        skill_selection = await resolve_skills_for_turn(
             hass,
             entry_id,
             llm,
-            backend,
+            classifier_backend,
             user_text,
             history=history,
             route=route.value,
             max_inject=skills_config.max_inject,
         )
+        matched_skills = skill_selection.skills
         skill_hints = build_skill_hints(matched_skills, route=route.value)
         update_agent_status(
             hass,
@@ -753,14 +761,20 @@ async def run_agent(
     classifier_backend = router_config.classifier_backend or backend
     turn_meta: dict[str, Any] = {
         "route": route.value,
-        "classification": route_decision.summary,
-        "route_method": route_decision.method,
-        "route_detail": route_decision.detail,
+        "route_classifier": route_resolution.classifier_summary,
+        "route_classifier_detail": route_resolution.classifier_detail,
+        "keyword_hint": route_resolution.keyword_hint,
+        "classification": route_resolution.classifier_summary,
+        "route_method": route_resolution.method,
         "playbook": playbook_selection.key,
         "playbook_method": playbook_selection.method,
         "playbook_detail": playbook_selection.detail,
         "skill": matched_skills[0].title if matched_skills else None,
         "skill_slug": matched_skills[0].slug if matched_skills else None,
+        "skill_classifier": skill_selection.summary if skill_selection else None,
+        "skill_classifier_detail": (
+            skill_selection.detail if skill_selection else None
+        ),
         "history_messages": len(history),
         "mcp_tools": len(llm_tools),
         "classifier": _model_chip(classifier_backend),

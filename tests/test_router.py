@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 COMPONENT = (
     Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 )
@@ -192,6 +194,41 @@ def test_classify_route_with_detail_news_keyword() -> None:
     assert decision.method == "keyword"
     assert "news" in decision.detail.lower()
     assert "news" in decision.summary
+
+
+@pytest.mark.asyncio
+async def test_resolve_route_with_classifier_uses_llm() -> None:
+    """Route classifier LLM choice wins over keyword hints."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    llm = MagicMock()
+    llm.chat = AsyncMock(
+        return_value=MagicMock(content='{"route": "chat"}')
+    )
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="classifier",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.1,
+        timeout=30,
+        thinking_level="off",
+    )
+    resolution = await router.resolve_route_with_classifier(
+        llm,
+        backend,
+        user_text="tell me a joke",
+        exposed_entities=[],
+        router_config=_router_config(enabled=True),
+        history=[
+            {"role": "user", "content": "what are todays news"},
+            {"role": "assistant", "content": "Headlines..."},
+        ],
+    )
+    assert resolution.route == router.TaskRoute.CHAT
+    assert resolution.method == "llm"
+    assert resolution.classifier_summary == "LLM → chat"
+    llm.chat.assert_awaited_once()
 
 
 def test_backend_for_route_returns_email_backend() -> None:

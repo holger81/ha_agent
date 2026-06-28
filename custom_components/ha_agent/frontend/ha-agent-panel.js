@@ -1175,7 +1175,10 @@ class HaAgentPanel extends HTMLElement {
       }
     };
     add("Route", m.route);
-    add("Classification", m.classification);
+    add("Route classifier", m.route_classifier || m.classification);
+    if (m.keyword_hint) {
+      add("Keyword hint", m.keyword_hint);
+    }
     add("Playbook", m.playbook);
     if (m.playbook_detail) {
       add("Playbook picker", m.playbook_detail);
@@ -1185,6 +1188,7 @@ class HaAgentPanel extends HTMLElement {
     } else if (msg.activeSkill?.title) {
       add("Skill", msg.activeSkill.title);
     }
+    add("Skill classifier", m.skill_classifier);
     if (m.model_role && m.model) {
       const host = m.host ? ` @ ${m.host}` : "";
       add(m.model_role, `${m.model}${host}`);
