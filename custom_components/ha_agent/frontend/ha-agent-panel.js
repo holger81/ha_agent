@@ -24,6 +24,7 @@ class HaAgentPanel extends HTMLElement {
     this._turnTimeout = null;
     this._stickToBottom = true;
     this._chatRenderPending = false;
+    this._streamPatchPending = false;
     this._threadSearch = "";
     this._threadSearchTimer = null;
     this._messagesScrollEl = null;
@@ -1434,7 +1435,128 @@ class HaAgentPanel extends HTMLElement {
     if (data.tool) {
       this._applyToolDelta(msg, data.tool);
     }
-    this._scheduleChatRender();
+    if (this._deltaNeedsFullChatRender(data)) {
+      this._scheduleChatRender();
+    } else {
+      this._scheduleStreamingPatch(msg);
+    }
+  }
+
+  _deltaNeedsFullChatRender(data) {
+    return Boolean(
+      data.tool ||
+        data.meta ||
+        data.skill ||
+        data.subagent ||
+        data.thinking_clear ||
+        data.content_clear
+    );
+  }
+
+  _scheduleStreamingPatch(msg) {
+    if (this._streamPatchPending) return;
+    this._streamPatchPending = true;
+    requestAnimationFrame(() => {
+      this._streamPatchPending = false;
+      if (this._tab !== "chat") {
+        return;
+      }
+      if (this._patchOpenStreamMessageDom(msg)) {
+        return;
+      }
+      this._scheduleChatRender();
+    });
+  }
+
+  _patchOpenStreamMessageDom(msg) {
+    const messagesEl = this.shadowRoot?.querySelector(".messages");
+    if (!messagesEl) {
+      return false;
+    }
+    const turn = messagesEl.querySelector(`[data-assistant-msg-id="${msg.id}"]`);
+    if (!turn) {
+      return false;
+    }
+
+    const saved = this._captureMessagesScroll();
+    messagesEl.querySelector(".bubble.assistant.typing")?.remove();
+    this._syncThinkingPanelDom(turn, msg);
+    this._syncAssistantContentDom(turn, msg);
+    this._restoreMessagesScroll(saved);
+    return true;
+  }
+
+  _syncThinkingPanelDom(turn, msg) {
+    const thinking = String(msg.thinking || "").trim();
+    let panel = turn.querySelector(".thinking-panel");
+
+    if (!thinking) {
+      panel?.remove();
+      return;
+    }
+
+    if (!panel) {
+      const anchor =
+        turn.querySelector(".tools-stack") ||
+        turn.querySelector(".bubble.assistant:not(.typing)");
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = this._renderThinkingPanel(msg).trim();
+      const newPanel = wrapper.firstElementChild;
+      if (!newPanel) return;
+      if (anchor) {
+        turn.insertBefore(newPanel, anchor);
+      } else {
+        turn.appendChild(newPanel);
+      }
+      return;
+    }
+
+    const collapsed = Boolean(msg.thinkingCollapsed);
+    panel.classList.toggle("collapsed", collapsed);
+    panel.classList.toggle("expanded", !collapsed);
+
+    const toggle = panel.querySelector(".thinking-toggle");
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      const icon = toggle.querySelector(".thinking-toggle-icon");
+      if (icon) icon.textContent = collapsed ? "▸" : "▾";
+      const label = toggle.querySelector(".thinking-toggle-label");
+      const live =
+        msg._streamOpen && !String(msg.content || "").trim() ? " (live)" : "";
+      if (label) label.textContent = `Reasoning${live}`;
+
+      let previewEl = toggle.querySelector(".thinking-preview");
+      const preview = collapsed ? this._thinkingPreview(thinking) : "";
+      if (preview) {
+        if (!previewEl) {
+          previewEl = document.createElement("span");
+          previewEl.className = "thinking-preview";
+          toggle.appendChild(previewEl);
+        }
+        previewEl.textContent = preview;
+      } else {
+        previewEl?.remove();
+      }
+    }
+
+    const body = panel.querySelector(".thinking-body");
+    if (body) body.textContent = thinking;
+  }
+
+  _syncAssistantContentDom(turn, msg) {
+    const content = String(msg.content || "").trim();
+    let bubble = turn.querySelector(".bubble.assistant:not(.typing)");
+    if (!content) {
+      bubble?.remove();
+      return;
+    }
+    const html = this._renderAssistantBody(msg.content);
+    if (!bubble) {
+      bubble = document.createElement("div");
+      bubble.className = "bubble assistant";
+      turn.appendChild(bubble);
+    }
+    bubble.innerHTML = html;
   }
 
   _applyToolDelta(msg, tool) {
@@ -1577,7 +1699,7 @@ class HaAgentPanel extends HTMLElement {
           ? `<div class="bubble assistant">${body}</div>`
           : "";
 
-        return `<div class="assistant-turn">${turnMeta}${subagentBlock}${skillBadge}${thinking}${tools}${bubble}</div>`;
+        return `<div class="assistant-turn" data-assistant-msg-id="${m.id}">${turnMeta}${subagentBlock}${skillBadge}${thinking}${tools}${bubble}</div>`;
       })
       .join("");
 
@@ -1627,6 +1749,11 @@ class HaAgentPanel extends HTMLElement {
       if (!msg) return;
       msg.thinkingCollapsed = !msg.thinkingCollapsed;
       msg.thinkingUserToggled = true;
+      const turn = toggle.closest("[data-assistant-msg-id]");
+      if (turn) {
+        this._syncThinkingPanelDom(turn, msg);
+        return;
+      }
       this._updateChatMessages();
     });
   }
@@ -2068,6 +2195,8 @@ class HaAgentPanel extends HTMLElement {
         font: inherit;
         text-align: left;
         cursor: pointer;
+        position: relative;
+        z-index: 1;
       }
       .thinking-toggle:hover {
         background: color-mix(in srgb, var(--primary-color) 10%, transparent);
