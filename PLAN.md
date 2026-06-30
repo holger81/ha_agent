@@ -252,16 +252,16 @@ this is the dominant latency + reliability cost.
 
 #### Sub-phases
 
-- [ ] **8a** — Structured output everywhere (GBNF / `json_schema`) — **P0**
-- [ ] **8b** — Merged prepass: one constrained call for route + complexity + slots + skill — **P0**
-- [ ] **8c** — Tool-set pruning per loop iteration — **P0**
-- [ ] **8d** — In-turn context compaction — **P1**
-- [ ] **8e** — Emit answer before async learning — **P1**
-- [ ] **8f** — Collapse identical roles on single-machine setups — **P1**
-- [ ] **8g** — Replan trigger for orchestrated path — **P2**
-- [ ] **8h** — Parallel independent tool calls — **P2**
-- [ ] **8i** — Consolidated local telemetry (per-call latency + tokens) — **P2**
-- [ ] **8j** — KV-cache & deployment hygiene — **P3**
+- [x] **8a** — Structured output everywhere (GBNF / `json_schema`) — **P0**
+- [x] **8b** — Merged prepass: one constrained call for route + complexity + slots + skill — **P0**
+- [x] **8c** — Tool-set pruning per loop iteration — **P0**
+- [x] **8d** — In-turn context compaction — **P1**
+- [x] **8e** — Emit answer before async learning — **P1**
+- [x] **8f** — Collapse identical roles on single-machine setups — **P1**
+- [x] **8g** — Replan trigger for orchestrated path — **P2**
+- [x] **8h** — Parallel independent tool calls — **P2**
+- [x] **8i** — Consolidated local telemetry (per-call latency + tokens) — **P2**
+- [x] **8j** — KV-cache & deployment hygiene — **P3**
 
 #### Exit criteria
 
