@@ -235,3 +235,39 @@ Phase 5 adds **router options** (still UI-only):
 - [x] Chat reproduces agent answers with thinking/tool blocks in UI
 - [x] Skills table matches SQLite store; toggle/delete reflected on next turn
 - [x] Unit tests for serialize, activity, chat events, migration v7
+
+---
+
+### Phase 8 — Agentic loop modernization (small-machine first)
+
+**Scope:** Greenfield rework of the turn lifecycle to cut LLM round-trips and per-call
+prompt size, and to make tool/classifier output reliable on small local models. Full design,
+rationale, and per-sub-phase exit criteria in
+[docs/agentic-loop-redesign.md](docs/agentic-loop-redesign.md).
+
+**Problem:** a typical tool turn issues 4–8 serial LLM calls (15–25+ when orchestrated),
+re-sends the full tool schema every iteration, and parses free-form JSON from small models
+with no constraints. On one home machine (single loaded model, ~10–40 tok/s, serial calls)
+this is the dominant latency + reliability cost.
+
+#### Sub-phases
+
+- [ ] **8a** — Structured output everywhere (GBNF / `json_schema`) — **P0**
+- [ ] **8b** — Merged prepass: one constrained call for route + complexity + slots + skill — **P0**
+- [ ] **8c** — Tool-set pruning per loop iteration — **P0**
+- [ ] **8d** — In-turn context compaction — **P1**
+- [ ] **8e** — Emit answer before async learning — **P1**
+- [ ] **8f** — Collapse identical roles on single-machine setups — **P1**
+- [ ] **8g** — Replan trigger for orchestrated path — **P2**
+- [ ] **8h** — Parallel independent tool calls — **P2**
+- [ ] **8i** — Consolidated local telemetry (per-call latency + tokens) — **P2**
+- [ ] **8j** — KV-cache & deployment hygiene — **P3**
+
+#### Exit criteria
+
+- [ ] Typical tool turn ≤ 3 LLM calls; per-iteration prompt tokens down ≥ 40%
+- [ ] Classifier JSON parse-failure rate ≈ 0
+- [ ] Time-to-final-token improved measurably on the target machine vs current `main`
+- [ ] ruff CI passes; eval-set accuracy ≥ pre-redesign baseline
+
+**Start with:** 8a → 8b → 8c (highest impact for small hardware; 8a unblocks the rest).
