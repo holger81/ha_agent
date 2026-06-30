@@ -3325,8 +3325,16 @@ class HaAgentPanel extends HTMLElement {
         const tools = (t.tool_calls || [])
           .map((call) => call.toolName || call.name || "tool")
           .join(", ");
+        const llmSummary = (t.llm_calls || [])
+          .map(
+            (call) =>
+              `${call.role || "llm"}:${call.latency_ms != null ? `${call.latency_ms}ms` : "?"}` +
+              (call.prompt_tokens != null ? ` p${call.prompt_tokens}` : "") +
+              (call.completion_tokens != null ? ` c${call.completion_tokens}` : ""),
+          )
+          .join(", ");
         const verify = (t.verification_notes || []).join(" | ");
-        const title = [tools, verify].filter(Boolean).join("\n");
+        const title = [tools, verify, llmSummary].filter(Boolean).join("\n");
         const promotable =
           !t.fallback &&
           !t.tool_errors &&
@@ -3343,6 +3351,7 @@ class HaAgentPanel extends HTMLElement {
         <td>${this._escape(t.outcome || "—")}</td>
         <td>${t.iterations || 0}</td>
         <td>${(t.tool_calls || []).length}</td>
+        <td>${(t.llm_calls || []).length}</td>
         <td>${t.tool_errors || 0}</td>
         <td>${promoteBtn}</td>
       </tr>`;
@@ -3354,8 +3363,8 @@ class HaAgentPanel extends HTMLElement {
     return `
       ${notice}
       <table>
-        <thead><tr><th>Time</th><th>Route</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>Errors</th><th>Eval</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="8">No activity yet.</td></tr>'}</tbody>
+        <thead><tr><th>Time</th><th>Route</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>LLM</th><th>Errors</th><th>Eval</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="9">No activity yet.</td></tr>'}</tbody>
       </table>
       <p class="activity-hint">Promote successful turns to custom eval cases. They run with the built-in suite on the next eval (mock MCP, same scoring).</p>`;
   }

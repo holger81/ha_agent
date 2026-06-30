@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 from homeassistant.core import HomeAssistant
 
 from .activity import record_turn
+from .compaction import compact_messages_if_needed
 from .config_helpers import AgentConfig, LlmBackend, RouterConfig, SkillsConfig
 from .const import LOGGER
 from .context import (
@@ -25,6 +27,7 @@ from .embedded_tools import (
     strip_embedded_tool_markup,
 )
 from .llm_client import LlmClient, StreamChatSession, ToolCall, stream_text_delta
+from .llm_telemetry import record_llm_call
 from .loop_policy import (
     INTERNAL_GUIDANCE_ROLE,
     LoopState,
@@ -49,10 +52,21 @@ from .loop_policy import (
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .memory import append_turn, conversation_history_for_turn
-from .orchestrator import Complexity, plan_subtasks, triage_complexity
+from .orchestrator import (
+    Complexity,
+    plan_subtasks,
+    replan_after_failure,
+    triage_complexity,
+)
 from .playbooks import async_select_playbook
+from .prepass import run_turn_prepass
 from .recovery_hints import async_recovery_hints
-from .role_registry import ModelRole, RoleRegistry, build_role_registry
+from .role_registry import (
+    ModelRole,
+    RoleRegistry,
+    build_role_registry,
+    collapse_identical_roles,
+)
 from .route_keywords import async_route_keyword_map
 from .router import TaskRoute, backend_for_route, resolve_route_with_classifier
 from .skills.commands import (
@@ -89,6 +103,7 @@ from .skills.selection import filter_tool_steps_for_route, resolve_skills_for_tu
 from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
 from .subagent import WorkerResult, run_worker
+from .tool_pruning import prune_loop_tools
 from .tools import (
     classify_tool_error,
     execute_tool,
@@ -314,6 +329,87 @@ def _prepare_next_loop_iteration(loop_state: LoopState) -> None:
     build_pending_failure_summary(loop_state)
 
 
+def _preferred_loop_tool_names(skill_steps: list[dict[str, Any]] | None) -> list[str]:
+    names: list[str] = []
+    for step in skill_steps or []:
+        name = step.get("toolName")
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _schedule_post_turn_skills(
+    hass: HomeAssistant,
+    **kwargs: Any,
+) -> None:
+    """Run learning hooks off the critical path (Phase 8e)."""
+
+    async def _run() -> None:
+        try:
+            await _post_turn_skills(hass, **kwargs)
+        except Exception as err:
+            LOGGER.warning("Post-turn skill hooks failed: %s", err)
+
+    hass.async_create_task(_run())
+
+
+def _handle_tool_result(
+    call: ToolCall,
+    raw_output: str,
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    hass: HomeAssistant,
+    loop_state: LoopState,
+    hint_rules: list[Any] | None,
+    messages: list[dict[str, Any]],
+) -> tuple[str, AgentDelta]:
+    """Finalize one tool output and append the tool message."""
+    output = finalize_output(
+        tool_name,
+        arguments,
+        raw_output,
+        hass=hass,
+        loop_state=loop_state,
+        hint_rules=hint_rules,
+    )
+    phase = "error" if output.startswith("Tool error:") else "done"
+    verification_failed = False
+    if phase == "done":
+        loop_state.iteration_had_successful_tool = True
+        if is_discovery_tool_name(tool_name):
+            loop_state.include_full_tool_catalog = True
+        if "VERIFICATION FAILED" in output:
+            verification_failed = True
+            for line in output.splitlines():
+                if "VERIFICATION FAILED" in line:
+                    record_iteration_failure(
+                        loop_state,
+                        tool_name,
+                        arguments,
+                        line.strip(),
+                    )
+                    break
+    else:
+        record_iteration_failure(loop_state, tool_name, arguments, output)
+    record_plan_tool_result(
+        loop_state,
+        tool_name,
+        arguments,
+        succeeded=phase == "done",
+        verification_failed=verification_failed,
+    )
+    record_mcp_guidance(loop_state, tool_name, output)
+    messages.append(tool_result_message(call, output))
+    return phase, AgentDelta(
+        tool=_tool_event(
+            call,
+            phase,
+            detail=_tool_event_detail(call, output),
+        )
+    )
+
+
 async def _process_tool_calls(
     agent_config: AgentConfig,
     calls: list[ToolCall],
@@ -363,6 +459,7 @@ async def _process_tool_calls(
                 if trace is not None:
                     _record_tool_call(trace, call, blocked)
 
+    runnable: list[ToolCall] = []
     for call in calls:
         if call.id in blocked_ids:
             continue
@@ -415,7 +512,40 @@ async def _process_tool_calls(
             if trace is not None:
                 _record_tool_call(trace, call, f"Tool error: {stuck_msg}")
             continue
+        runnable.append(call)
 
+    if len(runnable) > 1:
+        for call in runnable:
+            yield AgentDelta(tool=_tool_event(call, "start"))
+        raw_outputs = await asyncio.gather(
+            *[
+                _run_tool_call(
+                    mcp_client,
+                    call,
+                    exposed_entities=exposed_entities,
+                    controlled_entity_ids=controlled_entity_ids,
+                    trace=trace,
+                )
+                for call in runnable
+            ]
+        )
+        for call, raw_output in zip(runnable, raw_outputs, strict=True):
+            tool_name, arguments = _tool_call_payload(call)
+            _, delta = _handle_tool_result(
+                call,
+                raw_output,
+                tool_name=tool_name,
+                arguments=arguments,
+                hass=hass,
+                loop_state=loop_state,
+                hint_rules=hint_rules,
+                messages=messages,
+            )
+            yield delta
+        return
+
+    for call in runnable:
+        tool_name, arguments = _tool_call_payload(call)
         yield AgentDelta(tool=_tool_event(call, "start"))
         raw_output = await _run_tool_call(
             mcp_client,
@@ -424,47 +554,17 @@ async def _process_tool_calls(
             controlled_entity_ids=controlled_entity_ids,
             trace=trace,
         )
-        output = finalize_output(
-            tool_name,
-            arguments,
+        _, delta = _handle_tool_result(
+            call,
             raw_output,
+            tool_name=tool_name,
+            arguments=arguments,
             hass=hass,
             loop_state=loop_state,
             hint_rules=hint_rules,
+            messages=messages,
         )
-        phase = "error" if output.startswith("Tool error:") else "done"
-        verification_failed = False
-        if phase == "done":
-            loop_state.iteration_had_successful_tool = True
-            if "VERIFICATION FAILED" in output:
-                verification_failed = True
-                for line in output.splitlines():
-                    if "VERIFICATION FAILED" in line:
-                        record_iteration_failure(
-                            loop_state,
-                            tool_name,
-                            arguments,
-                            line.strip(),
-                        )
-                        break
-        else:
-            record_iteration_failure(loop_state, tool_name, arguments, output)
-        record_plan_tool_result(
-            loop_state,
-            tool_name,
-            arguments,
-            succeeded=phase == "done",
-            verification_failed=verification_failed,
-        )
-        record_mcp_guidance(loop_state, tool_name, output)
-        yield AgentDelta(
-            tool=_tool_event(
-                call,
-                phase,
-                detail=_tool_event_detail(call, output),
-            )
-        )
-        messages.append(tool_result_message(call, output))
+        yield delta
 
 
 async def _process_embedded_tool_calls(
@@ -534,7 +634,12 @@ async def _run_orchestrated_turn(
     from .context import build_messages, build_system_message
 
     worker_results: list[WorkerResult] = []
-    for subtask in orch_plan.subtasks:
+    pending_subtasks = list(orch_plan.subtasks)
+    replans = 0
+    structured = agent_config.structured_output_enabled
+    index = 0
+    while index < len(pending_subtasks):
+        subtask = pending_subtasks[index]
         sub_skills: list = []
         if skills_config.use_enabled:
             sub_sel = await resolve_skills_for_turn(
@@ -546,6 +651,8 @@ async def _run_orchestrated_turn(
                 history=[],
                 route=subtask.route,
                 max_inject=1,
+                structured_output_enabled=structured,
+                trace=trace,
             )
             sub_skills = sub_sel.skills
             route_skill = await load_route_skill(
@@ -559,6 +666,7 @@ async def _run_orchestrated_turn(
             )
             sub_skills = merge_route_and_learned_skills(route_skill, sub_skills)
 
+        worker_result: WorkerResult | None = None
         async for meta, result in run_worker(
             hass,
             llm=llm,
@@ -576,15 +684,44 @@ async def _run_orchestrated_turn(
             if meta:
                 yield AgentDelta(subagent=meta)
             if result is not None:
-                worker_results.append(result)
-                trace.subtask_results.append(
+                worker_result = result
+
+        if worker_result is not None:
+            worker_results.append(worker_result)
+            trace.subtask_results.append(
+                {
+                    "subgoal": worker_result.subgoal,
+                    "route": worker_result.route,
+                    "summary": worker_result.assistant_text[:500],
+                    "tool_errors": worker_result.tool_errors,
+                }
+            )
+            if (
+                worker_result.tool_errors > 0
+                and replans < agent_config.max_replans
+            ):
+                replans += 1
+                completed = [
                     {
-                        "subgoal": result.subgoal,
-                        "route": result.route,
-                        "summary": result.assistant_text[:500],
-                        "tool_errors": result.tool_errors,
+                        "subgoal": item.subgoal,
+                        "summary": item.assistant_text[:300],
                     }
+                    for item in worker_results
+                ]
+                revised = await replan_after_failure(
+                    llm,
+                    registry,
+                    user_text=user_text,
+                    plan=orch_plan,
+                    failed_subtask=subtask,
+                    completed_summaries=completed,
+                    structured_output_enabled=structured,
+                    trace=trace,
                 )
+                pending_subtasks = revised.subtasks + pending_subtasks[index + 1 :]
+                index = 0
+                continue
+        index += 1
 
     synth_backend = registry.backend_for(ModelRole.WORKER_CHAT)
     synth_body = "\n".join(
@@ -602,6 +739,7 @@ async def _run_orchestrated_turn(
         user_text=f"Original request: {user_text}\n\nSubtask results:\n{synth_body}",
     )
     synth = await llm.chat(synth_messages, synth_backend, tools=[])
+    record_llm_call(trace, role="synth", backend=synth_backend, result=synth)
     assistant_text = (synth.content or "").strip() or FALLBACK_MESSAGE
     yield AgentDelta(content=assistant_text)
 
@@ -612,6 +750,8 @@ async def _run_orchestrated_turn(
         assistant_text=assistant_text,
         tool_calls=trace.tool_calls,
         tool_errors=sum(r.tool_errors for r in worker_results),
+        structured_output_enabled=structured,
+        trace=trace,
     )
     trace.verifier_verdict = "pass" if v_result.passed else "fail"
     trace.verifier_detail = v_result.reason
@@ -625,7 +765,7 @@ async def _run_orchestrated_turn(
 
     trace.assistant_text = assistant_text
     trace.outcome = TurnOutcome.SUCCESS if v_result.passed else TurnOutcome.PARTIAL
-    suffix, skill_meta = await _post_turn_skills(
+    _schedule_post_turn_skills(
         hass,
         entry_id=entry_id,
         llm=llm,
@@ -636,11 +776,6 @@ async def _run_orchestrated_turn(
         history=[],
         matched_skills=[],
     )
-    if skill_meta:
-        yield AgentDelta(meta=skill_meta)
-    if suffix:
-        assistant_text = f"{assistant_text}{suffix}".strip()
-        yield AgentDelta(content=suffix)
 
     append_turn(
         hass,
@@ -1000,30 +1135,73 @@ async def run_agent(
 
     route_keywords = await async_route_keyword_map(hass, entry_id)
     classifier_backend = router_config.classifier_backend or backend
-    route_resolution = await resolve_route_with_classifier(
-        llm,
-        classifier_backend,
-        user_text=user_text,
-        exposed_entities=exposed_entities,
-        router_config=router_config,
-        route_keywords=route_keywords,
-        history=history,
+    role_registry = collapse_identical_roles(
+        build_role_registry(backend, router_config)
     )
-    route = route_resolution.route
+    structured = agent_config.structured_output_enabled
+    trace = TurnTrace(
+        user_text=user_text,
+        history_len=len(history),
+        conversation_id=conversation_id,
+    )
+
+    prepass_result = None
+    skill_selection = None
+    matched_skills: list = []
+    slot_bindings: dict[str, str] = {}
+    if agent_config.prepass_enabled:
+        prepass_result = await run_turn_prepass(
+            hass,
+            entry_id,
+            llm,
+            classifier_backend,
+            user_text=user_text,
+            history=history,
+            router_config=router_config,
+            route_keywords=route_keywords,
+            skills_enabled=skills_config.use_enabled,
+            max_inject=skills_config.max_inject,
+            structured_output_enabled=structured,
+            trace=trace,
+        )
+
+    if prepass_result is not None:
+        route_resolution = prepass_result.route_resolution
+        route = route_resolution.route
+        orch_plan = prepass_result.orch_plan
+        skill_selection = prepass_result.skill_selection
+        matched_skills = list(skill_selection.skills) if skill_selection else []
+        slot_bindings = dict(prepass_result.slot_bindings)
+    else:
+        route_resolution = await resolve_route_with_classifier(
+            llm,
+            classifier_backend,
+            user_text=user_text,
+            exposed_entities=exposed_entities,
+            router_config=router_config,
+            route_keywords=route_keywords,
+            history=history,
+            structured_output_enabled=structured,
+            trace=trace,
+        )
+        route = route_resolution.route
+        orch_plan = await triage_complexity(
+            llm,
+            role_registry,
+            user_text=user_text,
+            history=history,
+            structured_output_enabled=structured,
+            trace=trace,
+        )
     record_route(hass, entry_id, route)
-    role_registry = build_role_registry(backend, router_config)
-    orch_plan = await triage_complexity(
-        llm,
-        role_registry,
-        user_text=user_text,
-        history=history,
-    )
     if orch_plan.complexity == Complexity.COMPLEX:
         orch_plan = await plan_subtasks(
             llm,
             role_registry,
             user_text=user_text,
             plan=orch_plan,
+            structured_output_enabled=structured,
+            trace=trace,
         )
     yield AgentDelta(
         meta={
@@ -1042,22 +1220,24 @@ async def run_agent(
     )
     hint_rules = await async_recovery_hints(hass, entry_id)
 
-    matched_skills = []
-    skill_selection = None
     skill_hints = ""
-    slot_bindings: dict[str, str] = {}
     if skills_config.use_enabled:
-        skill_selection = await resolve_skills_for_turn(
-            hass,
-            entry_id,
-            llm,
-            classifier_backend,
-            user_text,
-            history=history,
-            route=route.value,
-            max_inject=skills_config.max_inject,
-        )
-        matched_skills = skill_selection.skills
+        if prepass_result is None or (
+            not matched_skills and prepass_result.method == "prepass"
+        ):
+            skill_selection = await resolve_skills_for_turn(
+                hass,
+                entry_id,
+                llm,
+                classifier_backend,
+                user_text,
+                history=history,
+                route=route.value,
+                max_inject=skills_config.max_inject,
+                structured_output_enabled=structured,
+                trace=trace,
+            )
+            matched_skills = skill_selection.skills
         learned_only = [s for s in matched_skills if not s.is_builtin]
         route_skill = await load_route_skill(
             hass,
@@ -1070,13 +1250,15 @@ async def run_agent(
         )
         matched_skills = merge_route_and_learned_skills(route_skill, learned_only)
         primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
-        if primary_learned:
+        if primary_learned and not slot_bindings:
             slot_bindings = await infer_slot_bindings(
                 llm,
                 role_registry.backend_for(ModelRole.ROUTER),
                 user_text=user_text,
                 skill=primary_learned,
                 route=route.value,
+                structured_output_enabled=structured,
+                trace=trace,
             )
             slot_bindings = apply_slot_defaults(
                 slot_bindings,
@@ -1109,27 +1291,22 @@ async def run_agent(
     else:
         update_agent_status(hass, entry_id, active_skill="none")
 
-    trace = TurnTrace(
-        user_text=user_text,
-        history_len=len(history),
-        matched_skill_ids=[skill.id for skill in matched_skills],
-        matched_learned_skill_ids=[
-            skill.id for skill in matched_skills if not skill.is_builtin
-        ],
-        conversation_id=conversation_id,
-        route=route.value,
-        exposed_entities=list(exposed_entities),
-        complexity=orch_plan.complexity.value,
-        slot_bindings=slot_bindings,
-        orchestration_plan=[
-            {
-                "id": st.id,
-                "subgoal": st.subgoal,
-                "route": st.route,
-            }
-            for st in orch_plan.subtasks
-        ],
-    )
+    trace.matched_skill_ids = [skill.id for skill in matched_skills]
+    trace.matched_learned_skill_ids = [
+        skill.id for skill in matched_skills if not skill.is_builtin
+    ]
+    trace.route = route.value
+    trace.complexity = orch_plan.complexity.value
+    trace.slot_bindings = slot_bindings
+    trace.orchestration_plan = [
+        {
+            "id": st.id,
+            "subgoal": st.subgoal,
+            "route": st.route,
+        }
+        for st in orch_plan.subtasks
+    ]
+    trace.exposed_entities = list(exposed_entities)
 
     mcp_session_prompt = ""
     llm_tools = mcp_tools_to_openai_schemas(FALLBACK_MCP_TOOLS)
@@ -1207,7 +1384,7 @@ async def run_agent(
     use_chat_backend = route != TaskRoute.HA_ACTION
     controlled_entity_ids: list[str] = []
     loop_state = LoopState()
-    skill_steps = None
+    skill_steps: list[dict[str, Any]] | None = None
     if matched_skills:
         primary = next(
             (s for s in matched_skills if not s.is_builtin),
@@ -1268,6 +1445,8 @@ async def run_agent(
         "mcp_tools": len(llm_tools),
         "classifier": _model_chip(classifier_backend),
         "max_iterations": agent_config.max_iterations,
+        "llm_calls": len(trace.llm_calls),
+        "prepass": prepass_result.method if prepass_result else None,
     }
     yield AgentDelta(meta=turn_meta)
 
@@ -1280,6 +1459,17 @@ async def run_agent(
             inject_loop_context(messages, loop_state)
             if agent_config.show_reasoning_in_chat:
                 yield AgentDelta(thinking_clear=True)
+        if agent_config.turn_token_budget > 0:
+            compact_messages_if_needed(
+                messages,
+                token_budget=agent_config.turn_token_budget,
+            )
+        tools = prune_loop_tools(
+            llm_tools,
+            preferred_names=_preferred_loop_tool_names(skill_steps),
+            max_tools=agent_config.max_loop_tools,
+            include_full_catalog=loop_state.include_full_tool_catalog,
+        )
         active_backend = backend_for_route(
             route,
             chat_backend=backend,
@@ -1402,6 +1592,12 @@ async def run_agent(
                 assistant_text = ""
         else:
             result = await llm.chat(messages, active_backend, tools=tools)
+            record_llm_call(
+                trace,
+                role=model_role,
+                backend=active_backend,
+                result=result,
+            )
             if result.tool_calls:
                 messages.append(result.assistant_message)
                 async for delta in _process_tool_calls(
@@ -1508,6 +1704,8 @@ async def run_agent(
                 tool_errors=trace.tool_errors,
                 skill=primary_learned,
                 slot_bindings=slot_bindings,
+                structured_output_enabled=structured,
+                trace=trace,
             )
         else:
             from .verifier import VerifierResult
@@ -1554,9 +1752,10 @@ async def run_agent(
             {
                 "verifier_verdict": trace.verifier_verdict,
                 "verifier_detail": trace.verifier_detail,
+                "llm_calls": trace.llm_calls,
             }
         )
-        suffix, skill_meta = await _post_turn_skills(
+        _schedule_post_turn_skills(
             hass,
             entry_id=entry_id,
             llm=llm,
@@ -1567,12 +1766,6 @@ async def run_agent(
             history=history,
             matched_skills=matched_skills,
         )
-        if skill_meta:
-            turn_meta.update(skill_meta)
-            yield AgentDelta(meta=skill_meta)
-        if suffix:
-            assistant_text = f"{assistant_text}{suffix}".strip()
-            yield AgentDelta(content=suffix)
 
         append_turn(
             hass,

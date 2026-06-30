@@ -118,6 +118,10 @@ def turn_trace_to_dict(
         "verification_notes": list(trace.verification_notes),
         "route": trace.route,
         "exposed_entities": list(trace.exposed_entities),
+        "complexity": trace.complexity,
+        "llm_calls": list(trace.llm_calls),
+        "verifier_verdict": trace.verifier_verdict,
+        "verifier_detail": trace.verifier_detail,
     }
 
 

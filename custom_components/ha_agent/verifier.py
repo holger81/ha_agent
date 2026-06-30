@@ -10,7 +10,9 @@ from typing import Any
 from .config_helpers import LlmBackend
 from .const import LOGGER
 from .llm_client import LlmClient
+from .llm_telemetry import record_llm_call
 from .skills.models import Skill
+from .structured_output import VERIFIER_SCHEMA, json_schema_format
 
 _VERIFY_PROMPT = (
     "You verify whether an assistant turn satisfied the user goal.\n"
@@ -68,6 +70,8 @@ async def verify_turn(
     tool_errors: int,
     skill: Skill | None = None,
     slot_bindings: dict[str, str] | None = None,
+    structured_output_enabled: bool = True,
+    trace: Any | None = None,
 ) -> VerifierResult:
     """Run the verifier critic on a completed worker turn."""
     payload: dict[str, Any] = {
@@ -87,10 +91,22 @@ async def verify_turn(
         {"role": "system", "content": _VERIFY_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
     ]
+    response_format = (
+        json_schema_format("verifier", VERIFIER_SCHEMA, strict=False)
+        if structured_output_enabled
+        else None
+    )
     try:
-        result = await llm.chat(messages, backend, tools=[])
+        result = await llm.chat(
+            messages,
+            backend,
+            tools=[],
+            response_format=response_format,
+        )
+        record_llm_call(trace, role="verifier", backend=backend, result=result)
     except Exception as err:
         LOGGER.warning("Verifier LLM call failed: %s", err)
+        record_llm_call(trace, role="verifier", backend=backend, error=str(err))
         return VerifierResult(passed=True, reason="verifier unavailable")
     parsed = parse_verifier_response(result.content or "")
     if parsed is None:

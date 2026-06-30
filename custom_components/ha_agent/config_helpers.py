@@ -31,6 +31,8 @@ from .const import (
     CONF_LLM_THINKING_LEVEL,
     CONF_LLM_TIMEOUT,
     CONF_MAX_AGENT_ITERATIONS,
+    CONF_MAX_LOOP_TOOLS,
+    CONF_MAX_REPLANS,
     CONF_MCP_BEARER_TOKEN,
     CONF_MCP_HEALTH_URL,
     CONF_MCP_TIMEOUT,
@@ -38,11 +40,14 @@ from .const import (
     CONF_NEWS_LLM_BASE_URL,
     CONF_NEWS_LLM_MODEL,
     CONF_NEWS_MODEL_ENABLED,
+    CONF_PREPAS_ENABLED,
     CONF_SKILLS_AUTO_SAVE,
     CONF_SKILLS_LEARNING_ENABLED,
     CONF_SKILLS_MAX_INJECT,
     CONF_SKILLS_USE_ENABLED,
+    CONF_STRUCTURED_OUTPUT_ENABLED,
     CONF_TOOL_INSTRUCTIONS,
+    CONF_TURN_TOKEN_BUDGET,
     DEFAULT_ACTION_LLM_MAX_TOKENS,
     DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -55,10 +60,15 @@ from .const import (
     DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_MAX_AGENT_ITERATIONS,
+    DEFAULT_MAX_LOOP_TOOLS,
+    DEFAULT_MAX_REPLANS,
     DEFAULT_MCP_TIMEOUT,
     DEFAULT_MCP_URL,
+    DEFAULT_PREPAS_ENABLED,
     DEFAULT_SKILLS_MAX_INJECT,
+    DEFAULT_STRUCTURED_OUTPUT_ENABLED,
     DEFAULT_TOOL_INSTRUCTIONS,
+    DEFAULT_TURN_TOKEN_BUDGET,
 )
 from .thinking import DEFAULT_THINKING_LEVEL, normalize_thinking_level
 
@@ -99,6 +109,11 @@ class AgentConfig:
     history_turns: int
     enable_streaming: bool
     show_reasoning_in_chat: bool
+    structured_output_enabled: bool = True
+    prepass_enabled: bool = True
+    max_loop_tools: int = DEFAULT_MAX_LOOP_TOOLS
+    turn_token_budget: int = DEFAULT_TURN_TOKEN_BUDGET
+    max_replans: int = DEFAULT_MAX_REPLANS
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,5 +312,20 @@ def get_agent_config(entry: ConfigEntry) -> AgentConfig:
         ),
         show_reasoning_in_chat=bool(
             data.get(CONF_CONVERSATION_SHOW_REASONING, True),
+        ),
+        structured_output_enabled=bool(
+            data.get(CONF_STRUCTURED_OUTPUT_ENABLED, DEFAULT_STRUCTURED_OUTPUT_ENABLED),
+        ),
+        prepass_enabled=bool(
+            data.get(CONF_PREPAS_ENABLED, DEFAULT_PREPAS_ENABLED),
+        ),
+        max_loop_tools=int(
+            data.get(CONF_MAX_LOOP_TOOLS, DEFAULT_MAX_LOOP_TOOLS),
+        ),
+        turn_token_budget=int(
+            data.get(CONF_TURN_TOKEN_BUDGET, DEFAULT_TURN_TOKEN_BUDGET),
+        ),
+        max_replans=int(
+            data.get(CONF_MAX_REPLANS, DEFAULT_MAX_REPLANS),
         ),
     )

@@ -47,6 +47,7 @@ class LoopState:
     skill_plan_override_reason: str = ""
     empty_responses: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
+    include_full_tool_catalog: bool = False
 
 
 # Role used for internal/system-injected guidance (plan progress, failure

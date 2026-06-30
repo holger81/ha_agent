@@ -20,9 +20,11 @@ from .context import (
     route_keyword_match,
 )
 from .playbooks import default_playbook_body, playbook_key_for_route
+from .structured_output import ROUTE_SCHEMA, json_schema_format
 
 if TYPE_CHECKING:
     from .llm_client import LlmClient
+    from .skills.models import TurnTrace
 
 
 class TaskRoute(StrEnum):
@@ -149,8 +151,12 @@ async def select_route_with_llm(
     user_text: str,
     history: list[dict[str, str]] | None,
     router_config: RouterConfig,
+    structured_output_enabled: bool = True,
+    trace: TurnTrace | None = None,
 ) -> tuple[str | None, str]:
     """Ask the classifier model which route applies; return (route, raw)."""
+    from .llm_telemetry import record_llm_call
+
     catalog = _route_classifier_catalog(router_config)
     if not catalog:
         return None, ""
@@ -173,10 +179,22 @@ async def select_route_with_llm(
             ),
         },
     ]
+    response_format = (
+        json_schema_format("route", ROUTE_SCHEMA)
+        if structured_output_enabled
+        else None
+    )
     try:
-        result = await llm.chat(messages, backend, tools=[])
+        result = await llm.chat(
+            messages,
+            backend,
+            tools=[],
+            response_format=response_format,
+        )
+        record_llm_call(trace, role="router", backend=backend, result=result)
     except Exception as err:
         LOGGER.warning("Route classifier LLM call failed: %s", err)
+        record_llm_call(trace, role="router", backend=backend, error=str(err))
         return None, ""
     raw = (result.content or "").strip()
     return parse_route_classifier_response(raw), raw
@@ -191,6 +209,8 @@ async def resolve_route_with_classifier(
     router_config: RouterConfig,
     route_keywords: dict[str, list[str]] | None = None,
     history: list[dict[str, str]] | None = None,
+    structured_output_enabled: bool = True,
+    trace: TurnTrace | None = None,
 ) -> RouteResolution:
     """Pick a route via the classifier LLM, falling back to keyword rules."""
     keyword_decision = classify_route_with_detail(
@@ -206,6 +226,8 @@ async def resolve_route_with_classifier(
         user_text=user_text,
         history=history,
         router_config=router_config,
+        structured_output_enabled=structured_output_enabled,
+        trace=trace,
     )
     raw_preview = raw[:240] if raw else None
     if llm_route_value:

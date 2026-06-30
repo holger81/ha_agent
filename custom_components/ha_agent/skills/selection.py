@@ -13,6 +13,7 @@ from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..context import is_casual_chat_query, is_chat_route
 from ..llm_client import LlmClient
+from ..structured_output import SKILL_SELECT_SCHEMA, json_schema_format
 from .discovery import build_discovery_query
 from .models import Skill
 from .store import get_skill_store
@@ -182,8 +183,12 @@ async def select_skills_with_llm(
     route: str | None,
     catalog: list[Skill],
     max_select: int = 1,
+    structured_output_enabled: bool = True,
+    trace: Any | None = None,
 ) -> tuple[list[Skill], str]:
     """Ask the classifier model which catalog skill(s) apply; return (skills, raw)."""
+    from ..llm_telemetry import record_llm_call
+
     if not catalog or max_select <= 0:
         return [], ""
 
@@ -213,10 +218,22 @@ async def select_skills_with_llm(
             ),
         },
     ]
+    response_format = (
+        json_schema_format("skill_select", SKILL_SELECT_SCHEMA)
+        if structured_output_enabled
+        else None
+    )
     try:
-        result = await llm.chat(messages, backend, tools=[])
+        result = await llm.chat(
+            messages,
+            backend,
+            tools=[],
+            response_format=response_format,
+        )
+        record_llm_call(trace, role="skill_select", backend=backend, result=result)
     except Exception as err:
         LOGGER.warning("Skill selection LLM call failed: %s", err)
+        record_llm_call(trace, role="skill_select", backend=backend, error=str(err))
         return [], ""
 
     raw = (result.content or "").strip()
@@ -332,6 +349,8 @@ async def resolve_skills_for_turn(
     history: list[dict[str, str]] | None = None,
     route: str | None = None,
     max_inject: int = 3,
+    structured_output_enabled: bool = True,
+    trace: Any | None = None,
 ) -> SkillSelectionResult:
     """Pick skill(s) for a turn via FTS candidates and LLM selection."""
     if max_inject <= 0 or is_casual_chat_query(user_text):
@@ -402,6 +421,8 @@ async def resolve_skills_for_turn(
         route=route,
         catalog=catalog,
         max_select=max_inject,
+        structured_output_enabled=structured_output_enabled,
+        trace=trace,
     )
     raw_preview = raw[:240] if raw else None
     if selected:

@@ -105,6 +105,8 @@ async def infer_slot_bindings(
     user_text: str,
     skill: Skill,
     route: str | None = None,
+    structured_output_enabled: bool = True,
+    trace: Any | None = None,
 ) -> dict[str, str]:
     """Ask the router/classifier model to fill skill slots from the user goal."""
     slots = default_slots_for_skill(skill)
@@ -112,6 +114,8 @@ async def infer_slot_bindings(
         return {}
 
     from ..llm_client import LlmClient
+    from ..llm_telemetry import record_llm_call
+    from ..structured_output import SLOT_BINDINGS_SCHEMA, json_schema_format
 
     if not isinstance(llm, LlmClient):
         return {}
@@ -142,8 +146,19 @@ async def infer_slot_bindings(
             ),
         },
     ]
+    response_format = (
+        json_schema_format("slot_bindings", SLOT_BINDINGS_SCHEMA)
+        if structured_output_enabled
+        else None
+    )
     try:
-        result = await llm.chat(messages, backend, tools=[])
+        result = await llm.chat(
+            messages,
+            backend,
+            tools=[],
+            response_format=response_format,
+        )
+        record_llm_call(trace, role="slot_bindings", backend=backend, result=result)
     except Exception:
         return {}
     text = (result.content or "").strip()

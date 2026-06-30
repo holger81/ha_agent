@@ -1,6 +1,6 @@
 # Agentic loop redesign — small-machine first
 
-Status: **planning**
+Status: **implemented** (v1.13.0)
 Owner: ha_agent
 Related: [`PLAN.md` Phase 8](../PLAN.md), `agent.py`, `loop_policy.py`, `router.py`, `llm_client.py`
 
@@ -162,8 +162,8 @@ and token bill are the arbiter.
 
 ### 8j — KV-cache & deployment hygiene (P3)
 
-- [ ] Keep stable prefix (system prompt, tool schema, MCP session prompt) unchanged mid-turn so llama.cpp prompt cache hits across iterations; volatile guidance stays at the end.
-- [ ] Deployment docs: Q4_K_M weights, `--flash-attn`, right-sized `--ctx-size`, avoid KV quant `q4_0` (degrades tool calling).
+- [x] Keep stable prefix (system prompt, tool schema, MCP session prompt) unchanged mid-turn so llama.cpp prompt cache hits across iterations; volatile guidance stays at the end.
+- [x] Deployment docs: Q4_K_M weights, `--flash-attn`, right-sized `--ctx-size`, avoid KV quant `q4_0` (degrades tool calling).
 
 **Exit criteria**
 - [ ] Prompt-cache hit across iterations observable in llama.cpp logs.
@@ -190,6 +190,16 @@ and token bill are the arbiter.
 - **Not** removing skills/learning — moving it off the hot path (8e) and constraining it (8a).
 - **Not** adopting a heavy framework (LangGraph etc.); keep simple composable functions.
 - Multi-host/multi-GPU role splitting stays supported; 8f only optimizes the single-machine case.
+
+## Deployment hygiene (single-machine llama.cpp)
+
+- Use **Q4_K_M** (or similar) weights sized to fit RAM/VRAM with headroom for context.
+- Enable **`--flash-attn`** when your build supports it.
+- Set **`--ctx-size`** to the smallest value that fits your longest turn (system + pruned tools + history); oversized ctx wastes memory.
+- Avoid KV quant **`q4_0`** for tool-calling workloads — it often degrades structured output reliability.
+- Keep the **system prompt and tool schema stable** within a turn; loop guidance is injected at the end of the message list so llama.cpp prompt-cache hits across iterations.
+
+---
 
 ## Definition of done (Phase 8)
 

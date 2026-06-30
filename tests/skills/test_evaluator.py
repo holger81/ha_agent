@@ -12,17 +12,26 @@ COMPONENT = (
 
 
 def _load_evaluator():
-    path = COMPONENT / "skills" / "models.py"
-    spec = importlib.util.spec_from_file_location("ha_agent.skills.models", path)
-    models = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    sys.modules["ha_agent.skills.models"] = models
-    spec.loader.exec_module(models)
+    models_key = "ha_agent.skills.models"
+    evaluator_key = "ha_agent.skills.evaluator"
+    if models_key in sys.modules and evaluator_key in sys.modules:
+        return sys.modules[models_key], sys.modules[evaluator_key]
+
+    if models_key not in sys.modules:
+        path = COMPONENT / "skills" / "models.py"
+        spec = importlib.util.spec_from_file_location(models_key, path)
+        models = importlib.util.module_from_spec(spec)
+        assert spec is not None and spec.loader is not None
+        sys.modules[models_key] = models
+        spec.loader.exec_module(models)
+    else:
+        models = sys.modules[models_key]
 
     path = COMPONENT / "skills" / "evaluator.py"
-    spec = importlib.util.spec_from_file_location("ha_agent.skills.evaluator", path)
+    spec = importlib.util.spec_from_file_location(evaluator_key, path)
     evaluator = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
+    sys.modules[evaluator_key] = evaluator
     spec.loader.exec_module(evaluator)
     return models, evaluator
 

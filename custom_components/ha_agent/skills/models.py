@@ -83,6 +83,7 @@ class TurnTrace:
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
     recovery_hints: list[str] = field(default_factory=list)
+    llm_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

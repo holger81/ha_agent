@@ -338,6 +338,7 @@ async def test_run_agent_yields_stream_deltas_to_assist() -> None:
         history_turns=2,
         enable_streaming=True,
         show_reasoning_in_chat=False,
+        prepass_enabled=False,
     )
     router_config = config_helpers.RouterConfig(
         action_enabled=False,

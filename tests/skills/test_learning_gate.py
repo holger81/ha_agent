@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import sys
@@ -170,7 +171,10 @@ def test_build_observer_payload_includes_override_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_observe_skill_override_updates_parent() -> None:
+    observer_mod = importlib.reload(sys.modules["ha_agent.skills.observer"])
+    models_mod = sys.modules["ha_agent.skills.models"]
     Skill = models_mod.Skill
+    observe = observer_mod.observe_skill_override
     parent = Skill(
         id="parent-1",
         slug="check-unread",
@@ -217,7 +221,7 @@ async def test_observe_skill_override_updates_parent() -> None:
         ),
     )
 
-    result = await observe_skill_override(
+    result = await observe(
         llm,
         MagicMock(),
         parent_skill=parent,

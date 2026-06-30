@@ -137,6 +137,7 @@ class LlmClient:
         tools: list[dict[str, Any]] | None,
         *,
         stream: bool,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": backend.model,
@@ -148,6 +149,8 @@ class LlmClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if response_format:
+            payload["response_format"] = response_format
         apply_thinking_to_payload(payload, backend.thinking_level)
         return payload
 
@@ -194,10 +197,18 @@ class LlmClient:
         messages: list[dict[str, Any]],
         backend: LlmBackend,
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_format: dict[str, Any] | None = None,
     ) -> ChatResult:
         """Run a non-streaming chat completion."""
         url = f"{backend.base_url}/chat/completions"
-        payload = self._payload(messages, backend, tools, stream=False)
+        payload = self._payload(
+            messages,
+            backend,
+            tools,
+            stream=False,
+            response_format=response_format,
+        )
         timeout = aiohttp.ClientTimeout(total=backend.timeout)
         started = time.perf_counter()
 
@@ -235,10 +246,18 @@ class LlmClient:
         backend: LlmBackend,
         tools: list[dict[str, Any]] | None = None,
         session: StreamChatSession | None = None,
+        *,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream assistant text deltas from a chat completion."""
         url = f"{backend.base_url}/chat/completions"
-        payload = self._payload(messages, backend, tools, stream=True)
+        payload = self._payload(
+            messages,
+            backend,
+            tools,
+            stream=True,
+            response_format=response_format,
+        )
         timeout = self._stream_timeout(backend)
         stream_session = session or StreamChatSession()
 

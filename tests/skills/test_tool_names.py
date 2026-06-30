@@ -82,7 +82,9 @@ def test_rewrite_tool_names_in_markdown_body() -> None:
     assert IMAP_MAILBOX_STATUS in updated
     assert IMAP_SEARCH_MESSAGES in updated
     assert "`mailbox_status`" not in updated
-    assert " Then mail_mcp__imap_search_messages" in updated or IMAP_SEARCH_MESSAGES in updated
+    assert " Then mail_mcp__imap_search_messages" in updated or (
+        IMAP_SEARCH_MESSAGES in updated
+    )
 
 
 def test_normalize_skill_draft_fixes_tool_steps() -> None:

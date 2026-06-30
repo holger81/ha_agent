@@ -68,6 +68,24 @@ class RoleRegistry:
         return {"model": backend.model, "host": host, "role": role.value}
 
 
+def _backend_key(backend: LlmBackend) -> tuple[str, str]:
+    return (backend.base_url.rstrip("/"), backend.model)
+
+
+def collapse_identical_roles(registry: RoleRegistry) -> RoleRegistry:
+    """Use one backend for every role when all configured roles are identical."""
+    backends = {registry.chat_backend, *registry.roles.values()}
+    keys = {_backend_key(backend) for backend in backends}
+    if len(keys) != 1:
+        return registry
+    single = registry.chat_backend
+    return RoleRegistry(
+        chat_backend=single,
+        roles={role: single for role in ModelRole},
+        action_enabled=registry.action_enabled,
+    )
+
+
 def build_role_registry(
     chat_backend: LlmBackend,
     router_config: RouterConfig,
