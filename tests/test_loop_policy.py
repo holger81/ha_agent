@@ -558,6 +558,28 @@ def test_suspend_skill_plan_seeds_mark_read_exploration_plan() -> None:
     assert state.plan_steps[1]["toolName"] == "mail_mcp__imap_bulk_update_flags"
 
 
+def test_record_plan_tool_result_keeps_done_on_later_failure() -> None:
+    """A completed plan step is not downgraded by later failed retries."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+    assert state.plan_step_statuses[0] == "done"
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=False,
+    )
+    assert state.plan_step_statuses[0] == "done"
+
+
 def test_redundant_override_tool_block_after_search() -> None:
     """Repeat search is blocked once the override exploration plan advances."""
     policy = _load_loop_policy()

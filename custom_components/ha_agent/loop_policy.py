@@ -827,6 +827,9 @@ def record_plan_tool_result(
         guide_after_override_tool_result(loop_state, tool_name, succeeded=True)
         return
 
+    if loop_state.plan_step_statuses[step_index] == "done":
+        return
+
     loop_state.plan_step_statuses[step_index] = "needs_work"
     loop_state.plan_current_step_index = step_index
 
