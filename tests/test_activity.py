@@ -84,8 +84,32 @@ def test_record_and_list_turns() -> None:
     hass = MagicMock()
     hass.data = {}
     trace = TurnTrace(user_text="hi", history_len=0, assistant_text="hello")
-    activity.record_turn(hass, "entry-1", trace)
+    item = activity.record_turn(hass, "entry-1", trace)
     turns, total = activity.list_turns(hass, "entry-1")
     assert total == 1
     assert turns[0]["user_text"] == "hi"
     assert turns[0]["assistant_text"] == "hello"
+    assert item["user_text"] == "hi"
+    hass.bus.async_fire.assert_called_once()
+    assert hass.bus.async_fire.call_args.args[0] == "ha_agent_turn_recorded"
+
+
+def test_get_turn_by_timestamp_and_latest() -> None:
+    activity = _load_activity_module()
+    TurnTrace = sys.modules["ha_agent.skills.models"].TurnTrace
+
+    hass = MagicMock()
+    hass.data = {}
+    trace = TurnTrace(
+        user_text="weather",
+        history_len=0,
+        assistant_text="Sunny",
+        conversation_id="assist-1",
+    )
+    item = activity.record_turn(hass, "entry-1", trace)
+    by_ts = activity.get_turn(hass, "entry-1", timestamp=item["timestamp"])
+    assert by_ts is not None
+    assert by_ts["conversation_id"] == "assist-1"
+    latest = activity.get_turn(hass, "entry-1", latest=True)
+    assert latest is not None
+    assert latest["user_text"] == "weather"

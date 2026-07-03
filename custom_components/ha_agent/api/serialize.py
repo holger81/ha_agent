@@ -122,6 +122,11 @@ def turn_trace_to_dict(
         "llm_calls": list(trace.llm_calls),
         "verifier_verdict": trace.verifier_verdict,
         "verifier_detail": trace.verifier_detail,
+        "skill_followed": trace.skill_followed,
+        "matched_learned_skill_ids": list(trace.matched_learned_skill_ids),
+        "recovery_hints": list(trace.recovery_hints),
+        "skill_plan_override": trace.skill_plan_override,
+        "skill_plan_override_reason": trace.skill_plan_override_reason,
     }
 
 

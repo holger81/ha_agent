@@ -19,6 +19,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .agent import run_agent, thinking_from_tool_event
+from .chat_events import begin_chat_turn, finish_chat_turn, publish_chat_delta
 from .config_helpers import (
     get_agent_config,
     get_llm_backend,
@@ -166,6 +167,15 @@ class HaAgentConversationEntity(
         exposed = await collect_exposed_entities(self.hass)
 
         produced_content = False
+        entry_id = self._entry.entry_id
+        conv_id = chat_log.conversation_id
+        begin_chat_turn(
+            self.hass,
+            entry_id,
+            conv_id,
+            user_text=user_text,
+            source="assist",
+        )
 
         async def delta_stream() -> AsyncGenerator[dict[str, Any], None]:
             nonlocal produced_content
@@ -186,12 +196,32 @@ class HaAgentConversationEntity(
             ):
                 if delta.tool and agent_config.show_reasoning_in_chat:
                     produced_content = True
-                    yield {"thinking_content": thinking_from_tool_event(delta.tool)}
+                    thinking = thinking_from_tool_event(delta.tool)
+                    publish_chat_delta(
+                        self.hass,
+                        entry_id,
+                        conv_id,
+                        thinking=thinking,
+                        tool=delta.tool,
+                    )
+                    yield {"thinking_content": thinking}
                 if delta.thinking:
                     produced_content = True
+                    publish_chat_delta(
+                        self.hass,
+                        entry_id,
+                        conv_id,
+                        thinking=delta.thinking,
+                    )
                     yield {"thinking_content": delta.thinking}
                 if delta.content:
                     produced_content = True
+                    publish_chat_delta(
+                        self.hass,
+                        entry_id,
+                        conv_id,
+                        content=delta.content,
+                    )
                     yield {"content": delta.content}
                 if agent_config.enable_streaming and (
                     delta.content or delta.thinking or delta.tool
@@ -208,6 +238,12 @@ class HaAgentConversationEntity(
                 pass
         except Exception as err:
             LOGGER.exception("HA Agent failed: %s", err)
+            finish_chat_turn(
+                self.hass,
+                entry_id,
+                conv_id,
+                done_payload={"error": str(err)},
+            )
             intent_response.async_set_speech(
                 "Sorry, something went wrong while processing your request."
             )
@@ -217,9 +253,19 @@ class HaAgentConversationEntity(
             )
 
         try:
-            return conversation.async_get_result_from_chat_log(user_input, chat_log)
+            result = conversation.async_get_result_from_chat_log(
+                user_input, chat_log
+            )
+            finish_chat_turn(self.hass, entry_id, conv_id, done_payload={})
+            return result
         except Exception as err:
             LOGGER.exception("HA Agent failed building chat result: %s", err)
+            finish_chat_turn(
+                self.hass,
+                entry_id,
+                conv_id,
+                done_payload={"error": str(err)},
+            )
             intent_response.async_set_speech(
                 "Sorry, something went wrong while processing your request."
             )

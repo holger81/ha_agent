@@ -170,10 +170,13 @@ async def test_stream_chat_fires_delta_and_done_events() -> None:
         )
 
     fired = [call.args for call in hass.bus.async_fire.call_args_list]
+    assert fired[0][0] == "ha_agent_chat_delta"
     assert fired[0][1]["content"] == "Hello"
+    assert fired[1][0] == "ha_agent_chat_delta"
     assert fired[1][1]["meta"]["route"] == "news"
     assert fired[2][0] == "ha_agent_chat_delta"
     assert fired[2][1]["tool"]["phase"] == "start"
+    assert fired[3][0] == "ha_agent_chat_delta"
     assert fired[3][1]["tool"]["phase"] == "done"
     assert fired[4][0] == "ha_agent_chat_done"
     assert fired[4][1]["last_route"] == "chat"

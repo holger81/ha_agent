@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ..agent import run_agent
+from ..chat_events import begin_chat_turn, finish_chat_turn, publish_chat_delta
 from ..config_helpers import (
     get_agent_config,
     get_llm_backend,
@@ -134,10 +135,13 @@ def start_chat(
         )
         await async_save_threads(hass, entry_id)
 
-        payload_base: dict[str, Any] = {
-            "entry_id": entry_id,
-            "conversation_id": conversation_id,
-        }
+        begin_chat_turn(
+            hass,
+            entry_id,
+            conversation_id,
+            user_text=text,
+            source="console",
+        )
         done_payload: dict[str, Any] = {}
         turn_meta: dict[str, Any] = {}
         cancelled = False
@@ -169,19 +173,18 @@ def start_chat(
                         and not getattr(delta, "subagent", None)
                     ):
                         continue
-                    hass.bus.async_fire(
-                        "ha_agent_chat_delta",
-                        {
-                            **payload_base,
-                            "content": delta.content or None,
-                            "thinking": delta.thinking or None,
-                            "thinking_clear": delta.thinking_clear or None,
-                            "content_clear": delta.content_clear or None,
-                            "tool": delta.tool,
-                            "skill": delta.skill,
-                            "meta": delta.meta,
-                            "subagent": getattr(delta, "subagent", None),
-                        },
+                    publish_chat_delta(
+                        hass,
+                        entry_id,
+                        conversation_id,
+                        content=delta.content or None,
+                        thinking=delta.thinking or None,
+                        thinking_clear=delta.thinking_clear or None,
+                        content_clear=delta.content_clear or None,
+                        tool=delta.tool,
+                        skill=delta.skill,
+                        meta=delta.meta,
+                        subagent=getattr(delta, "subagent", None),
                     )
             status = get_agent_status(hass, entry_id)
             done_payload = {
@@ -208,12 +211,11 @@ def start_chat(
             LOGGER.exception("Console chat failed: %s", err)
             done_payload = {"error": str(err)}
         finally:
-            hass.bus.async_fire(
-                "ha_agent_chat_done",
-                {
-                    **payload_base,
-                    **done_payload,
-                },
+            finish_chat_turn(
+                hass,
+                entry_id,
+                conversation_id,
+                done_payload={**done_payload},
             )
         if cancelled:
             raise

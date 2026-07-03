@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.loader import async_get_integration
 
-from .activity import list_turns
+from .activity import get_turn, list_turns
 from .api import chat as chat_api
 from .api import config as config_api
 from .api import eval as eval_api
@@ -24,6 +24,8 @@ from .api.helpers import (
     require_admin,
 )
 from .const import DOMAIN
+from .diagnostics.analyze import analyze_turn_dict
+from .diagnostics.live import live_snapshot
 from .status import get_agent_status
 from .threads import (
     async_delete_thread,
@@ -84,6 +86,9 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_hacs_refresh)
     websocket_api.async_register_command(hass, ws_hacs_update)
     websocket_api.async_register_command(hass, ws_activity_list)
+    websocket_api.async_register_command(hass, ws_activity_get)
+    websocket_api.async_register_command(hass, ws_diagnostics_observe)
+    websocket_api.async_register_command(hass, ws_diagnostics_analyze_turn)
     websocket_api.async_register_command(hass, ws_threads_list)
     websocket_api.async_register_command(hass, ws_threads_update)
     websocket_api.async_register_command(hass, ws_threads_delete)
@@ -1000,6 +1005,102 @@ async def ws_activity_list(hass: HomeAssistant, connection, msg: dict) -> None:
         websocket_api.result_message(
             msg["id"],
             {"turns": turns, "total": total},
+        )
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/activity/get",
+        **_entry_id_schema(
+            {
+                vol.Exclusive("timestamp", "turn_selector"): vol.Coerce(float),
+                vol.Exclusive("conversation_id", "turn_selector"): str,
+                vol.Optional("latest", default=False): bool,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_activity_get(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    turn = get_turn(
+        hass,
+        msg["entry_id"],
+        timestamp=msg.get("timestamp"),
+        conversation_id=msg.get("conversation_id"),
+        latest=bool(msg.get("latest")),
+    )
+    if turn is None:
+        raise HomeAssistantError("Activity turn not found")
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"turn": turn})
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/diagnostics/observe",
+        **_entry_id_schema({vol.Optional("conversation_id"): str}),
+    }
+)
+@websocket_api.async_response
+async def ws_diagnostics_observe(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    entry_id = msg["entry_id"]
+    conversation_id = msg.get("conversation_id")
+    live = live_snapshot(hass, entry_id, conversation_id=conversation_id)
+    in_progress = (
+        chat_api.chat_turn_in_progress(hass, entry_id, conversation_id)
+        if conversation_id
+        else False
+    )
+    latest = get_turn(hass, entry_id, latest=True)
+    connection.send_message(
+        websocket_api.result_message(
+            msg["id"],
+            {
+                **live,
+                "console_in_progress": in_progress,
+                "latest_turn": latest,
+            },
+        )
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/diagnostics/analyze_turn",
+        **_entry_id_schema(
+            {
+                vol.Exclusive("timestamp", "turn_selector"): vol.Coerce(float),
+                vol.Exclusive("conversation_id", "turn_selector"): str,
+                vol.Optional("latest", default=False): bool,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_diagnostics_analyze_turn(
+    hass: HomeAssistant,
+    connection,
+    msg: dict,
+) -> None:
+    require_admin(connection)
+    turn = get_turn(
+        hass,
+        msg["entry_id"],
+        timestamp=msg.get("timestamp"),
+        conversation_id=msg.get("conversation_id"),
+        latest=bool(msg.get("latest")),
+    )
+    if turn is None:
+        raise HomeAssistantError("Activity turn not found")
+    analysis = analyze_turn_dict(turn)
+    connection.send_message(
+        websocket_api.result_message(
+            msg["id"],
+            {"turn": turn, "analysis": analysis},
         )
     )
 

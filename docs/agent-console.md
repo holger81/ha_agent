@@ -40,8 +40,9 @@ All commands require an authenticated admin WebSocket connection. Pass `entry_id
 
 **Streaming events** (subscribe via `hass.connection.subscribeEvents`):
 
-- `ha_agent_chat_delta` — `{ entry_id, conversation_id, content?, thinking?, tool? }`
-- `ha_agent_chat_done` — `{ entry_id, conversation_id, last_route?, active_skill?, error?, cancelled? }`
+- `ha_agent_chat_delta` — `{ entry_id, conversation_id, content?, thinking?, tool?, meta?, subagent? }` (console and Assist)
+- `ha_agent_chat_done` — `{ entry_id, conversation_id, last_route?, active_skill?, turn_meta?, error?, cancelled? }`
+- `ha_agent_turn_recorded` — `{ entry_id, conversation_id, timestamp, turn }` full activity trace when a turn completes
 
 ### Skills
 
@@ -71,6 +72,9 @@ All commands require an authenticated admin WebSocket connection. Pass `entry_id
 | `ha_agent/hacs/refresh` | Force HACS to refresh repository metadata from GitHub. |
 | `ha_agent/hacs/update` | Refresh (optional), then download/install when an update is available. |
 | `ha_agent/activity/list` | Paginated turn traces. |
+| `ha_agent/activity/get` | One turn by `timestamp`, `conversation_id`, or `latest`. |
+| `ha_agent/diagnostics/observe` | Live in-progress turns with buffered deltas; optional `conversation_id`. |
+| `ha_agent/diagnostics/analyze_turn` | Structured issue analysis for one turn (`timestamp` or `latest`). |
 | `ha_agent/threads/list` | Conversation thread metadata; optional `query` searches titles and message history; optional `source` (`assist` or `console`) filters by origin. Assist chats are included from memory even before thread metadata exists. |
 | `ha_agent/threads/update` | Rename or pin a thread. |
 | `ha_agent/threads/delete` | Delete a thread, its history, and any pending skill draft. |

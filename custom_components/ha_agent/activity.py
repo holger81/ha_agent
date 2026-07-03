@@ -29,16 +29,55 @@ def record_turn(
     trace: TurnTrace,
     *,
     max_turns: int = DEFAULT_MAX_TURNS,
-) -> None:
+) -> dict[str, Any]:
     """Append a turn trace to the per-entry activity ring buffer."""
     store = _activity_store(hass)
     buffer = store.get(entry_id)
     if buffer is None:
         buffer = deque(maxlen=max_turns)
         store[entry_id] = buffer
-    buffer.append(
-        turn_trace_to_dict(trace, timestamp=time.time()),
+    item = turn_trace_to_dict(trace, timestamp=time.time())
+    buffer.append(item)
+    hass.bus.async_fire(
+        "ha_agent_turn_recorded",
+        {
+            "entry_id": entry_id,
+            "conversation_id": trace.conversation_id,
+            "timestamp": item.get("timestamp"),
+            "turn": item,
+        },
     )
+    return item
+
+
+@callback
+def get_turn(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    timestamp: float | None = None,
+    conversation_id: str | None = None,
+    latest: bool = False,
+) -> dict[str, Any] | None:
+    """Return one activity turn by timestamp or latest for a conversation."""
+    turns, _total = list_turns(hass, entry_id, limit=DEFAULT_MAX_TURNS)
+    if latest and conversation_id:
+        for turn in turns:
+            if turn.get("conversation_id") == conversation_id:
+                return turn
+        return None
+    if timestamp is not None:
+        target = float(timestamp)
+        for turn in turns:
+            raw = turn.get("timestamp")
+            if raw is not None and abs(float(raw) - target) < 0.001:
+                return turn
+        return None
+    if conversation_id:
+        for turn in turns:
+            if turn.get("conversation_id") == conversation_id:
+                return turn
+    return turns[0] if turns and latest else None
 
 
 @callback
