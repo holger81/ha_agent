@@ -39,8 +39,11 @@ from .loop_policy import (
     initialize_loop_plan,
     inject_loop_context,
     mark_iteration_outcome,
+    maybe_omit_plan_steps_from_reasoning,
     maybe_suspend_skill_plan_from_reasoning,
     reasoning_execution_mismatch,
+    reconcile_plan_after_tools,
+    reconcile_plan_before_answer,
     record_iteration_failure,
     record_mcp_guidance,
     record_plan_tool_result,
@@ -326,7 +329,33 @@ def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
 
 def _prepare_next_loop_iteration(loop_state: LoopState) -> None:
     """Capture failures from the current iteration for the next LLM step."""
+    reconcile_plan_after_tools(loop_state)
     build_pending_failure_summary(loop_state)
+
+
+def _plan_progress_snapshot(loop_state: LoopState) -> list[dict[str, str]] | None:
+    if not loop_state.plan_steps:
+        return None
+    rows: list[dict[str, str]] = []
+    for index, step in enumerate(loop_state.plan_steps):
+        status = (
+            loop_state.plan_step_statuses[index]
+            if index < len(loop_state.plan_step_statuses)
+            else "pending"
+        )
+        note = (
+            loop_state.plan_step_notes[index].strip()
+            if index < len(loop_state.plan_step_notes)
+            else ""
+        )
+        row = {
+            "tool": str(step.get("toolName", "")),
+            "status": status,
+        }
+        if note:
+            row["note"] = note
+        rows.append(row)
+    return rows
 
 
 def _preferred_loop_tool_names(skill_steps: list[dict[str, Any]] | None) -> list[str]:
@@ -441,6 +470,7 @@ async def _process_tool_calls(
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run tool calls and yield chat progress deltas."""
     maybe_suspend_skill_plan_from_reasoning(loop_state, reasoning)
+    maybe_omit_plan_steps_from_reasoning(loop_state, reasoning)
     blocked_ids: set[str] = set()
     if calls and reasoning.strip():
         execution_names = [_tool_call_payload(call)[0] for call in calls]
@@ -1508,9 +1538,9 @@ async def run_agent(
         reset_iteration_flags(loop_state)
         if iteration > 0:
             yield AgentDelta(content_clear=True)
-            inject_loop_context(messages, loop_state)
             if agent_config.show_reasoning_in_chat:
                 yield AgentDelta(thinking_clear=True)
+        inject_loop_context(messages, loop_state)
         if agent_config.turn_token_budget > 0:
             compact_messages_if_needed(
                 messages,
@@ -1743,6 +1773,7 @@ async def run_agent(
             assistant_text = FALLBACK_MESSAGE
             yield AgentDelta(content=assistant_text)
 
+        reconcile_plan_before_answer(loop_state)
         primary_learned = next(
             (s for s in matched_skills if not s.is_builtin), None
         )
@@ -1800,6 +1831,9 @@ async def run_agent(
         trace.recovery_hints = list(loop_state.mcp_guidance)
         trace.skill_plan_override = loop_state.skill_plan_override
         trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
+        plan_progress = _plan_progress_snapshot(loop_state)
+        if plan_progress is not None:
+            turn_meta["plan_progress"] = plan_progress
         turn_meta.update(
             {
                 "verifier_verdict": trace.verifier_verdict,

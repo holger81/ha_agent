@@ -41,6 +41,7 @@ class LoopState:
     plan_skill_title: str = ""
     plan_steps: list[dict[str, Any]] = field(default_factory=list)
     plan_step_statuses: list[str] = field(default_factory=list)
+    plan_step_notes: list[str] = field(default_factory=list)
     plan_current_step_index: int | None = None
     plan_completed_tools: list[str] = field(default_factory=list)
     skill_plan_override: bool = False
@@ -112,6 +113,13 @@ _USER_SKILL_OVERRIDE = re.compile(
     r"skip (?:the )?skill|"
     r"not using (?:the )?skill"
     r")\b",
+    re.IGNORECASE,
+)
+_PLAN_TERMINAL_STATUSES = frozenset({"done", "omitted"})
+_OMIT_TOOL_MARKER = re.compile(
+    r"OMIT(?:TED)?(?::|\s+step\s+\d+\s*[:\-])?\s*"
+    r"`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?"
+    r"(?:\s*[—\-:]\s*(.+))?",
     re.IGNORECASE,
 )
 _REASONING_SKILL_MISMATCH = re.compile(
@@ -329,9 +337,86 @@ def reasoning_execution_mismatch(
 
 def _next_incomplete_plan_step(loop_state: LoopState) -> int | None:
     for index, status in enumerate(loop_state.plan_step_statuses):
-        if status != "done":
+        if status not in _PLAN_TERMINAL_STATUSES:
             return index
     return None
+
+
+def _plan_status_label(status: str) -> str:
+    return {
+        "pending": "[ ]",
+        "done": "[x]",
+        "needs_work": "[!]",
+        "omitted": "[~]",
+    }.get(status, "[ ]")
+
+
+def omit_plan_step(loop_state: LoopState, index: int, reason: str) -> None:
+    """Mark a plan step deliberately omitted with a short reason."""
+    if index < 0 or index >= len(loop_state.plan_step_statuses):
+        return
+    if loop_state.plan_step_statuses[index] in _PLAN_TERMINAL_STATUSES:
+        return
+    loop_state.plan_step_statuses[index] = "omitted"
+    if index < len(loop_state.plan_step_notes):
+        loop_state.plan_step_notes[index] = reason.strip()[:200]
+    else:
+        loop_state.plan_step_notes.extend(
+            [""] * (index - len(loop_state.plan_step_notes) + 1)
+        )
+        loop_state.plan_step_notes[index] = reason.strip()[:200]
+    loop_state.plan_current_step_index = _next_incomplete_plan_step(loop_state)
+
+
+def maybe_omit_plan_steps_from_reasoning(
+    loop_state: LoopState,
+    reasoning: str,
+) -> None:
+    """Apply explicit OMIT markers from model reasoning to the active plan."""
+    if loop_state.skill_plan_override or not loop_state.plan_steps:
+        return
+    text = reasoning.strip()
+    if not text:
+        return
+    for match in _OMIT_TOOL_MARKER.finditer(text):
+        tool_name = match.group(1)
+        reason = (match.group(2) or "Declared omitted in reasoning.").strip()
+        for index, step in enumerate(loop_state.plan_steps):
+            plan_tool = str(step.get("toolName", ""))
+            if plan_tool and _tool_names_match(plan_tool, tool_name):
+                omit_plan_step(loop_state, index, reason)
+
+
+def reconcile_plan_after_tools(loop_state: LoopState) -> None:
+    """Mark earlier pending steps omitted when a later planned step succeeded."""
+    if loop_state.skill_plan_override or not loop_state.plan_steps:
+        return
+    for index, status in enumerate(loop_state.plan_step_statuses):
+        if status != "done":
+            continue
+        step_name = str(loop_state.plan_steps[index].get("toolName", "step"))
+        for prior in range(index):
+            if loop_state.plan_step_statuses[prior] == "pending":
+                omit_plan_step(
+                    loop_state,
+                    prior,
+                    f"Superseded by successful {step_name} (step {index + 1}).",
+                )
+
+
+def reconcile_plan_before_answer(loop_state: LoopState) -> None:
+    """Mark remaining pending steps omitted when the model is answering."""
+    if loop_state.skill_plan_override or not loop_state.plan_steps:
+        return
+    for index, status in enumerate(loop_state.plan_step_statuses):
+        if status != "pending":
+            continue
+        step_name = str(loop_state.plan_steps[index].get("toolName", "step"))
+        omit_plan_step(
+            loop_state,
+            index,
+            f"Not required to answer user goal (step {index + 1}: {step_name}).",
+        )
 
 
 def _match_plan_step_index(loop_state: LoopState, tool_name: str) -> int | None:
@@ -390,6 +475,7 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     loop_state.skill_plan_override_reason = reason.strip()[:400]
     loop_state.plan_steps = []
     loop_state.plan_step_statuses = []
+    loop_state.plan_step_notes = []
     loop_state.plan_current_step_index = None
 
 
@@ -433,6 +519,7 @@ def initialize_loop_plan(
     steps = list(tool_steps or _ROUTE_PLAN_STEPS.get(route, []))
     loop_state.plan_steps = steps
     loop_state.plan_step_statuses = ["pending"] * len(steps)
+    loop_state.plan_step_notes = [""] * len(steps)
     loop_state.plan_current_step_index = 0 if steps else None
     loop_state.plan_completed_tools = []
     if slot_bindings:
@@ -475,7 +562,10 @@ def record_plan_tool_result(
 
     if succeeded and not verification_failed:
         loop_state.plan_step_statuses[step_index] = "done"
+        if step_index < len(loop_state.plan_step_notes):
+            loop_state.plan_step_notes[step_index] = ""
         loop_state.plan_current_step_index = _next_incomplete_plan_step(loop_state)
+        reconcile_plan_after_tools(loop_state)
         return
 
     loop_state.plan_step_statuses[step_index] = "needs_work"
@@ -497,14 +587,13 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
                 )
             if status == "pending":
                 return f"Execute step {index + 1}: {name}"
-    if (
-        loop_state.plan_steps
-        and loop_state.plan_step_statuses
-        and all(status == "done" for status in loop_state.plan_step_statuses)
+    if loop_state.plan_steps and loop_state.plan_step_statuses and all(
+        status in _PLAN_TERMINAL_STATUSES for status in loop_state.plan_step_statuses
     ):
         return (
-            "All planned steps are done. STOP calling tools and write the final "
-            "answer to the user now using the tool results above."
+            "All planned steps are done or deliberately omitted. STOP calling "
+            "tools and write the final answer to the user now using the tool "
+            "results above."
         )
 
     hint = _ROUTE_NEXT_HINTS.get(
@@ -546,11 +635,25 @@ def build_plan_progress_summary(loop_state: LoopState) -> str | None:
                 if index < len(loop_state.plan_step_statuses)
                 else "pending"
             )
-            marker = {"pending": "[ ]", "done": "[x]", "needs_work": "[!]"}[status]
+            marker = _plan_status_label(status)
             focus = ""
-            if loop_state.plan_current_step_index == index and status != "done":
+            if (
+                loop_state.plan_current_step_index == index
+                and status not in _PLAN_TERMINAL_STATUSES
+            ):
                 focus = "  <-- focus here"
-            lines.append(f"{index + 1}. {marker} {name}{focus}")
+            note = (
+                loop_state.plan_step_notes[index].strip()
+                if index < len(loop_state.plan_step_notes)
+                else ""
+            )
+            suffix = f" — omitted: {note}" if status == "omitted" and note else ""
+            lines.append(f"{index + 1}. {marker} {name}{suffix}{focus}")
+        lines.append(
+            "Follow steps in order. To skip a remaining step deliberately, "
+            "include OMIT: <toolName> — <reason> in your reasoning before "
+            "continuing or answering."
+        )
     elif loop_state.plan_completed_tools:
         lines.append("Tools completed this turn:")
         for name in loop_state.plan_completed_tools[-6:]:

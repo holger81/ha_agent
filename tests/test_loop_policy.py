@@ -230,6 +230,114 @@ def test_describe_plan_next_action_stops_when_all_done() -> None:
     assert "final" in directive
 
 
+def test_reconcile_plan_after_tools_omits_skipped_prerequisites() -> None:
+    """Completing a later step marks earlier pending steps as omitted."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="check inbox",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_mailbox_status"},
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+    )
+
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+
+    assert state.plan_step_statuses == ["omitted", "done", "pending"]
+    assert "Superseded" in state.plan_step_notes[0]
+    assert state.plan_current_step_index == 2
+
+
+def test_reconcile_plan_before_answer_omits_remaining_pending() -> None:
+    """Pending steps are omitted when the model is ready to answer."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="check inbox",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_mailbox_status"},
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+    )
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX"},
+        succeeded=True,
+    )
+
+    policy.reconcile_plan_before_answer(state)
+
+    assert state.plan_step_statuses == ["omitted", "done", "omitted"]
+    assert "Not required to answer user goal" in state.plan_step_notes[2]
+    assert state.plan_current_step_index is None
+
+
+def test_maybe_omit_plan_steps_from_reasoning() -> None:
+    """Explicit OMIT markers in reasoning mark plan steps omitted."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="check inbox",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_mailbox_status"},
+            {"toolName": "mail_mcp__imap_search_messages"},
+        ],
+    )
+
+    policy.maybe_omit_plan_steps_from_reasoning(
+        state,
+        "OMIT: mail_mcp__imap_mailbox_status — search results already include count.",
+    )
+
+    assert state.plan_step_statuses[0] == "omitted"
+    assert "search results" in state.plan_step_notes[0]
+    assert state.plan_step_statuses[1] == "pending"
+
+
+def test_build_plan_progress_summary_shows_omitted_steps() -> None:
+    """Plan progress lists omitted steps with reasons."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(state, goal="check inbox", route="email")
+    policy.omit_plan_step(state, 0, "Not required for this request.")
+
+    summary = policy.build_plan_progress_summary(state)
+
+    assert summary is not None
+    assert "[~]" in summary
+    assert "omitted: Not required for this request." in summary
+    assert "OMIT:" in summary
+
+
+def test_inject_loop_context_includes_plan_on_first_step() -> None:
+    """Plan progress is injected even before the first model call."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(state, goal="check inbox", route="email")
+    messages: list[dict[str, str]] = []
+
+    policy.inject_loop_context(messages, state)
+
+    assert len(messages) == 1
+    assert "AGENT PLAN PROGRESS" in messages[0]["content"]
+    assert "Execute step 1" in messages[0]["content"]
+
+
 def test_should_retry_empty_response_caps_attempts() -> None:
     """Empty replies retry a bounded number of times before giving up."""
     policy = _load_loop_policy()

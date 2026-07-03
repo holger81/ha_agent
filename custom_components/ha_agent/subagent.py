@@ -136,8 +136,7 @@ async def run_worker(
     for iteration in range(max_iter):
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
-        if iteration > 0:
-            inject_loop_context(messages, loop_state)
+        inject_loop_context(messages, loop_state)
 
         result = await llm.chat(messages, backend, tools=tools)
         if result.tool_calls:
