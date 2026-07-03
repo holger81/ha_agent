@@ -876,6 +876,50 @@ def test_record_override_block_guidance_injects_next_action() -> None:
     assert any("message_ids" in hint for hint in state.mcp_guidance)
 
 
+def test_analyze_search_tool_result_steers_mark_read_to_update_tool() -> None:
+    """After search on a mark-read goal, inject MCP adherence for update tools."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails in INBOX as read"
+    state.override_intent = "mark_read"
+    state.skill_plan_override = True
+    policy.cache_mcp_tool_catalog_entry(
+        state,
+        "mail_mcp__imap_bulk_update_flags",
+        description="Bulk update message flags.",
+        parameters="Required: mailbox, message_ids, flags",
+    )
+    output = json.dumps({"messages": [{"uid": 42}], "total": 1})
+
+    policy.analyze_search_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "unread_only": True},
+    )
+
+    assert any("bulk_update_flags" in hint for hint in state.mcp_guidance)
+    assert any("message_ids" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_search_tool_result_tells_model_to_answer_for_inbox_check() -> None:
+    """Check-inbox goals should answer from search results instead of re-searching."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "any new emails in INBOX?"
+    output = json.dumps({"messages": [{"uid": 1, "subject": "Hi"}], "total": 1})
+
+    policy.analyze_search_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "unread_only": True},
+    )
+
+    assert any("Answer the user from these results" in hint for hint in state.mcp_guidance)
+    assert any("Do not repeat" in hint for hint in state.mcp_guidance)
+
+
 def test_build_mcp_tool_adherence_hint_uses_catalog() -> None:
     """Next-step guidance cites cached MCP metadata instead of hard-coded args."""
     policy = _load_loop_policy()

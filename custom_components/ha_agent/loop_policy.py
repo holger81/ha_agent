@@ -674,6 +674,40 @@ def redundant_override_tool_block(
     return None
 
 
+def _is_search_like_tool(tool_name: str) -> bool:
+    """Return True for list/search/discovery tools."""
+    lowered = tool_name.lower()
+    return bool(
+        re.search(
+            r"(search|list|discover|tools/list|tools_list|mailbox_status|get_message)",
+            lowered,
+        )
+    )
+
+
+def _mark_read_goal(loop_state: LoopState) -> bool:
+    """Return True when the user goal is mark-as-read style."""
+    if loop_state.override_intent == "mark_read":
+        return True
+    return bool(_MARK_READ_INTENT.search(loop_state.plan_goal))
+
+
+def _infer_next_catalog_tool(loop_state: LoopState, *, after_tool: str) -> str | None:
+    """Pick a complementary MCP tool from the cached catalog."""
+    if not _mark_read_goal(loop_state):
+        return None
+    candidates: list[str] = []
+    for key in loop_state.mcp_tool_catalog:
+        if _is_search_like_tool(key):
+            continue
+        if _tool_names_match(key, after_tool):
+            continue
+        lower = key.lower()
+        if any(marker in lower for marker in _MARK_READ_TOOL_MARKERS):
+            candidates.append(key)
+    return candidates[0] if candidates else None
+
+
 def _catalog_tool_key(tool_name: str) -> str:
     return tool_name.strip()
 
@@ -824,11 +858,30 @@ def _next_plan_tool_name(loop_state: LoopState) -> str | None:
     return str(name).strip() if name else None
 
 
-def _inject_next_tool_adherence(loop_state: LoopState, *, lead_in: str) -> None:
+def _inject_next_tool_adherence(
+    loop_state: LoopState,
+    *,
+    lead_in: str,
+    after_tool: str | None = None,
+) -> None:
     next_tool = _next_plan_tool_name(loop_state)
+    if not next_tool and after_tool:
+        next_tool = _infer_next_catalog_tool(loop_state, after_tool=after_tool)
     if not next_tool:
-        hint = f"{lead_in} If the goal is already satisfied, answer the user now."
-        loop_state.mcp_guidance.insert(0, hint)
+        if after_tool and _mark_read_goal(loop_state):
+            hint = (
+                f"{lead_in} Discover a write/update tool with searchTool if needed, "
+                "then adhere strictly to its MCP definition using prior search output."
+            )
+        elif after_tool and _is_search_like_tool(after_tool):
+            hint = (
+                f"{lead_in} Answer the user from these results. "
+                f"Do not repeat `{after_tool}` this turn unless paginating."
+            )
+        else:
+            hint = f"{lead_in} If the goal is already satisfied, answer the user now."
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
         return
     hint = build_mcp_tool_adherence_hint(loop_state, next_tool, lead_in=lead_in)
     if hint not in loop_state.mcp_guidance:
@@ -857,6 +910,8 @@ def record_override_block_guidance(
     if hint not in loop_state.mcp_guidance:
         loop_state.mcp_guidance.insert(0, hint)
     next_tool = _next_plan_tool_name(loop_state)
+    if not next_tool:
+        next_tool = _infer_next_catalog_tool(loop_state, after_tool=tool_name)
     if next_tool:
         adherence = build_mcp_tool_adherence_hint(
             loop_state,
@@ -893,7 +948,7 @@ def analyze_search_tool_result(
         summary = "SEARCH RESULT: the query returned no items."
         if filtered:
             summary += " Active filters may still apply to follow-up calls."
-        _inject_next_tool_adherence(loop_state, lead_in=summary)
+        _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)
         return
 
     summary = f"SEARCH RESULT: returned {len(entries)} item(s)."
@@ -902,7 +957,7 @@ def analyze_search_tool_result(
     if has_more:
         summary += " More pages are available per the tool result metadata."
 
-    _inject_next_tool_adherence(loop_state, lead_in=summary)
+    _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)
 
 
 def guide_after_override_tool_result(
@@ -926,6 +981,8 @@ def guide_after_override_tool_result(
         )
         return
     next_tool = _next_plan_tool_name(loop_state)
+    if not next_tool:
+        next_tool = _infer_next_catalog_tool(loop_state, after_tool=tool_name)
     if next_tool:
         hint = build_mcp_tool_adherence_hint(
             loop_state,
@@ -934,6 +991,14 @@ def guide_after_override_tool_result(
         )
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
+    elif _mark_read_goal(loop_state):
+        loop_state.mcp_guidance.insert(
+            0,
+            (
+                "Previous search succeeded. Discover and call the write/update "
+                "tool from the MCP catalog using IDs from the search output."
+            ),
+        )
 
 
 def initialize_loop_plan(
