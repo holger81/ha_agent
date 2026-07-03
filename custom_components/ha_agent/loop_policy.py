@@ -960,6 +960,46 @@ def analyze_search_tool_result(
     _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)
 
 
+def analyze_discovery_tool_result(
+    loop_state: LoopState,
+    tool_name: str,
+    output: str,
+    arguments: dict[str, Any],
+) -> None:
+    """After discovery lookups, steer the model to call the resolved tool."""
+    if output.startswith("Tool error:"):
+        return
+    lowered = tool_name.lower()
+    if "searchtool" not in lowered and "searchtoolsfordomain" not in lowered:
+        return
+    cache_discovery_tool_catalog(loop_state, output)
+    query = str(arguments.get("query") or arguments.get("domain") or "").strip()
+    if "searchtool" in lowered and query:
+        for key in loop_state.mcp_tool_catalog:
+            if _tool_names_match(key, query):
+                hint = build_mcp_tool_adherence_hint(
+                    loop_state,
+                    key,
+                    lead_in=(
+                        f"searchTool loaded `{key}`. Call this tool directly now "
+                        "— do not repeat searchTool for the same tool name."
+                    ),
+                )
+                if hint not in loop_state.mcp_guidance:
+                    loop_state.mcp_guidance.insert(0, hint)
+                return
+    if _mark_read_goal(loop_state):
+        next_tool = _infer_next_catalog_tool(loop_state, after_tool=tool_name)
+        if next_tool:
+            hint = build_mcp_tool_adherence_hint(
+                loop_state,
+                next_tool,
+                lead_in="Discovered tools for mark-as-read — required next tool:",
+            )
+            if hint not in loop_state.mcp_guidance:
+                loop_state.mcp_guidance.insert(0, hint)
+
+
 def guide_after_override_tool_result(
     loop_state: LoopState,
     tool_name: str,

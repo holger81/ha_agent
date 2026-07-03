@@ -916,8 +916,38 @@ def test_analyze_search_tool_result_tells_model_to_answer_for_inbox_check() -> N
         {"mailbox": "INBOX", "unread_only": True},
     )
 
-    assert any("Answer the user from these results" in hint for hint in state.mcp_guidance)
+    assert any(
+        "Answer the user from these results" in hint for hint in state.mcp_guidance
+    )
     assert any("Do not repeat" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_discovery_tool_result_prompts_direct_call() -> None:
+    """searchTool for a concrete tool name should steer to calling that tool."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    state.override_intent = "mark_read"
+    output = json.dumps(
+        [
+            {
+                "toolName": "mail_mcp__imap_bulk_update_flags",
+                "description": "Bulk update message flags.",
+                "inputSchema": {
+                    "required": ["mailbox", "message_ids", "flags"],
+                    "properties": {"message_ids": {"description": "From search"}},
+                },
+            }
+        ]
+    )
+    policy.analyze_discovery_tool_result(
+        state,
+        "searchTool",
+        output,
+        {"query": "mail_mcp__imap_bulk_update_flags"},
+    )
+    assert any("Call this tool directly now" in hint for hint in state.mcp_guidance)
+    assert any("message_ids" in hint for hint in state.mcp_guidance)
 
 
 def test_build_mcp_tool_adherence_hint_uses_catalog() -> None:
