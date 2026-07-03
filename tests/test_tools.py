@@ -86,6 +86,32 @@ def test_normalize_session_tool_call() -> None:
     assert tool_args["domain"] == "email"
 
 
+def test_normalize_session_tool_unwraps_nested_arguments() -> None:
+    """Direct session tools unwrap callTool-style nested arguments."""
+    call = llm_client.ToolCall(
+        id="call_2b",
+        name="mail_mcp__imap_search_messages",
+        arguments=json.dumps(
+            {
+                "arguments": {
+                    "mailbox": "INBOX",
+                    "unread_only": True,
+                    "limit": 10,
+                }
+            }
+        ),
+    )
+
+    tool_name, tool_args = tools._normalize_tool_call(call)
+
+    assert tool_name == "mail_mcp__imap_search_messages"
+    assert tool_args == {
+        "mailbox": "INBOX",
+        "unread_only": True,
+        "limit": 10,
+    }
+
+
 def test_normalize_flat_ha_call_service_args() -> None:
     """Flat callTool payloads keep service fields instead of dropping them."""
     call = llm_client.ToolCall(

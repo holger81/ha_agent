@@ -200,6 +200,21 @@ def _normalize_call_tool_payload(
     return {"toolName": upstream, "arguments": arguments}
 
 
+def _unwrap_session_arguments(args: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap callTool-style ``arguments`` on direct session tool calls."""
+    inner = args.get("arguments")
+    if not isinstance(inner, dict):
+        return args
+    outer = {
+        key: value
+        for key, value in args.items()
+        if key not in {"arguments", "toolName"}
+    }
+    if outer:
+        return {**inner, **outer}
+    return dict(inner)
+
+
 def _normalize_tool_call(
     call: ToolCall,
     *,
@@ -234,6 +249,7 @@ def _normalize_tool_call(
 
     if tool_name not in {"callTool", "searchTool", "searchToolsForDomain"}:
         tool_name = _normalize_upstream_tool_name(tool_name)
+        args = _unwrap_session_arguments(args)
 
     return tool_name, args
 
