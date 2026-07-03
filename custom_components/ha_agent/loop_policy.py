@@ -435,19 +435,33 @@ def reconcile_plan_before_answer(loop_state: LoopState) -> None:
         )
 
 
+def _mark_read_tools_equivalent(plan_tool: str, actual_tool: str) -> bool:
+    plan_lower = plan_tool.lower()
+    actual_lower = actual_tool.lower()
+    markers = ("bulk_update", "mark_read", "update_flags")
+    return any(marker in plan_lower for marker in markers) and any(
+        marker in actual_lower for marker in markers
+    )
+
+
 def _match_plan_step_index(loop_state: LoopState, tool_name: str) -> int | None:
     for index, step in enumerate(loop_state.plan_steps):
         plan_tool = str(step.get("toolName", ""))
         if not plan_tool:
             continue
-        if not _tool_names_match(plan_tool, tool_name):
+        matches = _tool_names_match(plan_tool, tool_name)
+        matches = matches or _mark_read_tools_equivalent(plan_tool, tool_name)
+        if not matches:
             continue
         status = loop_state.plan_step_statuses[index]
         if status in {"pending", "needs_work"}:
             return index
     for index, step in enumerate(loop_state.plan_steps):
         plan_tool = str(step.get("toolName", ""))
-        if plan_tool and _tool_names_match(plan_tool, tool_name):
+        if plan_tool and (
+            _tool_names_match(plan_tool, tool_name)
+            or _mark_read_tools_equivalent(plan_tool, tool_name)
+        ):
             return index
     return None
 
@@ -660,6 +674,37 @@ def redundant_override_tool_block(
                 f"step. Call `{next_tool}` next using prior tool output. "
                 "Do not repeat discovery."
             )
+    for index, step in enumerate(loop_state.plan_steps):
+        plan_tool = str(step.get("toolName", "")).lower()
+        if not plan_tool or not _tool_names_match(plan_tool, tool_name):
+            continue
+        if (
+            index < len(loop_state.plan_step_statuses)
+            and loop_state.plan_step_statuses[index] == "done"
+        ):
+            if all(
+                status in _PLAN_TERMINAL_STATUSES
+                for status in loop_state.plan_step_statuses
+            ):
+                return (
+                    "Tool error: All override plan steps are complete. "
+                    "STOP calling tools and write the final answer to the user "
+                    "using the prior tool results."
+                )
+            next_index = _next_incomplete_plan_step(loop_state)
+            if next_index is not None and next_index != index:
+                next_tool = str(
+                    loop_state.plan_steps[next_index].get("toolName", "tool")
+                )
+                return (
+                    f"Tool error: `{step.get('toolName', tool_name)}` already "
+                    f"succeeded. Call `{next_tool}` next or answer the user if "
+                    "all steps are done."
+                )
+            return (
+                "Tool error: This plan step already succeeded. STOP calling "
+                "tools and answer the user from prior results."
+            )
     if "search_messages" in lowered:
         for index, step in enumerate(loop_state.plan_steps):
             plan_tool = str(step.get("toolName", "")).lower()
@@ -702,6 +747,16 @@ def guide_after_override_tool_result(
                 "mail_mcp__imap_mark_read with mailbox INBOX and the UID or "
                 "message_id values from that output to set \\Seen. "
                 "Do not search or discover again."
+            ),
+        )
+    if loop_state.override_intent == "mark_read" and (
+        "bulk_update" in lowered or "mark_read" in lowered
+    ):
+        loop_state.mcp_guidance.insert(
+            0,
+            (
+                "Flag update completed. STOP calling tools and tell the user "
+                "how many messages were marked read based on the tool result."
             ),
         )
 
