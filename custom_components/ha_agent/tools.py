@@ -400,6 +400,34 @@ def _parse_discovery_payload(data: Any) -> tuple[list[dict[str, Any]], dict[str,
     return [], meta
 
 
+def _discovery_pagination_note(meta: dict[str, Any]) -> str | None:
+    """Return a next-page note when discovery metadata indicates more tools."""
+    has_more = meta.get("hasMore")
+    if has_more is None:
+        has_more = meta.get("has_more")
+    if not has_more:
+        return None
+    offset = meta.get("offset", 0)
+    limit = meta.get("limit")
+    try:
+        next_offset = int(offset) + int(limit)
+    except (TypeError, ValueError):
+        try:
+            next_offset = int(offset) + 1
+        except (TypeError, ValueError):
+            return (
+                "More tools available. Call searchToolsForDomain again with a "
+                "higher offset and the same domain/query/limit."
+            )
+    parts = [f"offset={next_offset}"]
+    if limit is not None:
+        parts.append(f"limit={limit}")
+    return (
+        "More tools available. Call searchToolsForDomain again with "
+        f"{', '.join(parts)} and the same domain/query filters."
+    )
+
+
 def compact_discovery_tool_output(
     output: str,
     *,
@@ -428,7 +456,9 @@ def compact_discovery_tool_output(
         result: dict[str, Any] = dict(meta)
         if compacted:
             result["tools"] = compacted
-        if len(entries) > shown:
+        if pagination_note := _discovery_pagination_note(meta):
+            result["note"] = pagination_note
+        elif len(entries) > shown:
             result["truncated"] = True
             result["shown"] = shown
             result["total"] = meta.get("total", len(entries))

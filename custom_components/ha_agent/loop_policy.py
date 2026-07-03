@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -50,6 +51,7 @@ class LoopState:
     empty_responses: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
     include_full_tool_catalog: bool = False
+    pagination_pending: dict[str, Any] = field(default_factory=dict)
 
 
 # Role used for internal/system-injected guidance (plan progress, failure
@@ -658,6 +660,8 @@ def redundant_override_tool_block(
     """Block repeat discovery/search when an override exploration plan advanced."""
     if not loop_state.skill_plan_override or not loop_state.plan_steps:
         return None
+    if _pagination_allows_repeat(loop_state, tool_name):
+        return None
     lowered = tool_name.lower()
     from .tools import is_discovery_tool_name
 
@@ -739,6 +743,8 @@ def guide_after_override_tool_result(
         return
     lowered = tool_name.lower()
     if loop_state.override_intent == "mark_read" and "search_messages" in lowered:
+        if _pagination_allows_repeat(loop_state, tool_name):
+            return
         loop_state.mcp_guidance.insert(
             0,
             (
@@ -1013,6 +1019,147 @@ def record_mcp_guidance(
     for hint in extract_mcp_guidance(tool_name, output):
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.append(hint)
+
+
+def _parse_tool_result_json(output: str) -> dict[str, Any] | None:
+    if output.startswith("Tool error:"):
+        return None
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+def _pagination_fields(data: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(data)
+    nested = data.get("pagination")
+    if isinstance(nested, dict):
+        merged.update(nested)
+    return merged
+
+
+def extract_pagination_meta(
+    output: str,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return continuation metadata when a tool result indicates more pages."""
+    data = _parse_tool_result_json(output)
+    if not data:
+        return None
+
+    fields = _pagination_fields(data)
+    args = arguments or {}
+
+    next_cursor = fields.get("nextCursor") or fields.get("next_cursor")
+    if isinstance(next_cursor, str) and next_cursor.strip():
+        return {"kind": "cursor", "cursor": next_cursor.strip()}
+
+    next_page_token = (
+        fields.get("nextPageToken")
+        or fields.get("next_page_token")
+        or fields.get("pageToken")
+    )
+    if isinstance(next_page_token, str) and next_page_token.strip():
+        return {"kind": "page_token", "page_token": next_page_token.strip()}
+
+    has_more = _coerce_bool(fields.get("hasMore") or fields.get("has_more"))
+    if not has_more:
+        return None
+
+    offset = fields.get("offset", args.get("offset", 0))
+    limit = fields.get("limit", args.get("limit"))
+    try:
+        next_offset = int(offset) + int(limit)
+    except (TypeError, ValueError):
+        try:
+            next_offset = int(offset) + 1
+        except (TypeError, ValueError):
+            next_offset = 0
+    meta: dict[str, Any] = {"kind": "offset", "offset": next_offset}
+    if limit is not None:
+        with suppress(TypeError, ValueError):
+            meta["limit"] = int(limit)
+    return meta
+
+
+def build_pagination_hint(
+    tool_name: str,
+    meta: dict[str, Any],
+    *,
+    discovery: bool = False,
+) -> str:
+    """Format one directive for fetching the next page of a paginated tool."""
+    kind = meta.get("kind")
+    if kind == "cursor":
+        return (
+            f"PAGINATION: More results available. Call `{tool_name}` again with "
+            f"cursor={meta['cursor']!r} and the same other arguments."
+        )
+    if kind == "page_token":
+        return (
+            f"PAGINATION: More results available. Call `{tool_name}` again with "
+            f"pageToken={meta['page_token']!r} and the same other arguments."
+        )
+    if kind == "offset":
+        parts = [f"offset={meta['offset']}"]
+        if meta.get("limit") is not None:
+            parts.append(f"limit={meta['limit']}")
+        args_hint = ", ".join(parts)
+        if discovery:
+            return (
+                f"PAGINATION: More tools available. Call `{tool_name}` again with "
+                f"{args_hint} and the same domain/query filters."
+            )
+        return (
+            f"PAGINATION: More results available. Call `{tool_name}` again with "
+            f"{args_hint} and preserve mailbox or other filter arguments."
+        )
+    return ""
+
+
+def _pagination_allows_repeat(loop_state: LoopState, tool_name: str) -> bool:
+    pending = loop_state.pagination_pending
+    pending_tool = str(pending.get("tool_name") or "")
+    if not pending_tool:
+        return False
+    return _tool_names_match(pending_tool, tool_name)
+
+
+def record_pagination_state(
+    loop_state: LoopState,
+    tool_name: str,
+    output: str,
+    arguments: dict[str, Any],
+) -> None:
+    """Track paginated tool results and inject next-page guidance."""
+    from .tools import is_discovery_tool_name
+
+    meta = extract_pagination_meta(output, arguments)
+    if meta:
+        loop_state.pagination_pending = {"tool_name": tool_name, **meta}
+        hint = build_pagination_hint(
+            tool_name,
+            meta,
+            discovery=is_discovery_tool_name(tool_name),
+        )
+        if hint and hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        return
+
+    pending_tool = str(loop_state.pagination_pending.get("tool_name") or "")
+    if pending_tool and _tool_names_match(pending_tool, tool_name):
+        loop_state.pagination_pending = {}
 
 
 def build_empty_response_nudge(loop_state: LoopState) -> str:

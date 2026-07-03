@@ -408,6 +408,73 @@ def test_record_and_inject_mcp_guidance() -> None:
     assert state.mcp_guidance == []
 
 
+def test_extract_pagination_meta_has_more_offset() -> None:
+    """hasMore with offset/limit yields the next offset page."""
+    policy = _load_loop_policy()
+    output = json.dumps(
+        {
+            "messages": [{"uid": 1}],
+            "hasMore": True,
+            "offset": 0,
+            "limit": 10,
+        }
+    )
+    meta = policy.extract_pagination_meta(
+        output,
+        {"mailbox": "INBOX", "limit": 10},
+    )
+    assert meta == {"kind": "offset", "offset": 10, "limit": 10}
+
+
+def test_record_pagination_state_injects_guidance() -> None:
+    """Paginated tool output adds next-page guidance to the loop state."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps({"items": [1, 2], "hasMore": True, "offset": 10, "limit": 5})
+
+    policy.record_pagination_state(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "offset": 10, "limit": 5},
+    )
+
+    assert state.pagination_pending["tool_name"] == "mail_mcp__imap_search_messages"
+    assert state.pagination_pending["offset"] == 15
+    assert any("PAGINATION" in hint for hint in state.mcp_guidance)
+
+
+def test_redundant_override_allows_search_when_pagination_pending() -> None:
+    """Repeat search is allowed while a paginated result still has more pages."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    state.plan_route = "email"
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    output = json.dumps(
+        {"messages": [{"uid": 1}], "hasMore": True, "offset": 0, "limit": 10}
+    )
+    policy.record_pagination_state(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "unread_only": True, "limit": 10},
+    )
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+
+    block = policy.redundant_override_tool_block(
+        state,
+        "mail_mcp__imap_search_messages",
+    )
+    assert block is None
+    assert not any("Do not search" in hint for hint in state.mcp_guidance)
+
+
 def test_reasoning_execution_mismatch_detects_wrong_tool() -> None:
     """Reasoning that commits to news_curate blocks mail tool execution."""
     policy = _load_loop_policy()

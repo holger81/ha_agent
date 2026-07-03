@@ -46,6 +46,7 @@ from .loop_policy import (
     reconcile_plan_before_answer,
     record_iteration_failure,
     record_mcp_guidance,
+    record_pagination_state,
     record_plan_tool_result,
     redundant_override_tool_block,
     reset_iteration_flags,
@@ -453,6 +454,7 @@ def _handle_tool_result(
                     break
     else:
         record_iteration_failure(loop_state, tool_name, arguments, output)
+    record_pagination_state(loop_state, tool_name, output, arguments)
     record_plan_tool_result(
         loop_state,
         tool_name,

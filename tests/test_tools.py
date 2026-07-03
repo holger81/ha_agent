@@ -262,6 +262,23 @@ def test_compact_discovery_tool_output_strips_schemas() -> None:
     assert len(compact) < len(json.dumps(payload))
 
 
+def test_compact_discovery_tool_output_has_more_note() -> None:
+    """Server-side hasMore adds a next-page note to discovery output."""
+    payload = {
+        "domain": "mail",
+        "hasMore": True,
+        "offset": 0,
+        "limit": 5,
+        "tools": [
+            {"toolName": "mail_mcp__imap_search_messages", "description": "Search mail"}
+        ],
+    }
+    compact = tools.compact_discovery_tool_output(json.dumps(payload))
+    parsed = json.loads(compact)
+    assert "offset=5" in parsed["note"]
+    assert "limit=5" in parsed["note"]
+
+
 def test_compact_tool_output_truncates_large_non_discovery_results() -> None:
     """Non-discovery tool output is capped with a truncation notice."""
     output = tools.compact_tool_output(
