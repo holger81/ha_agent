@@ -70,32 +70,17 @@ INTERNAL_GUIDANCE_ROLE = "system"
 _MAX_REASONING_CHARS = 8000
 _MAX_EMPTY_RESPONSES = 2
 _MAX_MCP_GUIDANCE_CHARS = 600
-_ROUTE_PLAN_STEPS: dict[str, list[dict[str, Any]]] = {
-    "email": [
-        {"toolName": "mail_mcp__imap_mailbox_status"},
-        {"toolName": "mail_mcp__imap_search_messages"},
-        {"toolName": "mail_mcp__imap_get_message"},
-    ],
-    "news": [
-        {"toolName": "news_curate"},
-    ],
-    "action": [
-        {"toolName": "ha_call_service"},
-    ],
+# Route → MCP discovery domain when no skill/playbook tool_steps are seeded.
+_ROUTE_DISCOVERY_DOMAINS: dict[str, str] = {
+    "email": "email",
+    "news": "news",
+    "action": "smart-home",
 }
-_ROUTE_NEXT_HINTS: dict[str, str] = {
-    "email": (
-        "Complete the email workflow: check mailbox, search messages, "
-        "fetch bodies if needed, then answer."
-    ),
-    "news": "Run news_curate (or equivalent), then summarize headlines.",
-    "action": (
-        "Prefer exposed-entity shortcuts when they match; otherwise discover "
-        "entities in domain smart-home, then call ha_call_service with domain, "
-        "service, and entity_id. Do not call ha_search_entities."
-    ),
-    "general": "Use tools to gather evidence, then answer from results.",
-}
+_GENERIC_NEXT_HINT = (
+    "Discover MCP tools if needed (searchToolsForDomain or searchTool), "
+    "then adhere strictly to each tool's MCP definition. "
+    "Use prior tool results before answering."
+)
 _REASONING_REPEAT_MARKER = 60
 _MAX_UNPRODUCTIVE_ITERATIONS = 2
 _REASONING_WILL_CALL = re.compile(
@@ -231,8 +216,7 @@ def check_stuck(
         f"Blocked repeated identical call to {tool_name}. "
         "You already used this tool with the same arguments. "
         "STOP retrying this call this turn. Review the previous tool result, "
-        "answer from it if sufficient, or use a different tool (for example "
-        "mail_mcp__imap_get_message with message_id from search results)."
+        "answer from it if sufficient, or use a different tool or arguments."
     )
 
 
@@ -541,20 +525,9 @@ def resolve_skill_plan_conflict(
 _EXPLORATION_GUIDANCE = (
     "Discover MCP tools for the user's goal (searchToolsForDomain or searchTool), "
     "then call the best match using arguments from discovery output and earlier "
-    "tool results. Do not repeat a mismatched workflow."
+    "tool results. Adhere strictly to each tool's MCP definition. "
+    "Do not repeat a mismatched workflow."
 )
-_ROUTE_EXPLORATION_HINTS: dict[str, str] = {
-    "email": (
-        "Discover MCP tools for the goal, then adhere strictly to each tool's "
-        "MCP description and serverLlmContext when calling it."
-    ),
-}
-_OVERRIDE_EXPLORATION_PLANS: dict[str, list[dict[str, Any]]] = {
-    "mark_read": [
-        {"toolName": "mail_mcp__imap_search_messages"},
-        {"toolName": "mail_mcp__imap_bulk_update_flags"},
-    ],
-}
 
 
 def override_intent_key(user_text: str) -> str | None:
@@ -605,22 +578,6 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
         0,
         f"SKILL PLAN SUSPENDED — {reason.strip()[:200]}. {_EXPLORATION_GUIDANCE}",
     )
-    route_hint = _ROUTE_EXPLORATION_HINTS.get(loop_state.plan_route)
-    if route_hint and route_hint not in loop_state.mcp_guidance:
-        loop_state.mcp_guidance.insert(1, route_hint)
-    exploration_steps = _OVERRIDE_EXPLORATION_PLANS.get(loop_state.override_intent)
-    if exploration_steps:
-        loop_state.plan_steps = list(exploration_steps)
-        loop_state.plan_step_statuses = ["pending"] * len(exploration_steps)
-        loop_state.plan_step_notes = [""] * len(exploration_steps)
-        loop_state.plan_current_step_index = 0
-        loop_state.mcp_guidance.insert(
-            2,
-            (
-                "Override exploration plan seeded — follow plan steps in order. "
-                "Use discovery only if a step tool is missing from the catalog."
-            ),
-        )
 
 
 def should_block_reasoning_execution_mismatch(loop_state: LoopState) -> bool:
@@ -899,10 +856,6 @@ def record_override_block_guidance(
         )
     if hint not in loop_state.mcp_guidance:
         loop_state.mcp_guidance.insert(0, hint)
-
-
-    if hint not in loop_state.mcp_guidance:
-        loop_state.mcp_guidance.insert(0, hint)
     next_tool = _next_plan_tool_name(loop_state)
     if next_tool:
         adherence = build_mcp_tool_adherence_hint(
@@ -939,53 +892,17 @@ def analyze_search_tool_result(
     if not entries:
         summary = "SEARCH RESULT: the query returned no items."
         if filtered:
-            summary += " Filters still apply to any follow-up search or update call."
+            summary += " Active filters may still apply to follow-up calls."
         _inject_next_tool_adherence(loop_state, lead_in=summary)
         return
 
-    already_handled = 0
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        flags = entry.get("flags") or entry.get("Flags") or []
-        if isinstance(flags, str):
-            flag_text = flags
-        elif isinstance(flags, list):
-            flag_text = " ".join(str(flag) for flag in flags)
-        else:
-            flag_text = ""
-        if "\\Seen" in flag_text or r"\Seen" in flag_text:
-            already_handled += 1
-
-    pending = len(entries) - already_handled
-    summary = (
-        f"SEARCH RESULT: returned {len(entries)} item(s)"
-        f"{f' with {pending} not yet marked read' if pending else ''}."
-    )
-    if filtered and not pending and already_handled == len(entries):
-        if has_more:
-            summary += (
-                " This page only contains already-processed items; paginate using "
-                "metadata from the tool result if more pages exist."
-            )
-        else:
-            summary += " No remaining items match the active filters on this page."
-    elif has_more:
+    summary = f"SEARCH RESULT: returned {len(entries)} item(s)."
+    if filtered:
+        summary += " Results reflect the active query filters."
+    if has_more:
         summary += " More pages are available per the tool result metadata."
 
     _inject_next_tool_adherence(loop_state, lead_in=summary)
-
-
-def analyze_imap_search_result(
-    loop_state: LoopState,
-    tool_name: str,
-    output: str,
-    arguments: dict[str, Any],
-) -> None:
-    """Backward-compatible alias for search/list tool analysis."""
-    if "search" not in tool_name.lower() and "list" not in tool_name.lower():
-        return
-    analyze_search_tool_result(loop_state, tool_name, output, arguments)
 
 
 def guide_after_override_tool_result(
@@ -1032,12 +949,25 @@ def initialize_loop_plan(
     loop_state.plan_goal = goal.strip()
     loop_state.plan_route = route
     loop_state.plan_skill_title = skill_title
-    steps = list(tool_steps or _ROUTE_PLAN_STEPS.get(route, []))
+    steps = list(tool_steps or [])
     loop_state.plan_steps = steps
     loop_state.plan_step_statuses = ["pending"] * len(steps)
     loop_state.plan_step_notes = [""] * len(steps)
     loop_state.plan_current_step_index = 0 if steps else None
     loop_state.plan_completed_tools = []
+    if not steps:
+        domain = _ROUTE_DISCOVERY_DOMAINS.get(route)
+        if domain:
+            loop_state.mcp_guidance.insert(
+                0,
+                (
+                    f"No workflow steps seeded — discover MCP tools in domain "
+                    f"`{domain}` (searchToolsForDomain or searchTool), then adhere "
+                    "strictly to each tool's MCP definition when calling it."
+                ),
+            )
+        elif route != "chat":
+            loop_state.mcp_guidance.insert(0, _GENERIC_NEXT_HINT)
     if slot_bindings:
         bound = ", ".join(
             f"{key}={value}" for key, value in slot_bindings.items() if value
@@ -1116,13 +1046,17 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
             "results above."
         )
 
-    hint = _ROUTE_NEXT_HINTS.get(
-        loop_state.plan_route,
-        _ROUTE_NEXT_HINTS["general"],
-    )
+    hint = _ROUTE_DISCOVERY_DOMAINS.get(loop_state.plan_route)
+    if hint:
+        domain_hint = (
+            f"Discover tools in domain `{hint}` if none are known yet, then "
+            "adhere strictly to each tool's MCP definition."
+        )
+    else:
+        domain_hint = _GENERIC_NEXT_HINT
     if loop_state.plan_completed_tools:
-        return f"{hint} Do not repeat tools that already succeeded."
-    return hint
+        return f"{domain_hint} Do not repeat tools that already succeeded."
+    return domain_hint
 
 
 def build_plan_progress_summary(loop_state: LoopState) -> str | None:
@@ -1447,10 +1381,6 @@ def mark_iteration_outcome(loop_state: LoopState) -> None:
             )
 
 
-_EMAIL_LARGE_INBOX = re.compile(
-    r"\b(too many|very large|large number|limit|timeout|overflow)\b",
-    re.IGNORECASE,
-)
 _MCP_DOWN = re.compile(
     r"\b(unreachable|connection refused|timed out|timeout|502|503|504)\b",
     re.IGNORECASE,
@@ -1458,26 +1388,8 @@ _MCP_DOWN = re.compile(
 
 
 def _default_recovery_hints(name_lower: str, lowered: str) -> list[str]:
-    """Return the shipped, hardcoded recovery hints for a failed tool result."""
+    """Return generic recovery hints for a failed tool result."""
     hints: list[str] = []
-
-    if "mail" in name_lower or "imap" in name_lower or "email" in lowered:
-        if _EMAIL_LARGE_INBOX.search(lowered):
-            hints.append(
-                "Search unread messages only with a small limit (e.g. 10) via "
-                "`mail_mcp__imap_search_messages` instead of listing the full inbox."
-            )
-        hints.append(
-            "Prefer `mail_mcp__imap_mailbox_status` for unseen count, then "
-            "`mail_mcp__imap_search_messages` with mailbox INBOX and "
-            "unread_only=true before fetching individual messages."
-        )
-
-    if "news" in name_lower and "curate" not in name_lower:
-        hints.append(
-            "For headlines, call mcp_news__news_curate directly with no "
-            "arguments ({}) before trying other news tools."
-        )
 
     if _MCP_DOWN.search(lowered):
         hints.append(
@@ -1485,21 +1397,13 @@ def _default_recovery_hints(name_lower: str, lowered: str) -> list[str]:
             "in HA Agent Settings."
         )
 
-    if "search_entities" in name_lower and re.search(
-        r"unknown tool|not found|unavailable",
+    if re.search(
+        r"\b(too many|too large|very large|large number|limit|timeout|overflow)\b",
         lowered,
     ):
         hints.append(
-            "home_assistant__ha_search_entities is unavailable. Skip entity "
-            "search. Use an EXPOSED ENTITIES shortcut with "
-            "home_assistant__ha_call_service (domain, service, entity_id) "
-            "instead."
-        )
-
-    if "ha_call_service" in name_lower and "domain" in lowered:
-        hints.append(
-            "Include domain, service, and entity_id in ha_call_service arguments. "
-            "Derive domain from the entity_id prefix (light.example -> light)."
+            "Narrow the query using filters and limits defined in the tool's "
+            "MCP parameters and serverLlmContext."
         )
 
     missing_field = re.search(r"missing field ['\"]?(\w+)", lowered)
@@ -1507,8 +1411,15 @@ def _default_recovery_hints(name_lower: str, lowered: str) -> list[str]:
         field_name = missing_field.group(1)
         hints.append(
             f"Re-call with required argument `{field_name}`. "
-            "For email IMAP tools use mailbox INBOX unless the user specified "
-            "Junk or another folder."
+            "Use searchTool or searchToolsForDomain to load the tool's MCP "
+            "definition and required parameters before retrying."
+        )
+
+    if re.search(r"unknown tool|not found|unavailable", lowered):
+        hints.append(
+            "The tool may be unavailable or misspelled. Discover tools with "
+            "searchToolsForDomain or searchTool, then call the best match "
+            "using its MCP definition."
         )
 
     return hints

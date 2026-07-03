@@ -38,14 +38,11 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
         "match": "The user asks about email, mail, inbox, or unread messages.",
         "body": (
             "EMAIL PLAYBOOK:\n"
-            "1. Discover tools in domain email if needed.\n"
-            "2. Call `mail_mcp__imap_mailbox_status` with mailbox INBOX "
-            "for unseen count.\n"
-            "3. Call `mail_mcp__imap_search_messages` with mailbox INBOX, "
-            "unread_only=true, and a small limit (e.g. 10).\n"
-            "4. Call `mail_mcp__imap_get_message` only for messages "
-            "you will cite (message_id from search results).\n"
-            "5. Answer using tool results only; never invent subjects or counts."
+            "1. Discover MCP tools in domain email if needed "
+            "(searchToolsForDomain or searchTool).\n"
+            "2. Adhere strictly to each tool's MCP description, parameters, "
+            "and serverLlmContext when calling it.\n"
+            "3. Answer using tool results only; never invent subjects or counts."
         ),
     },
     "news": {
@@ -53,10 +50,10 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
         "match": "The user asks for news, headlines, or a briefing.",
         "body": (
             "NEWS PLAYBOOK:\n"
-            "1. Call mcp_news__news_curate with no arguments ({}) for "
-            "today's briefing.\n"
-            "2. Summarize headlines from that result only.\n"
-            "3. Use searchToolsForDomain only if news_curate fails."
+            "1. Discover MCP tools in domain news if needed.\n"
+            "2. Call the best-matching briefing or curation tool per its "
+            "MCP definition.\n"
+            "3. Summarize headlines from tool results only."
         ),
     },
     "action": {
@@ -68,11 +65,9 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
         "body": (
             "DEVICE PLAYBOOK:\n"
             "1. Prefer an exposed-entity shortcut when one clearly matches.\n"
-            "2. If no shortcut fits, discover entities in domain smart-home "
-            "with searchToolsForDomain, then callTool.\n"
-            "3. Call ha_call_service with domain, service, and entity_id "
-            "(e.g. camera.snapshot for photos).\n"
-            "4. Read VERIFICATION lines in tool results before telling the user "
+            "2. Otherwise discover tools in domain smart-home, then adhere "
+            "strictly to each tool's MCP definition.\n"
+            "3. Read VERIFICATION lines in tool results before telling the user "
             "the action succeeded."
         ),
     },

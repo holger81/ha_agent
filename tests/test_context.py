@@ -127,7 +127,8 @@ def test_route_playbook_device_mentions_discovery() -> None:
     router = _load_module("router")
     playbook = router.route_playbook(router.TaskRoute.HA_ACTION)
     assert "shortcut" in playbook.lower()
-    assert "searchToolsForDomain" in playbook
+    assert "discover" in playbook.lower()
+    assert "MCP definition" in playbook
 
 
 def test_build_tool_context_adds_explicit_service_hint_for_match() -> None:

@@ -24,10 +24,8 @@ from .const import DATA_KEY, LOGGER
 
 RECOVERY_HINTS_STORE_KEY = "recovery_hint_stores"
 
-# Built-in recovery hints seeded on first connect. ``error_pattern`` is a
-# case-insensitive regex searched in the lowercased tool error; an empty
-# pattern matches any error. ``tool_substring`` is matched (lowercased) against
-# the tool name; an empty substring matches any tool.
+# Built-in recovery hints seeded on first connect. Bodies stay generic and point
+# at MCP discovery/metadata rather than naming specific tools or arguments.
 DEFAULT_RECOVERY_HINTS: list[dict[str, object]] = [
     {
         "rule_id": "missing_field",
@@ -36,46 +34,24 @@ DEFAULT_RECOVERY_HINTS: list[dict[str, object]] = [
         "error_pattern": r"missing field ['\"]?\w+",
         "body": (
             "Re-call the tool with all required arguments from the error message. "
-            "For IMAP email tools, include mailbox (default INBOX) on every call."
+            "Use searchTool or searchToolsForDomain to load the tool's MCP "
+            "definition and required parameters before retrying."
         ),
         "priority": 0,
     },
     {
-        "rule_id": "email_status",
-        "title": "Email: prefer mailbox status + unread search",
-        "tool_substring": "mail",
-        "error_pattern": "",
-        "body": (
-            "Prefer `mail_mcp__imap_mailbox_status` for unseen count, then "
-            "`mail_mcp__imap_search_messages` with mailbox INBOX and "
-            "unread_only=true before fetching individual messages."
-        ),
-        "priority": 0,
-    },
-    {
-        "rule_id": "email_large_inbox",
-        "title": "Email: large inbox",
-        "tool_substring": "mail",
+        "rule_id": "large_result",
+        "title": "Result too large or timed out",
+        "tool_substring": "",
         "error_pattern": (
             r"\b(too many|too large|very large|large number|limit|timeout|"
             r"overflow)\b"
         ),
         "body": (
-            "Search unread messages only with a small limit (e.g. 10) via "
-            "`mail_mcp__imap_search_messages` instead of listing the full inbox."
+            "Narrow the query using filters and limits defined in the tool's "
+            "MCP parameters and serverLlmContext."
         ),
         "priority": 1,
-    },
-    {
-        "rule_id": "news_curate",
-        "title": "News: call news_curate first",
-        "tool_substring": "news",
-        "error_pattern": "",
-        "body": (
-            "For headlines, call mcp_news__news_curate directly with no "
-            "arguments ({}) before trying other news tools."
-        ),
-        "priority": 2,
     },
     {
         "rule_id": "mcp_down",
@@ -88,32 +64,19 @@ DEFAULT_RECOVERY_HINTS: list[dict[str, object]] = [
             "MCP may be offline. Tell the user to check MCP proxy connectivity "
             "in HA Agent Settings."
         ),
-        "priority": 3,
+        "priority": 2,
     },
     {
-        "rule_id": "ha_call_service_domain",
-        "title": "ha_call_service missing domain",
-        "tool_substring": "ha_call_service",
-        "error_pattern": "domain",
-        "body": (
-            "Include domain, service, and entity_id in ha_call_service "
-            "arguments. Derive domain from the entity_id prefix "
-            "(light.example -> light)."
-        ),
-        "priority": 4,
-    },
-    {
-        "rule_id": "ha_search_entities_unavailable",
-        "title": "ha_search_entities unavailable",
-        "tool_substring": "search_entities",
+        "rule_id": "unknown_tool",
+        "title": "Tool unavailable",
+        "tool_substring": "",
         "error_pattern": r"unknown tool|not found|unavailable",
         "body": (
-            "home_assistant__ha_search_entities is unavailable. Skip entity "
-            "search. Use an EXPOSED ENTITIES shortcut with "
-            "home_assistant__ha_call_service (domain, service, entity_id) "
-            "instead."
+            "The tool may be unavailable or misspelled. Discover tools with "
+            "searchToolsForDomain or searchTool, then call the best match "
+            "using its MCP definition."
         ),
-        "priority": 5,
+        "priority": 3,
     },
 ]
 

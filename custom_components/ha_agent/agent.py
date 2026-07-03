@@ -33,7 +33,7 @@ from .loop_policy import (
     INTERNAL_GUIDANCE_ROLE,
     LoopState,
     TurnOutcome,
-    analyze_imap_search_result,
+    analyze_search_tool_result,
     build_empty_response_nudge,
     build_mcp_tool_adherence_hint,
     build_pending_failure_summary,
@@ -512,7 +512,7 @@ def _handle_tool_result(
         verification_failed=verification_failed,
     )
     if phase == "done":
-        analyze_imap_search_result(loop_state, tool_name, output, arguments)
+        analyze_search_tool_result(loop_state, tool_name, output, arguments)
     record_mcp_guidance(loop_state, tool_name, output)
     messages.append(tool_result_message(call, output))
     return phase, AgentDelta(

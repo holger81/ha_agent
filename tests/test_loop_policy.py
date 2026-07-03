@@ -131,8 +131,8 @@ def test_inject_loop_context_uses_system_role_not_user() -> None:
     assert "AGENT PLAN PROGRESS" in messages[0]["content"]
 
 
-def test_initialize_loop_plan_seeds_action_route() -> None:
-    """Action route seeds ha_call_service as the default plan step."""
+def test_initialize_loop_plan_seeds_discovery_guidance_for_action_route() -> None:
+    """Action route without skill steps injects smart-home discovery guidance."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     policy.initialize_loop_plan(
@@ -140,8 +140,9 @@ def test_initialize_loop_plan_seeds_action_route() -> None:
         goal="turn off dining room lights",
         route="action",
     )
-    assert state.plan_steps == [{"toolName": "ha_call_service"}]
-    assert state.plan_current_step_index == 0
+    assert state.plan_steps == []
+    assert state.plan_current_step_index is None
+    assert any("smart-home" in hint for hint in state.mcp_guidance)
 
 
 def test_initialize_loop_plan_tracks_skill_steps() -> None:
@@ -181,6 +182,7 @@ def test_build_plan_progress_summary_marks_needs_work() -> None:
         state,
         goal="read email",
         route="email",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages"}],
     )
     policy.record_plan_tool_result(
         state,
@@ -221,7 +223,12 @@ def test_describe_plan_next_action_stops_when_all_done() -> None:
     """A completed plan instructs the model to answer instead of calling tools."""
     policy = _load_loop_policy()
     state = policy.LoopState()
-    policy.initialize_loop_plan(state, goal="news briefing", route="news")
+    policy.initialize_loop_plan(
+        state,
+        goal="news briefing",
+        route="news",
+        tool_steps=[{"toolName": "news_curate"}],
+    )
     policy.record_plan_tool_result(state, "news_curate", {}, succeeded=True)
 
     directive = policy.describe_plan_next_action(state)
@@ -313,7 +320,12 @@ def test_build_plan_progress_summary_shows_omitted_steps() -> None:
     """Plan progress lists omitted steps with reasons."""
     policy = _load_loop_policy()
     state = policy.LoopState()
-    policy.initialize_loop_plan(state, goal="check inbox", route="email")
+    policy.initialize_loop_plan(
+        state,
+        goal="check inbox",
+        route="email",
+        tool_steps=[{"toolName": "mail_mcp__imap_mailbox_status"}],
+    )
     policy.omit_plan_step(state, 0, "Not required for this request.")
 
     summary = policy.build_plan_progress_summary(state)
@@ -328,7 +340,12 @@ def test_inject_loop_context_includes_plan_on_first_step() -> None:
     """Plan progress is injected before the trailing user turn when present."""
     policy = _load_loop_policy()
     state = policy.LoopState()
-    policy.initialize_loop_plan(state, goal="check inbox", route="email")
+    policy.initialize_loop_plan(
+        state,
+        goal="check inbox",
+        route="email",
+        tool_steps=[{"toolName": "mail_mcp__imap_mailbox_status"}],
+    )
     messages: list[dict[str, str]] = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "check inbox"},
@@ -364,7 +381,7 @@ def test_build_empty_response_nudge_includes_next_action() -> None:
     nudge = policy.build_empty_response_nudge(state)
 
     assert "previous reply was empty" in nudge
-    assert "news_curate" in nudge
+    assert "domain `news`" in nudge
 
 
 def test_extract_mcp_guidance_pulls_server_context() -> None:
@@ -474,7 +491,13 @@ def test_redundant_override_allows_email_search_when_pagination_pending() -> Non
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
     state.plan_route = "email"
-    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    state.skill_plan_override = True
+    policy.initialize_loop_plan(
+        state,
+        goal=state.plan_goal,
+        route="email",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages"}],
+    )
     output = json.dumps(
         {"messages": [{"uid": 1}], "hasMore": True, "offset": 0, "limit": 10}
     )
@@ -631,22 +654,26 @@ def test_should_block_reasoning_execution_mismatch_when_plan_suspended() -> None
         goal="mark read",
         route="email",
         skill_title="Email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
     )
     assert policy.should_block_reasoning_execution_mismatch(state) is True
     policy.suspend_skill_plan(state, "Goal exceeds active skill.")
     assert policy.should_block_reasoning_execution_mismatch(state) is False
 
 
-def test_suspend_skill_plan_seeds_mark_read_exploration_plan() -> None:
-    """Mark-as-read overrides seed a search-then-update exploration plan."""
+def test_suspend_skill_plan_leaves_discovery_only_override() -> None:
+    """Skill suspension clears concrete steps and keeps discovery guidance."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
     state.plan_route = "email"
     policy.suspend_skill_plan(state, "Goal exceeds active skill.")
     assert state.override_intent == "mark_read"
-    assert len(state.plan_steps) == 2
-    assert state.plan_steps[1]["toolName"] == "mail_mcp__imap_bulk_update_flags"
+    assert state.plan_steps == []
+    assert any("Discover MCP tools" in hint for hint in state.mcp_guidance)
 
 
 def test_record_plan_tool_result_keeps_done_on_later_failure() -> None:
@@ -654,7 +681,15 @@ def test_record_plan_tool_result_keeps_done_on_later_failure() -> None:
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
-    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    policy.initialize_loop_plan(
+        state,
+        goal=state.plan_goal,
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_bulk_update_flags"},
+        ],
+    )
     policy.record_plan_tool_result(
         state,
         "mail_mcp__imap_search_messages",
@@ -677,7 +712,16 @@ def test_redundant_override_tool_block_after_search() -> None:
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
     state.plan_route = "email"
-    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    state.skill_plan_override = True
+    policy.initialize_loop_plan(
+        state,
+        goal=state.plan_goal,
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_bulk_update_flags"},
+        ],
+    )
     policy.record_plan_tool_result(
         state,
         "mail_mcp__imap_search_messages",
@@ -713,7 +757,7 @@ def test_reasoning_skill_override_marker() -> None:
     assert policy.maybe_suspend_skill_plan_from_reasoning(state, reasoning) is True
     assert state.skill_plan_override is True
     assert state.override_intent == "mark_read"
-    assert len(state.plan_steps) == 2
+    assert state.plan_steps == []
     assert not policy.skill_plan_blocks_discovery(state)
 
 
@@ -745,6 +789,7 @@ def test_build_plan_progress_summary_when_skill_overridden() -> None:
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
+    state.plan_route = "email"
     policy.suspend_skill_plan(state, "Skill only covers unread checks.")
 
     summary = policy.build_plan_progress_summary(state)
@@ -752,10 +797,9 @@ def test_build_plan_progress_summary_when_skill_overridden() -> None:
     assert summary is not None
     assert "suspended" in summary
     assert "Skill only covers unread checks." in summary
-    assert "Override exploration plan:" in summary
-    assert "mail_mcp__imap_search_messages" in summary
-    assert "mail_mcp__imap_bulk_update_flags" in summary
+    assert "No concrete override steps seeded" in summary
     assert "Next action:" in summary
+    assert "Discover tools in domain `email`" in summary
 
 
 def test_build_plan_progress_summary_includes_rejected_draft() -> None:
@@ -797,7 +841,22 @@ def test_record_override_block_guidance_injects_next_action() -> None:
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
-    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    state.skill_plan_override = True
+    policy.initialize_loop_plan(
+        state,
+        goal=state.plan_goal,
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_bulk_update_flags"},
+        ],
+    )
+    policy.cache_mcp_tool_catalog_entry(
+        state,
+        "mail_mcp__imap_bulk_update_flags",
+        description="Bulk update message flags.",
+        parameters="Required: mailbox, message_ids, flags",
+    )
     policy.record_plan_tool_result(
         state,
         "mail_mcp__imap_search_messages",
@@ -813,7 +872,8 @@ def test_record_override_block_guidance_injects_next_action() -> None:
 
     assert state.iteration_had_duplicate_block is True
     assert state.override_block_count == 1
-    assert any("bulk_update_flags" in hint for hint in state.mcp_guidance)
+    assert any("Adhere strictly" in hint for hint in state.mcp_guidance)
+    assert any("message_ids" in hint for hint in state.mcp_guidance)
 
 
 def test_build_mcp_tool_adherence_hint_uses_catalog() -> None:
@@ -840,12 +900,11 @@ def test_build_mcp_tool_adherence_hint_uses_catalog() -> None:
     assert "UIDs" not in hint
 
 
-def test_analyze_imap_search_result_all_seen_skips_mark_read() -> None:
-    """All \\Seen results produce factual summary and MCP adherence for next step."""
+def test_analyze_search_tool_result_injects_mcp_adherence() -> None:
+    """Search/list results produce a factual summary and MCP adherence hint."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
-    state.override_intent = "mark_read"
     policy.initialize_loop_plan(
         state,
         goal=state.plan_goal,
@@ -877,7 +936,7 @@ def test_analyze_imap_search_result_all_seen_skips_mark_read() -> None:
         }
     )
 
-    policy.analyze_imap_search_result(
+    policy.analyze_search_tool_result(
         state,
         "mail_mcp__imap_search_messages",
         output,
@@ -890,11 +949,10 @@ def test_analyze_imap_search_result_all_seen_skips_mark_read() -> None:
     assert not any("UIDs" in hint for hint in state.mcp_guidance)
 
 
-def test_analyze_imap_search_result_lists_unread_uids() -> None:
-    """Unread items steer the agent to the next tool via MCP metadata."""
+def test_analyze_search_tool_result_counts_items() -> None:
+    """Search results steer the agent to the next tool via MCP metadata."""
     policy = _load_loop_policy()
     state = policy.LoopState()
-    state.override_intent = "mark_read"
     policy.initialize_loop_plan(
         state,
         goal="mark unread",
@@ -924,20 +982,20 @@ def test_analyze_imap_search_result_lists_unread_uids() -> None:
         }
     )
 
-    policy.analyze_imap_search_result(
+    policy.analyze_search_tool_result(
         state,
         "mail_mcp__imap_search_messages",
         output,
         {"mailbox": "INBOX", "unread_only": True},
     )
 
-    assert any("not yet marked read" in hint for hint in state.mcp_guidance)
+    assert any("returned 2 item(s)" in hint for hint in state.mcp_guidance)
     assert any("Adhere strictly" in hint for hint in state.mcp_guidance)
     assert any("message_ids" in hint for hint in state.mcp_guidance)
 
 
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:
-    """Unknown ha_search_entities steers the model to ha_call_service."""
+    """Unknown tools steer the model toward discovery."""
     policy = _load_loop_policy()
     output = policy.enrich_tool_output(
         "home_assistant__ha_search_entities",
@@ -946,10 +1004,10 @@ def test_enrich_tool_output_adds_search_entities_recovery() -> None:
     )
 
     assert "RECOVERY HINTS" in output
-    assert "ha_call_service" in output
+    assert "searchToolsForDomain" in output
 
 
-def test_enrich_tool_output_adds_email_recovery_hints() -> None:
+def test_enrich_tool_output_adds_generic_large_result_hint() -> None:
     policy = _load_loop_policy()
     output = policy.enrich_tool_output(
         "mail_mcp_imap_search_messages",
@@ -958,7 +1016,7 @@ def test_enrich_tool_output_adds_email_recovery_hints() -> None:
     )
 
     assert "RECOVERY HINTS" in output
-    assert "unread_only" in output
+    assert "MCP parameters" in output
 
 
 def test_enrich_tool_output_uses_supplied_rules() -> None:

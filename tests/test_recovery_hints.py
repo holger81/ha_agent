@@ -79,9 +79,12 @@ def test_update_marks_customized(tmp_path) -> None:
     """Editing a built-in body flips is_default off."""
     _rh, store = _store(tmp_path)
     try:
-        updated = store.update_hint("news_curate", body="Try news_curate first.")
+        updated = store.update_hint(
+            "missing_field",
+            body="Include every required field.",
+        )
         assert updated is not None
-        assert updated.body == "Try news_curate first."
+        assert updated.body == "Include every required field."
         assert updated.is_default is False
     finally:
         store.close()
@@ -102,12 +105,12 @@ def test_reset_restores_default(tmp_path) -> None:
     """Reset returns a built-in hint to its shipped default and enables it."""
     rh, store = _store(tmp_path)
     try:
-        store.update_hint("news_curate", body="changed", enabled=False)
-        reset = store.reset_hint("news_curate")
+        store.update_hint("missing_field", body="changed", enabled=False)
+        reset = store.reset_hint("missing_field")
         assert reset is not None
         assert reset.enabled is True
         assert reset.is_default is True
-        default = rh._DEFAULT_BY_ID["news_curate"]
+        default = rh._DEFAULT_BY_ID["missing_field"]
         assert reset.body == default["body"]
     finally:
         store.close()
@@ -130,7 +133,7 @@ def test_create_and_delete_custom_hint(tmp_path) -> None:
         ids = [h.rule_id for h in store.list_hints()]
         assert created.rule_id in ids
 
-        assert store.delete_hint("news_curate") is False  # built-in protected
+        assert store.delete_hint("missing_field") is False  # built-in protected
         assert store.delete_hint(created.rule_id) is True
         assert store.custom_count() == 0
     finally:
