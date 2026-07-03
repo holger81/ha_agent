@@ -1258,7 +1258,6 @@ class HaAgentPanel extends HTMLElement {
 
   async _deleteThread(conversationId) {
     if (!this._entryId || !conversationId || this._streaming) return;
-    if (!confirm("Delete this chat and its history?")) return;
 
     await this._call("ha_agent/threads/delete", {
       entry_id: this._entryId,
