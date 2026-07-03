@@ -445,7 +445,31 @@ def test_record_pagination_state_injects_guidance() -> None:
 
 
 def test_redundant_override_allows_search_when_pagination_pending() -> None:
-    """Repeat search is allowed while a paginated result still has more pages."""
+    """Repeat calls are allowed for any tool while paginated results remain."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "list all news headlines"
+    state.plan_route = "news"
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    state.plan_steps = [{"toolName": "mcp_news__news_list"}]
+    state.plan_step_statuses = ["done"]
+    output = json.dumps(
+        {"items": [{"title": "Headline"}], "hasMore": True, "offset": 0, "limit": 10}
+    )
+    policy.record_pagination_state(
+        state,
+        "mcp_news__news_list",
+        output,
+        {"limit": 10},
+    )
+
+    block = policy.redundant_override_tool_block(state, "mcp_news__news_list")
+    assert block is None
+    assert any("PAGINATION" in hint for hint in state.mcp_guidance)
+
+
+def test_redundant_override_allows_email_search_when_pagination_pending() -> None:
+    """Email search pagination uses the same universal repeat allowance."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"

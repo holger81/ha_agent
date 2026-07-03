@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import HomeAssistantError
@@ -400,12 +401,47 @@ def _parse_discovery_payload(data: Any) -> tuple[list[dict[str, Any]], dict[str,
     return [], meta
 
 
-def _discovery_pagination_note(meta: dict[str, Any]) -> str | None:
-    """Return a next-page note when discovery metadata indicates more tools."""
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+def format_pagination_hint(tool_name: str, meta: dict[str, Any]) -> str:
+    """Format one directive for fetching the next page of any paginated tool."""
+    kind = meta.get("kind")
+    if kind == "cursor":
+        return (
+            f"PAGINATION: More results available. Call `{tool_name}` again with "
+            f"cursor={meta['cursor']!r} and the same other arguments."
+        )
+    if kind == "page_token":
+        return (
+            f"PAGINATION: More results available. Call `{tool_name}` again with "
+            f"pageToken={meta['page_token']!r} and the same other arguments."
+        )
+    if kind == "offset":
+        parts = [f"offset={meta['offset']}"]
+        if meta.get("limit") is not None:
+            parts.append(f"limit={meta['limit']}")
+        args_hint = ", ".join(parts)
+        return (
+            f"PAGINATION: More results available. Call `{tool_name}` again with "
+            f"{args_hint} and the same other arguments."
+        )
+    return ""
+
+
+def pagination_meta_from_has_more(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Build offset pagination metadata from top-level discovery list fields."""
     has_more = meta.get("hasMore")
     if has_more is None:
         has_more = meta.get("has_more")
-    if not has_more:
+    if not _coerce_bool(has_more):
         return None
     offset = meta.get("offset", 0)
     limit = meta.get("limit")
@@ -415,22 +451,18 @@ def _discovery_pagination_note(meta: dict[str, Any]) -> str | None:
         try:
             next_offset = int(offset) + 1
         except (TypeError, ValueError):
-            return (
-                "More tools available. Call searchToolsForDomain again with a "
-                "higher offset and the same domain/query/limit."
-            )
-    parts = [f"offset={next_offset}"]
+            next_offset = 0
+    page_meta: dict[str, Any] = {"kind": "offset", "offset": next_offset}
     if limit is not None:
-        parts.append(f"limit={limit}")
-    return (
-        "More tools available. Call searchToolsForDomain again with "
-        f"{', '.join(parts)} and the same domain/query filters."
-    )
+        with suppress(TypeError, ValueError):
+            page_meta["limit"] = int(limit)
+    return page_meta
 
 
 def compact_discovery_tool_output(
     output: str,
     *,
+    tool_name: str = "",
     max_tools: int = _DISCOVERY_MAX_TOOLS,
     max_chars: int = _DISCOVERY_OUTPUT_MAX_CHARS,
 ) -> str:
@@ -456,8 +488,9 @@ def compact_discovery_tool_output(
         result: dict[str, Any] = dict(meta)
         if compacted:
             result["tools"] = compacted
-        if pagination_note := _discovery_pagination_note(meta):
-            result["note"] = pagination_note
+        discovery_tool = tool_name.strip() or "this discovery tool"
+        if page_meta := pagination_meta_from_has_more(meta):
+            result["note"] = format_pagination_hint(discovery_tool, page_meta)
         elif len(entries) > shown:
             result["truncated"] = True
             result["shown"] = shown
@@ -479,5 +512,5 @@ def compact_tool_output(tool_name: str, output: str) -> str:
     if output.startswith("Tool error:"):
         return output
     if is_discovery_tool_name(tool_name):
-        return compact_discovery_tool_output(output)
+        return compact_discovery_tool_output(output, tool_name=tool_name)
     return _truncate_text(output, max_chars=_TOOL_OUTPUT_MAX_CHARS)

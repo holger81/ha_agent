@@ -263,7 +263,7 @@ def test_compact_discovery_tool_output_strips_schemas() -> None:
 
 
 def test_compact_discovery_tool_output_has_more_note() -> None:
-    """Server-side hasMore adds a next-page note to discovery output."""
+    """Server-side hasMore adds a next-page note using the actual tool name."""
     payload = {
         "domain": "mail",
         "hasMore": True,
@@ -273,8 +273,12 @@ def test_compact_discovery_tool_output_has_more_note() -> None:
             {"toolName": "mail_mcp__imap_search_messages", "description": "Search mail"}
         ],
     }
-    compact = tools.compact_discovery_tool_output(json.dumps(payload))
+    compact = tools.compact_tool_output(
+        "searchToolsForDomain",
+        json.dumps(payload),
+    )
     parsed = json.loads(compact)
+    assert "searchToolsForDomain" in parsed["note"]
     assert "offset=5" in parsed["note"]
     assert "limit=5" in parsed["note"]
 

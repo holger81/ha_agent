@@ -662,7 +662,6 @@ def redundant_override_tool_block(
         return None
     if _pagination_allows_repeat(loop_state, tool_name):
         return None
-    lowered = tool_name.lower()
     from .tools import is_discovery_tool_name
 
     if is_discovery_tool_name(tool_name) and any(
@@ -686,6 +685,8 @@ def redundant_override_tool_block(
             index < len(loop_state.plan_step_statuses)
             and loop_state.plan_step_statuses[index] == "done"
         ):
+            if _pagination_allows_repeat(loop_state, tool_name):
+                continue
             if all(
                 status in _PLAN_TERMINAL_STATUSES
                 for status in loop_state.plan_step_statuses
@@ -709,26 +710,6 @@ def redundant_override_tool_block(
                 "Tool error: This plan step already succeeded. STOP calling "
                 "tools and answer the user from prior results."
             )
-    if "search_messages" in lowered:
-        for index, step in enumerate(loop_state.plan_steps):
-            plan_tool = str(step.get("toolName", "")).lower()
-            if "search_messages" not in plan_tool:
-                continue
-            if (
-                index < len(loop_state.plan_step_statuses)
-                and loop_state.plan_step_statuses[index] == "done"
-            ):
-                next_index = _next_incomplete_plan_step(loop_state)
-                if next_index is not None:
-                    next_tool = str(
-                        loop_state.plan_steps[next_index].get("toolName", "tool")
-                    )
-                    return (
-                        "Tool error: Unread search already succeeded. "
-                        f"Call `{next_tool}` next with mailbox INBOX and "
-                        "UID/message_id values from the search result. "
-                        "Do not repeat search."
-                    )
     return None
 
 
@@ -1096,36 +1077,11 @@ def extract_pagination_meta(
 def build_pagination_hint(
     tool_name: str,
     meta: dict[str, Any],
-    *,
-    discovery: bool = False,
 ) -> str:
     """Format one directive for fetching the next page of a paginated tool."""
-    kind = meta.get("kind")
-    if kind == "cursor":
-        return (
-            f"PAGINATION: More results available. Call `{tool_name}` again with "
-            f"cursor={meta['cursor']!r} and the same other arguments."
-        )
-    if kind == "page_token":
-        return (
-            f"PAGINATION: More results available. Call `{tool_name}` again with "
-            f"pageToken={meta['page_token']!r} and the same other arguments."
-        )
-    if kind == "offset":
-        parts = [f"offset={meta['offset']}"]
-        if meta.get("limit") is not None:
-            parts.append(f"limit={meta['limit']}")
-        args_hint = ", ".join(parts)
-        if discovery:
-            return (
-                f"PAGINATION: More tools available. Call `{tool_name}` again with "
-                f"{args_hint} and the same domain/query filters."
-            )
-        return (
-            f"PAGINATION: More results available. Call `{tool_name}` again with "
-            f"{args_hint} and preserve mailbox or other filter arguments."
-        )
-    return ""
+    from .tools import format_pagination_hint
+
+    return format_pagination_hint(tool_name, meta)
 
 
 def _pagination_allows_repeat(loop_state: LoopState, tool_name: str) -> bool:
@@ -1143,16 +1099,10 @@ def record_pagination_state(
     arguments: dict[str, Any],
 ) -> None:
     """Track paginated tool results and inject next-page guidance."""
-    from .tools import is_discovery_tool_name
-
     meta = extract_pagination_meta(output, arguments)
     if meta:
         loop_state.pagination_pending = {"tool_name": tool_name, **meta}
-        hint = build_pagination_hint(
-            tool_name,
-            meta,
-            discovery=is_discovery_tool_name(tool_name),
-        )
+        hint = build_pagination_hint(tool_name, meta)
         if hint and hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
         return
