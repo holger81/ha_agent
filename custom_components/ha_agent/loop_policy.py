@@ -479,6 +479,57 @@ def skill_goal_mismatch_reason(user_text: str, skill: Any) -> str | None:
     )
 
 
+def _plan_supports_mark_read(plan_steps: list[dict[str, Any]]) -> bool:
+    blob = " ".join(str(step.get("toolName", "")) for step in plan_steps).lower()
+    return any(marker in blob for marker in _MARK_READ_TOOL_MARKERS)
+
+
+def active_plan_goal_mismatch(
+    user_text: str,
+    plan_steps: list[dict[str, Any]],
+) -> str | None:
+    """Return suspend reason when the seeded route/skill plan cannot reach the goal."""
+    if not plan_steps:
+        return None
+    if not _MARK_READ_INTENT.search(user_text.strip()):
+        return None
+    if _plan_supports_mark_read(plan_steps):
+        return None
+    return (
+        "User asked to mark mail read; active plan only covers checking or "
+        "reading unread mail."
+    )
+
+
+def resolve_skill_plan_conflict(
+    user_text: str,
+    *,
+    matched_skills: list[Any],
+    plan_steps: list[dict[str, Any]],
+) -> str | None:
+    """Return a suspend reason when the user goal exceeds matched skills or the plan."""
+    for skill in matched_skills:
+        if getattr(skill, "is_builtin", False):
+            continue
+        reason = skill_goal_mismatch_reason(user_text, skill)
+        if reason:
+            return reason
+    return active_plan_goal_mismatch(user_text, plan_steps)
+
+
+_EXPLORATION_GUIDANCE = (
+    "Discover MCP tools for the user's goal (searchToolsForDomain or searchTool), "
+    "then call the best match using arguments from discovery output and earlier "
+    "tool results. Do not repeat a mismatched workflow."
+)
+_ROUTE_EXPLORATION_HINTS: dict[str, str] = {
+    "email": (
+        "Email goals often need imap_search_messages for unread UIDs, then "
+        "imap_bulk_update_flags or imap_mark_read to change flags."
+    ),
+}
+
+
 def reasoning_declares_skill_mismatch(reasoning: str) -> bool:
     """Return True when model reasoning states the active skill does not fit."""
     text = reasoning.strip()
@@ -515,6 +566,20 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     loop_state.plan_step_statuses = []
     loop_state.plan_step_notes = []
     loop_state.plan_current_step_index = None
+    loop_state.mcp_guidance.insert(
+        0,
+        f"SKILL PLAN SUSPENDED — {reason.strip()[:200]}. {_EXPLORATION_GUIDANCE}",
+    )
+    route_hint = _ROUTE_EXPLORATION_HINTS.get(loop_state.plan_route)
+    if route_hint and route_hint not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(1, route_hint)
+
+
+def should_block_reasoning_execution_mismatch(loop_state: LoopState) -> bool:
+    """Return True when reasoning/tool mismatch checks should block execution."""
+    return not loop_state.skill_plan_override and skill_plan_blocks_discovery(
+        loop_state
+    )
 
 
 def maybe_suspend_skill_plan_from_reasoning(
@@ -745,7 +810,8 @@ def extract_mcp_guidance(tool_name: str, output: str) -> list[str]:
     """Pull serverLlmContext guidance from a discovery tool result."""
     if output.startswith("Tool error:"):
         return []
-    if "searchtool" not in tool_name.lower():
+    lowered = tool_name.lower()
+    if "searchtool" not in lowered:
         return []
     try:
         data = json.loads(output)
@@ -765,10 +831,17 @@ def extract_mcp_guidance(tool_name: str, output: str) -> list[str]:
             entries = [data]
 
     guidance: list[str] = []
+    tool_names: list[str] = []
     for entry in entries:
         context = entry.get("serverLlmContext")
         if isinstance(context, str) and context.strip():
             guidance.append(context.strip()[:_MAX_MCP_GUIDANCE_CHARS])
+        name = entry.get("toolName") or entry.get("name")
+        if isinstance(name, str) and name.strip():
+            tool_names.append(name.strip())
+    if tool_names:
+        preview = ", ".join(list(dict.fromkeys(tool_names))[:8])
+        guidance.append(f"Discovered tools: {preview}")
     return list(dict.fromkeys(guidance))
 
 

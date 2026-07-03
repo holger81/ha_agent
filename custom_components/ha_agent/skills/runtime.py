@@ -101,7 +101,7 @@ def should_offer_skill_creation(
     if not learning_enabled:
         return False
     if trace.skill_plan_override:
-        return False
+        return override_turn_eligible_for_learning(trace)
     if trace.fallback:
         return False
     if not trace.tool_calls:

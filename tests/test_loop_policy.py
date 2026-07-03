@@ -380,7 +380,7 @@ def test_extract_mcp_guidance_pulls_server_context() -> None:
 
     hints = policy.extract_mcp_guidance("searchToolsForDomain", output)
 
-    assert hints == ["Pass mailbox INBOX."]
+    assert hints == ["Pass mailbox INBOX.", "Discovered tools: a, b, c"]
 
 
 def test_extract_mcp_guidance_ignores_non_discovery() -> None:
@@ -491,6 +491,59 @@ def test_skill_goal_mismatch_reason_for_mark_read() -> None:
         },
     )()
     assert policy.skill_goal_mismatch_reason("mark them as read", mark_skill) is None
+
+
+def test_active_plan_goal_mismatch_for_mark_read_route_plan() -> None:
+    """Route email plans without mark-read tools suspend for mark-as-read goals."""
+    policy = _load_loop_policy()
+    plan_steps = [
+        {"toolName": "mail_mcp__imap_mailbox_status"},
+        {"toolName": "mail_mcp__imap_search_messages"},
+    ]
+    reason = policy.active_plan_goal_mismatch(
+        "mark all unread emails in my INBOX as read",
+        plan_steps,
+    )
+    assert reason is not None
+    assert "active plan" in reason.lower()
+
+
+def test_resolve_skill_plan_conflict_checks_route_plan_without_learned_skill() -> None:
+    """Conflict detection works when only the route playbook plan is active."""
+    policy = _load_loop_policy()
+    route_skill = type(
+        "Skill",
+        (),
+        {
+            "title": "Email",
+            "body": "",
+            "tool_steps": [],
+            "is_builtin": True,
+        },
+    )()
+    reason = policy.resolve_skill_plan_conflict(
+        "mark all unread emails as read",
+        matched_skills=[route_skill],
+        plan_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+        ],
+    )
+    assert reason is not None
+
+
+def test_should_block_reasoning_execution_mismatch_when_plan_suspended() -> None:
+    """Reasoning mismatch checks stay off after the skill plan is suspended."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="mark read",
+        route="email",
+        skill_title="Email",
+    )
+    assert policy.should_block_reasoning_execution_mismatch(state) is True
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    assert policy.should_block_reasoning_execution_mismatch(state) is False
 
 
 def test_reasoning_skill_override_marker() -> None:

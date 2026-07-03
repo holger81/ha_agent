@@ -48,8 +48,9 @@ from .loop_policy import (
     record_mcp_guidance,
     record_plan_tool_result,
     reset_iteration_flags,
+    resolve_skill_plan_conflict,
+    should_block_reasoning_execution_mismatch,
     should_retry_empty_response,
-    skill_goal_mismatch_reason,
     skill_plan_blocks_discovery,
     suspend_skill_plan,
     user_requests_skill_override,
@@ -325,6 +326,8 @@ def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
     trace.outcome = TurnOutcome.STUCK
     trace.assistant_text = loop_state.stuck_message
     trace.verification_notes = list(loop_state.verification_notes)
+    trace.skill_plan_override = loop_state.skill_plan_override
+    trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
     return loop_state.stuck_message
 
 
@@ -485,7 +488,9 @@ async def _process_tool_calls(
     maybe_suspend_skill_plan_from_reasoning(loop_state, reasoning)
     maybe_omit_plan_steps_from_reasoning(loop_state, reasoning)
     blocked_ids: set[str] = set()
-    if calls and reasoning.strip():
+    if calls and reasoning.strip() and should_block_reasoning_execution_mismatch(
+        loop_state
+    ):
         execution_names = [_tool_call_payload(call)[0] for call in calls]
         if mismatch := reasoning_execution_mismatch(reasoning, execution_names):
             for call in calls:
@@ -1005,7 +1010,7 @@ async def _post_turn_skills(
                     except Exception as err:
                         LOGGER.warning("Skill override save failed: %s", err)
 
-                if skills_config.auto_save:
+                if skills_config.learning_enabled:
                     from_version = (
                         update_target.version if update_target is not None else None
                     )
@@ -1496,22 +1501,17 @@ async def run_agent(
         skill_title=matched_skills[0].title if matched_skills else "",
         slot_bindings=slot_bindings or None,
     )
-    primary_learned_for_plan = next(
-        (s for s in matched_skills if not s.is_builtin),
-        None,
-    )
-    if primary_learned_for_plan:
-        mismatch_reason = skill_goal_mismatch_reason(
-            user_text,
-            primary_learned_for_plan,
-        )
-        if mismatch_reason:
-            suspend_skill_plan(loop_state, mismatch_reason)
-    elif matched_skills and user_requests_skill_override(user_text):
+    if user_requests_skill_override(user_text):
         suspend_skill_plan(
             loop_state,
             "User asked to override the active skill workflow.",
         )
+    elif conflict_reason := resolve_skill_plan_conflict(
+        user_text,
+        matched_skills=matched_skills,
+        plan_steps=loop_state.plan_steps,
+    ):
+        suspend_skill_plan(loop_state, conflict_reason)
     if matched_skills and slot_bindings:
         primary_learned = next(
             (s for s in matched_skills if not s.is_builtin), None
@@ -1554,6 +1554,9 @@ async def run_agent(
         "llm_calls": len(trace.llm_calls),
         "prepass": prepass_result.method if prepass_result else None,
     }
+    if loop_state.skill_plan_override:
+        turn_meta["skill_plan_override"] = True
+        turn_meta["skill_plan_override_reason"] = loop_state.skill_plan_override_reason
     _attach_plan_progress(turn_meta, loop_state, trace)
     yield AgentDelta(meta=turn_meta)
 

@@ -239,8 +239,8 @@ def test_manual_save_requires_successful_tools() -> None:
     ) is False
 
 
-def test_override_turn_blocks_generic_skill_creation() -> None:
-    """Override turns use dedicated learning instead of generic creation."""
+def test_override_turn_eligible_for_generic_skill_creation() -> None:
+    """Successful override turns can flow into skill creation when eligible."""
     trace = TurnTrace(
         user_text="mark all emails read",
         history_len=0,
@@ -254,7 +254,7 @@ def test_override_turn_blocks_generic_skill_creation() -> None:
         iterations=3,
         outcome="success",
     )
-    assert should_offer_skill_creation(trace, learning_enabled=True) is False
+    assert should_offer_skill_creation(trace, learning_enabled=True) is True
     assert override_turn_eligible_for_learning(trace) is True
 
 
