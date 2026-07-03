@@ -32,6 +32,7 @@ from .loop_policy import (
     INTERNAL_GUIDANCE_ROLE,
     LoopState,
     TurnOutcome,
+    analyze_imap_search_result,
     build_empty_response_nudge,
     build_pending_failure_summary,
     check_stuck,
@@ -48,6 +49,7 @@ from .loop_policy import (
     reconcile_plan_before_answer,
     record_iteration_failure,
     record_mcp_guidance,
+    record_override_block_guidance,
     record_pagination_state,
     record_plan_tool_result,
     redundant_override_tool_block,
@@ -464,6 +466,8 @@ def _handle_tool_result(
         succeeded=phase == "done",
         verification_failed=verification_failed,
     )
+    if phase == "done":
+        analyze_imap_search_result(loop_state, tool_name, output, arguments)
     record_mcp_guidance(loop_state, tool_name, output)
     messages.append(tool_result_message(call, output))
     return phase, AgentDelta(
@@ -533,6 +537,7 @@ async def _process_tool_calls(
             continue
         tool_name, arguments = _tool_call_payload(call)
         if block := redundant_override_tool_block(loop_state, tool_name):
+            record_override_block_guidance(loop_state, tool_name, block)
             record_iteration_failure(loop_state, tool_name, arguments, block)
             record_plan_tool_result(
                 loop_state,

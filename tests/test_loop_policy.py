@@ -792,6 +792,82 @@ def test_mark_iteration_after_tools_clears_stream_preservation() -> None:
     assert state.last_draft_answer == "draft"
 
 
+def test_record_override_block_guidance_injects_next_action() -> None:
+    """Blocked repeat tools inject the required next plan action."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+
+    policy.record_override_block_guidance(
+        state,
+        "mail_mcp__imap_search_messages",
+        "Tool error: Unread search already succeeded.",
+    )
+
+    assert state.iteration_had_duplicate_block is True
+    assert state.override_block_count == 1
+    assert any("bulk_update_flags" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_imap_search_result_all_seen_skips_mark_read() -> None:
+    """All \\Seen results with unread_only tell the agent to answer, not mark."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    state.override_intent = "mark_read"
+    output = json.dumps(
+        {
+            "messages": [
+                {"uid": 1, "flags": [r"\Recent", r"\Seen"]},
+                {"uid": 2, "flags": [r"\Seen"]},
+            ],
+            "total": 2,
+        }
+    )
+
+    policy.analyze_imap_search_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "unread_only": True},
+    )
+
+    assert any("no unread emails" in hint.lower() for hint in state.mcp_guidance)
+    assert any("SKIP" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_imap_search_result_lists_unread_uids() -> None:
+    """Unread UIDs steer the agent to bulk_update instead of re-searching."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.override_intent = "mark_read"
+    output = json.dumps(
+        {
+            "messages": [
+                {"uid": 42, "flags": [r"\Recent"]},
+                {"uid": 43, "flags": [r"\Seen"]},
+            ]
+        }
+    )
+
+    policy.analyze_imap_search_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "unread_only": True},
+    )
+
+    assert any("bulk_update_flags" in hint for hint in state.mcp_guidance)
+    assert any("42" in hint for hint in state.mcp_guidance)
+
+
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:
     """Unknown ha_search_entities steers the model to ha_call_service."""
     policy = _load_loop_policy()

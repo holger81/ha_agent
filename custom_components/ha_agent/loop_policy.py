@@ -54,6 +54,7 @@ class LoopState:
     pagination_pending: dict[str, Any] = field(default_factory=dict)
     preserve_stream_ui: bool = False
     last_draft_answer: str = ""
+    override_block_count: int = 0
 
 
 # Role used for internal/system-injected guidance (plan progress, failure
@@ -715,6 +716,120 @@ def redundant_override_tool_block(
     return None
 
 
+def record_override_block_guidance(
+    loop_state: LoopState,
+    tool_name: str,
+    block_message: str,
+) -> None:
+    """Inject actionable guidance when a repeat tool call is blocked by the plan."""
+    loop_state.iteration_had_duplicate_block = True
+    loop_state.override_block_count += 1
+    cleaned = block_message.removeprefix("Tool error:").strip()
+    hint = (
+        "BLOCKED REPEAT TOOL — the plan already advanced past this step:\n"
+        f"{cleaned}\n"
+        f"Do not call `{tool_name}` again. {describe_plan_next_action(loop_state)}"
+    )
+    if loop_state.override_block_count >= 3:
+        hint += (
+            "\nYou have retried blocked tools multiple times. STOP calling tools "
+            "and write the final answer to the user using prior tool results."
+        )
+    if hint not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(0, hint)
+
+
+def analyze_imap_search_result(
+    loop_state: LoopState,
+    tool_name: str,
+    output: str,
+    arguments: dict[str, Any],
+) -> None:
+    """Interpret IMAP search output so the loop does not spin on \\Seen results."""
+    if "search_messages" not in tool_name.lower():
+        return
+    if output.startswith("Tool error:"):
+        return
+    data = _parse_tool_result_json(output)
+    if not data:
+        return
+
+    entries = data.get("messages") or data.get("items") or data.get("results") or []
+    if not isinstance(entries, list) or not entries:
+        if _coerce_bool(arguments.get("unread_only")):
+            loop_state.mcp_guidance.insert(
+                0,
+                (
+                    "SEARCH RESULT: no messages returned with unread_only=true. "
+                    "Tell the user there are no unread emails in INBOX. "
+                    "SKIP bulk_update/mark_read and answer now."
+                ),
+            )
+        return
+
+    unread_uids: list[str] = []
+    seen_only = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        flags = entry.get("flags") or entry.get("Flags") or []
+        if isinstance(flags, str):
+            flag_text = flags
+        elif isinstance(flags, list):
+            flag_text = " ".join(str(flag) for flag in flags)
+        else:
+            flag_text = ""
+        if "\\Seen" in flag_text or r"\Seen" in flag_text:
+            seen_only += 1
+            continue
+        uid = entry.get("uid") or entry.get("UID") or entry.get("message_id")
+        if uid is not None:
+            unread_uids.append(str(uid))
+
+    unread_only = _coerce_bool(arguments.get("unread_only"))
+    has_more = _coerce_bool(data.get("hasMore") or data.get("has_more"))
+    loop_state.mcp_guidance = [
+        hint
+        for hint in loop_state.mcp_guidance
+        if "Unread messages are available from the search result" not in hint
+    ]
+
+    if unread_only and not unread_uids and seen_only == len(entries):
+        if has_more:
+            loop_state.mcp_guidance.insert(
+                0,
+                (
+                    "SEARCH RESULT: unread_only=true but this page only contains "
+                    "already-read (\\Seen) messages. Paginate with offset/limit "
+                    "from the search metadata if more pages exist. Do not repeat "
+                    "the same search without pagination."
+                ),
+            )
+            return
+        loop_state.mcp_guidance.insert(
+            0,
+            (
+                "SEARCH RESULT: unread_only=true and all returned messages are "
+                "already read. There are no unread emails to mark. SKIP "
+                "bulk_update/mark_read and tell the user the inbox has no "
+                "unread mail."
+            ),
+        )
+        return
+
+    if unread_uids and loop_state.override_intent == "mark_read":
+        preview = ", ".join(unread_uids[:12])
+        suffix = f" (+{len(unread_uids) - 12} more)" if len(unread_uids) > 12 else ""
+        loop_state.mcp_guidance.insert(
+            0,
+            (
+                f"SEARCH RESULT: found {len(unread_uids)} unread message(s). Call "
+                "mail_mcp__imap_bulk_update_flags with mailbox INBOX and UIDs "
+                f"{preview}{suffix} to set \\Seen. Do not search again."
+            ),
+        )
+
+
 def guide_after_override_tool_result(
     loop_state: LoopState,
     tool_name: str,
@@ -725,19 +840,6 @@ def guide_after_override_tool_result(
     if not loop_state.skill_plan_override or not succeeded:
         return
     lowered = tool_name.lower()
-    if loop_state.override_intent == "mark_read" and "search_messages" in lowered:
-        if _pagination_allows_repeat(loop_state, tool_name):
-            return
-        loop_state.mcp_guidance.insert(
-            0,
-            (
-                "Unread messages are available from the search result. Call "
-                "mail_mcp__imap_bulk_update_flags (preferred) or "
-                "mail_mcp__imap_mark_read with mailbox INBOX and the UID or "
-                "message_id values from that output to set \\Seen. "
-                "Do not search or discover again."
-            ),
-        )
     if loop_state.override_intent == "mark_read" and (
         "bulk_update" in lowered or "mark_read" in lowered
     ):
