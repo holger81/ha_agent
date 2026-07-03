@@ -94,13 +94,46 @@ Response `analysis` includes:
 
 Interpret the structured output and explain fixes to the user. Re-run after they apply a fix.
 
+## Inject, observe, and evaluate (when asked)
+
+### One-shot inject (recommended)
+
+Send a console message, wait for completion, and get trace + analysis in one call:
+
+```json
+{
+  "type": "ha_agent/diagnostics/inject_turn",
+  "id": 5,
+  "entry_id": "<entry_id>",
+  "text": "turn on the dining room lights"
+}
+```
+
+Optional: `conversation_id`, `timeout` (seconds).
+
+Response includes `conversation_id`, `done`, `turn`, `analysis`, and `live` (buffered deltas).
+
+### CLI from this repo
+
+```bash
+export HA_URL=http://homeassistant.local:8123
+export HA_TOKEN=...
+python3 scripts/inject_ha_agent_chat.py "turn on the dining room lights"
+```
+
+Watch-only (no inject):
+
+```bash
+python3 scripts/watch_ha_agent_chat.py
+```
+
 ## Typical workflow
 
-1. User asks you to watch a chat → subscribe to `ha_agent_chat_delta` / `ha_agent_turn_recorded`.
-2. User reproduces an issue → on `ha_agent_turn_recorded`, call `ha_agent/diagnostics/analyze_turn` with the `timestamp`.
-3. Propose code/config/skill fixes based on `issues` and `suggested_actions`.
-4. User retries → compare new analysis `severity` and tool/verifier fields.
-5. Optional: promote good turns via `ha_agent/eval/cases/promote` for regression.
+1. User asks you to **watch** → subscribe to events or run `watch_ha_agent_chat.py`.
+2. User asks you to **try** a command → call `inject_turn` or run `inject_ha_agent_chat.py`.
+3. Read `analysis.severity`, `issues`, and `suggested_actions`; propose fixes.
+4. User retries → inject again and compare outcomes.
+5. Optional: promote good turns via `ha_agent/eval/cases/promote`.
 
 ## Entry ID
 

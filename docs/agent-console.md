@@ -75,6 +75,7 @@ All commands require an authenticated admin WebSocket connection. Pass `entry_id
 | `ha_agent/activity/get` | One turn by `timestamp`, `conversation_id`, or `latest`. |
 | `ha_agent/diagnostics/observe` | Live in-progress turns with buffered deltas; optional `conversation_id`. |
 | `ha_agent/diagnostics/analyze_turn` | Structured issue analysis for one turn (`timestamp` or `latest`). |
+| `ha_agent/diagnostics/inject_turn` | Send a console message, wait for completion, return `turn` + `analysis`. |
 | `ha_agent/threads/list` | Conversation thread metadata; optional `query` searches titles and message history; optional `source` (`assist` or `console`) filters by origin. Assist chats are included from memory even before thread metadata exists. |
 | `ha_agent/threads/update` | Rename or pin a thread. |
 | `ha_agent/threads/delete` | Delete a thread, its history, and any pending skill draft. |

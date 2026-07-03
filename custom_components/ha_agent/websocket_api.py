@@ -11,6 +11,7 @@ from homeassistant.loader import async_get_integration
 from .activity import get_turn, list_turns
 from .api import chat as chat_api
 from .api import config as config_api
+from .api import diagnostics as diagnostics_api
 from .api import eval as eval_api
 from .api import hacs as hacs_api
 from .api import playbooks as playbooks_api
@@ -89,6 +90,7 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_activity_get)
     websocket_api.async_register_command(hass, ws_diagnostics_observe)
     websocket_api.async_register_command(hass, ws_diagnostics_analyze_turn)
+    websocket_api.async_register_command(hass, ws_diagnostics_inject_turn)
     websocket_api.async_register_command(hass, ws_threads_list)
     websocket_api.async_register_command(hass, ws_threads_update)
     websocket_api.async_register_command(hass, ws_threads_delete)
@@ -1102,6 +1104,38 @@ async def ws_diagnostics_analyze_turn(
             msg["id"],
             {"turn": turn, "analysis": analysis},
         )
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/diagnostics/inject_turn",
+        **_entry_id_schema(
+            {
+                vol.Required("text"): str,
+                vol.Optional("conversation_id"): str,
+                vol.Optional("timeout"): vol.Coerce(float),
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_diagnostics_inject_turn(
+    hass: HomeAssistant,
+    connection,
+    msg: dict,
+) -> None:
+    """Inject a console chat turn, wait for completion, return trace + analysis."""
+    require_admin(connection)
+    result = await diagnostics_api.inject_console_turn(
+        hass,
+        entry_id=msg["entry_id"],
+        text=msg["text"],
+        conversation_id=msg.get("conversation_id"),
+        timeout=msg.get("timeout"),
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], result)
     )
 
 
