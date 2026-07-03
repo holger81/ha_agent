@@ -47,6 +47,7 @@ from .loop_policy import (
     record_iteration_failure,
     record_mcp_guidance,
     record_plan_tool_result,
+    redundant_override_tool_block,
     reset_iteration_flags,
     resolve_skill_plan_conflict,
     should_block_reasoning_execution_mismatch,
@@ -527,6 +528,25 @@ async def _process_tool_calls(
         if call.id in blocked_ids:
             continue
         tool_name, arguments = _tool_call_payload(call)
+        if block := redundant_override_tool_block(loop_state, tool_name):
+            record_iteration_failure(loop_state, tool_name, arguments, block)
+            record_plan_tool_result(
+                loop_state,
+                tool_name,
+                arguments,
+                succeeded=False,
+            )
+            yield AgentDelta(
+                tool=_tool_event(
+                    call,
+                    "error",
+                    detail="Override plan advanced — use next step tool.",
+                )
+            )
+            messages.append(tool_result_message(call, block))
+            if trace is not None:
+                _record_tool_call(trace, call, block)
+            continue
         if is_discovery_tool_name(tool_name) and skill_plan_blocks_discovery(
             loop_state
         ):

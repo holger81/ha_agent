@@ -546,6 +546,39 @@ def test_should_block_reasoning_execution_mismatch_when_plan_suspended() -> None
     assert policy.should_block_reasoning_execution_mismatch(state) is False
 
 
+def test_suspend_skill_plan_seeds_mark_read_exploration_plan() -> None:
+    """Mark-as-read overrides seed a search-then-update exploration plan."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    state.plan_route = "email"
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    assert state.override_intent == "mark_read"
+    assert len(state.plan_steps) == 2
+    assert state.plan_steps[1]["toolName"] == "mail_mcp__imap_bulk_update_flags"
+
+
+def test_redundant_override_tool_block_after_search() -> None:
+    """Repeat search is blocked once the override exploration plan advances."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    state.plan_route = "email"
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+    block = policy.redundant_override_tool_block(
+        state,
+        "mail_mcp__imap_search_messages",
+    )
+    assert block is not None
+    assert "bulk_update_flags" in block
+
+
 def test_reasoning_skill_override_marker() -> None:
     """SKILL_OVERRIDE marker suspends the enforced skill plan."""
     policy = _load_loop_policy()
@@ -566,7 +599,8 @@ def test_reasoning_skill_override_marker() -> None:
     )
     assert policy.maybe_suspend_skill_plan_from_reasoning(state, reasoning) is True
     assert state.skill_plan_override is True
-    assert state.plan_steps == []
+    assert state.override_intent == "mark_read"
+    assert len(state.plan_steps) == 2
     assert not policy.skill_plan_blocks_discovery(state)
 
 

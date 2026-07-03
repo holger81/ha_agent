@@ -46,6 +46,7 @@ class LoopState:
     plan_completed_tools: list[str] = field(default_factory=list)
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
+    override_intent: str = ""
     empty_responses: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
     include_full_tool_catalog: bool = False
@@ -528,6 +529,19 @@ _ROUTE_EXPLORATION_HINTS: dict[str, str] = {
         "imap_bulk_update_flags or imap_mark_read to change flags."
     ),
 }
+_OVERRIDE_EXPLORATION_PLANS: dict[str, list[dict[str, Any]]] = {
+    "mark_read": [
+        {"toolName": "mail_mcp__imap_search_messages"},
+        {"toolName": "mail_mcp__imap_bulk_update_flags"},
+    ],
+}
+
+
+def override_intent_key(user_text: str) -> str | None:
+    """Return a coarse override intent label for exploration plan seeding."""
+    if _MARK_READ_INTENT.search(user_text.strip()):
+        return "mark_read"
+    return None
 
 
 def reasoning_declares_skill_mismatch(reasoning: str) -> bool:
@@ -566,6 +580,7 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     loop_state.plan_step_statuses = []
     loop_state.plan_step_notes = []
     loop_state.plan_current_step_index = None
+    loop_state.override_intent = override_intent_key(loop_state.plan_goal) or ""
     loop_state.mcp_guidance.insert(
         0,
         f"SKILL PLAN SUSPENDED — {reason.strip()[:200]}. {_EXPLORATION_GUIDANCE}",
@@ -573,6 +588,19 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     route_hint = _ROUTE_EXPLORATION_HINTS.get(loop_state.plan_route)
     if route_hint and route_hint not in loop_state.mcp_guidance:
         loop_state.mcp_guidance.insert(1, route_hint)
+    exploration_steps = _OVERRIDE_EXPLORATION_PLANS.get(loop_state.override_intent)
+    if exploration_steps:
+        loop_state.plan_steps = list(exploration_steps)
+        loop_state.plan_step_statuses = ["pending"] * len(exploration_steps)
+        loop_state.plan_step_notes = [""] * len(exploration_steps)
+        loop_state.plan_current_step_index = 0
+        loop_state.mcp_guidance.insert(
+            2,
+            (
+                "Override exploration plan seeded — follow plan steps in order. "
+                "Use discovery only if a step tool is missing from the catalog."
+            ),
+        )
 
 
 def should_block_reasoning_execution_mismatch(loop_state: LoopState) -> bool:
@@ -598,12 +626,84 @@ def maybe_suspend_skill_plan_from_reasoning(
 
 def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
     """Return True when discovery tools should stay blocked for the skill plan."""
+    if loop_state.skill_plan_override:
+        return bool(loop_state.plan_steps) and any(
+            status == "done" for status in loop_state.plan_step_statuses
+        )
     return (
-        not loop_state.skill_plan_override
-        and bool(loop_state.plan_steps)
+        bool(loop_state.plan_steps)
         and len(loop_state.plan_steps) >= 2
         and bool(loop_state.plan_skill_title)
     )
+
+
+def redundant_override_tool_block(
+    loop_state: LoopState,
+    tool_name: str,
+) -> str | None:
+    """Block repeat discovery/search when an override exploration plan advanced."""
+    if not loop_state.skill_plan_override or not loop_state.plan_steps:
+        return None
+    lowered = tool_name.lower()
+    from .tools import is_discovery_tool_name
+
+    if is_discovery_tool_name(tool_name) and any(
+        status == "done" for status in loop_state.plan_step_statuses
+    ):
+        next_index = _next_incomplete_plan_step(loop_state)
+        if next_index is not None:
+            next_tool = str(
+                loop_state.plan_steps[next_index].get("toolName", "tool")
+            )
+            return (
+                "Tool error: Discovery already completed the information-gathering "
+                f"step. Call `{next_tool}` next using prior tool output. "
+                "Do not repeat discovery."
+            )
+    if "search_messages" in lowered:
+        for index, step in enumerate(loop_state.plan_steps):
+            plan_tool = str(step.get("toolName", "")).lower()
+            if "search_messages" not in plan_tool:
+                continue
+            if (
+                index < len(loop_state.plan_step_statuses)
+                and loop_state.plan_step_statuses[index] == "done"
+            ):
+                next_index = _next_incomplete_plan_step(loop_state)
+                if next_index is not None:
+                    next_tool = str(
+                        loop_state.plan_steps[next_index].get("toolName", "tool")
+                    )
+                    return (
+                        "Tool error: Unread search already succeeded. "
+                        f"Call `{next_tool}` next with mailbox INBOX and "
+                        "UID/message_id values from the search result. "
+                        "Do not repeat search."
+                    )
+    return None
+
+
+def guide_after_override_tool_result(
+    loop_state: LoopState,
+    tool_name: str,
+    *,
+    succeeded: bool,
+) -> None:
+    """Inject next-step hints after successful override-plan tool calls."""
+    if not loop_state.skill_plan_override or not succeeded:
+        return
+    lowered = tool_name.lower()
+    if loop_state.override_intent == "mark_read" and "search_messages" in lowered:
+        loop_state.mcp_guidance.insert(
+            0,
+            (
+                "Unread messages are available from the search result. Call "
+                "mail_mcp__imap_bulk_update_flags (preferred) or "
+                "mail_mcp__imap_mark_read with mailbox INBOX and the UID or "
+                "message_id values from that output to set \\Seen. "
+                "Do not search or discover again."
+            ),
+        )
 
 
 def initialize_loop_plan(
@@ -669,6 +769,7 @@ def record_plan_tool_result(
             loop_state.plan_step_notes[step_index] = ""
         loop_state.plan_current_step_index = _next_incomplete_plan_step(loop_state)
         reconcile_plan_after_tools(loop_state)
+        guide_after_override_tool_result(loop_state, tool_name, succeeded=True)
         return
 
     loop_state.plan_step_statuses[step_index] = "needs_work"
