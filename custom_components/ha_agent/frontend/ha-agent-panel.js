@@ -1299,6 +1299,71 @@ class HaAgentPanel extends HTMLElement {
     return merged;
   }
 
+  _planProgressSummary(planProgress) {
+    if (!Array.isArray(planProgress) || !planProgress.length) return "";
+    const counts = { done: 0, omitted: 0, pending: 0, needs_work: 0 };
+    for (const row of planProgress) {
+      const status = String(row?.status || "pending");
+      if (Object.prototype.hasOwnProperty.call(counts, status)) {
+        counts[status] += 1;
+      } else {
+        counts.pending += 1;
+      }
+    }
+    const parts = [];
+    if (counts.done) parts.push(`${counts.done} done`);
+    if (counts.omitted) parts.push(`${counts.omitted} omitted`);
+    if (counts.needs_work) parts.push(`${counts.needs_work} needs work`);
+    if (counts.pending) parts.push(`${counts.pending} pending`);
+    return parts.join(", ");
+  }
+
+  _planStatusMarker(status) {
+    switch (String(status || "pending")) {
+      case "done":
+        return "[x]";
+      case "omitted":
+        return "[~]";
+      case "needs_work":
+        return "[!]";
+      default:
+        return "[ ]";
+    }
+  }
+
+  _renderPlanProgressPanel(msg) {
+    const rows = msg.turnMeta?.plan_progress;
+    if (!Array.isArray(rows) || !rows.length) return "";
+    const collapsed = msg.planProgressCollapsed !== false;
+    const chevron = collapsed ? "▸" : "▾";
+    const items = rows
+      .map((row, index) => {
+        const tool = String(row?.tool || "step");
+        const status = String(row?.status || "pending");
+        const note = String(row?.note || "").trim();
+        const noteHtml = note
+          ? `<div class="turn-meta-plan-note">${this._escape(note)}</div>`
+          : "";
+        return (
+          `<li class="turn-meta-plan-item turn-meta-plan-${this._escape(status)}">` +
+          `<span class="turn-meta-plan-marker">${this._planStatusMarker(status)}</span>` +
+          `<span class="turn-meta-plan-tool">${index + 1}. ${this._escape(tool)}</span>` +
+          `<span class="turn-meta-plan-status">${this._escape(status)}</span>` +
+          `${noteHtml}` +
+          `</li>`
+        );
+      })
+      .join("");
+    return (
+      `<div class="turn-meta-plan-panel ${collapsed ? "collapsed" : "expanded"}" data-plan-panel data-msg-id="${msg.id}">` +
+      `<ol class="turn-meta-plan-list">${items}</ol>` +
+      `<div class="turn-meta-plan-hint">` +
+      `${chevron} Follow steps in order, or declare <code>OMIT: toolName — reason</code> in reasoning.` +
+      `</div>` +
+      `</div>`
+    );
+  }
+
   _renderTurnMeta(msg) {
     const m = msg.turnMeta;
     if (!m || !Object.keys(m).length) return "";
@@ -1369,7 +1434,24 @@ class HaAgentPanel extends HTMLElement {
     add("LLM step", m.iteration);
     add("MCP tools", m.mcp_tools);
     add("History msgs", m.history_messages);
-    if (!chips.length) return "";
+    if (m.skill_plan_override) {
+      add("Plan override", m.skill_plan_override_reason || "skill workflow suspended");
+    }
+    let planChip = "";
+    let planPanel = "";
+    if (Array.isArray(m.plan_progress) && m.plan_progress.length) {
+      const summary = this._planProgressSummary(m.plan_progress);
+      const chevron = msg.planProgressCollapsed !== false ? "▸" : "▾";
+      planChip =
+        `<button type="button" class="turn-meta-chip turn-meta-chip-button turn-meta-plan-chip" ` +
+        `data-plan-toggle data-msg-id="${msg.id}" aria-expanded="${msg.planProgressCollapsed === false ? "true" : "false"}">` +
+        `<span class="turn-meta-label">Plan</span> ` +
+        `<span class="turn-meta-value">${this._escape(summary)}</span> ` +
+        `<span class="turn-meta-toggle-icon">${chevron}</span>` +
+        `</button>`;
+      planPanel = this._renderPlanProgressPanel(msg);
+    }
+    if (!chips.length && !planChip) return "";
     const items = chips
       .map(
         (chip) =>
@@ -1379,7 +1461,7 @@ class HaAgentPanel extends HTMLElement {
           `</span>`
       )
       .join("");
-    return `<div class="turn-meta"><span class="turn-meta-heading">Turn info</span>${items}</div>`;
+    return `<div class="turn-meta"><span class="turn-meta-heading">Turn info</span>${items}${planChip}${planPanel}</div>`;
   }
 
   _applyHistory(history) {
@@ -1430,6 +1512,9 @@ class HaAgentPanel extends HTMLElement {
         thinkingUserToggled: preserveStream
           ? Boolean(openMsg.thinkingUserToggled)
           : false,
+        planProgressCollapsed: preserveStream
+          ? openMsg.planProgressCollapsed !== false
+          : true,
         _streamOpen: false,
       };
     });
@@ -1852,6 +1937,15 @@ class HaAgentPanel extends HTMLElement {
         }
         return;
       }
+      const planToggle = ev.target.closest("[data-plan-toggle]");
+      if (planToggle) {
+        const msg = this._findMessageById(planToggle.getAttribute("data-msg-id"));
+        if (msg) {
+          msg.planProgressCollapsed = msg.planProgressCollapsed === false;
+          this._updateChatMessages();
+        }
+        return;
+      }
       const toggle = ev.target.closest("[data-thinking-toggle]");
       if (!toggle) return;
       const msg = this._findMessageById(toggle.getAttribute("data-msg-id"));
@@ -2269,6 +2363,82 @@ class HaAgentPanel extends HTMLElement {
         text-overflow: ellipsis;
         white-space: nowrap;
         max-width: 18rem;
+      }
+      .turn-meta-chip-button {
+        cursor: pointer;
+        font: inherit;
+      }
+      .turn-meta-chip-button:hover {
+        border-color: color-mix(in srgb, var(--primary-color) 45%, var(--divider-color, #444));
+        background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+      }
+      .turn-meta-plan-chip .turn-meta-toggle-icon {
+        opacity: 0.75;
+        font-size: 0.72rem;
+      }
+      .turn-meta-plan-panel {
+        flex: 0 0 100%;
+        margin-top: 2px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--primary-text-color, #fff) 4%, transparent);
+        border: 1px solid var(--divider-color, #444);
+      }
+      .turn-meta-plan-panel.collapsed {
+        display: none;
+      }
+      .turn-meta-plan-list {
+        margin: 0;
+        padding: 0 0 0 4px;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .turn-meta-plan-item {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 6px 8px;
+        align-items: baseline;
+        font-size: 0.74rem;
+        line-height: 1.35;
+      }
+      .turn-meta-plan-marker {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--secondary-text-color, #aaa);
+      }
+      .turn-meta-plan-tool {
+        color: var(--primary-text-color, #e0e0e0);
+        word-break: break-word;
+      }
+      .turn-meta-plan-status {
+        font-size: 0.65rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--secondary-text-color, #aaa);
+      }
+      .turn-meta-plan-note {
+        grid-column: 2 / -1;
+        font-size: 0.7rem;
+        color: var(--secondary-text-color, #aaa);
+      }
+      .turn-meta-plan-hint {
+        margin-top: 8px;
+        font-size: 0.68rem;
+        color: var(--secondary-text-color, #aaa);
+      }
+      .turn-meta-plan-hint code {
+        font-size: 0.68rem;
+      }
+      .turn-meta-plan-done .turn-meta-plan-status {
+        color: #7dcea0;
+      }
+      .turn-meta-plan-omitted .turn-meta-plan-status {
+        color: #d7bde2;
+      }
+      .turn-meta-plan-needs_work .turn-meta-plan-status {
+        color: #f5b041;
       }
       .subagent-progress {
         display: flex;

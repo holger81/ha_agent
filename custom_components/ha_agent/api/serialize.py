@@ -127,6 +127,7 @@ def turn_trace_to_dict(
         "recovery_hints": list(trace.recovery_hints),
         "skill_plan_override": trace.skill_plan_override,
         "skill_plan_override_reason": trace.skill_plan_override_reason,
+        "plan_progress": list(trace.plan_progress),
     }
 
 

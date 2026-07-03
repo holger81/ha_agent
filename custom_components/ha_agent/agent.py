@@ -1834,6 +1834,7 @@ async def run_agent(
         plan_progress = _plan_progress_snapshot(loop_state)
         if plan_progress is not None:
             turn_meta["plan_progress"] = plan_progress
+            trace.plan_progress = plan_progress
         turn_meta.update(
             {
                 "verifier_verdict": trace.verifier_verdict,
@@ -1841,6 +1842,7 @@ async def run_agent(
                 "llm_calls": trace.llm_calls,
             }
         )
+        yield AgentDelta(meta=dict(turn_meta))
         _schedule_post_turn_skills(
             hass,
             entry_id=entry_id,
