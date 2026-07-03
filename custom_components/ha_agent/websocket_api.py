@@ -42,6 +42,7 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_chat_send)
     websocket_api.async_register_command(hass, ws_chat_cancel)
     websocket_api.async_register_command(hass, ws_chat_history_list)
+    websocket_api.async_register_command(hass, ws_chat_turn_status)
     websocket_api.async_register_command(hass, ws_chat_history_clear)
     websocket_api.async_register_command(hass, ws_skills_list)
     websocket_api.async_register_command(hass, ws_skills_search)
@@ -225,6 +226,25 @@ async def ws_chat_history_list(hass: HomeAssistant, connection, msg: dict) -> No
     connection.send_message(
         websocket_api.result_message(msg["id"], {"history": history})
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/chat/turn/status",
+        vol.Required("entry_id"): str,
+        vol.Required("conversation_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_chat_turn_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Return whether a chat turn is in progress and the current history."""
+    require_admin(connection)
+    payload = chat_api.turn_status(
+        hass,
+        msg["entry_id"],
+        msg["conversation_id"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], payload))
 
 
 @websocket_api.websocket_command(

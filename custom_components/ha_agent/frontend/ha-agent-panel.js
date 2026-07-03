@@ -85,9 +85,7 @@ class HaAgentPanel extends HTMLElement {
   connectedCallback() {
     if (this._hass) {
       void this._ensureEventSubscription().then(() => {
-        if (this._streaming || this._findOpenStreamMessage()) {
-          this._scheduleChatRender();
-        }
+        void this._resyncAfterReconnect();
       });
     }
   }
@@ -100,11 +98,9 @@ class HaAgentPanel extends HTMLElement {
       this._messagesScrollEl.removeEventListener("scroll", this._onMessagesScroll);
       this._messagesScrollEl = null;
     }
-    if (this._unsubEvents) {
-      void this._unsubEvents();
-      this._unsubEvents = null;
-    }
-    this._eventsReady = null;
+    // Keep chat event subscriptions alive while the panel is hidden so in-flight
+    // turns continue updating _messages (HA sidebar tab switches disconnect the
+    // element without destroying the turn on the server).
   }
 
   _clearTurnTimeout() {
@@ -239,6 +235,18 @@ class HaAgentPanel extends HTMLElement {
     if (!this._streaming) return;
     this._clearTurnTimeout();
     try {
+      const status = await this._call("ha_agent/chat/turn/status", {
+        entry_id: this._entryId,
+        conversation_id: this._conversationId,
+      });
+      if (status?.in_progress) {
+        this._armTurnTimeout();
+        return;
+      }
+      if (status?.history?.length) {
+        this._finalizeStreamFromHistory(status.history);
+        return;
+      }
       await this._loadHistory();
     } catch (_err) {
       /* history poll is best-effort */
@@ -259,6 +267,35 @@ class HaAgentPanel extends HTMLElement {
     this._render();
     await this._loadPendingDraft();
     await this._refreshStatus();
+  }
+
+  async _resyncAfterReconnect() {
+    if (!this._entryId || !this._conversationId) {
+      return;
+    }
+    const openMsg = this._findOpenStreamMessage();
+    if (!this._streaming && !openMsg) {
+      return;
+    }
+    this._armTurnTimeout();
+    try {
+      const status = await this._call("ha_agent/chat/turn/status", {
+        entry_id: this._entryId,
+        conversation_id: this._conversationId,
+      });
+      if (status?.in_progress) {
+        this._scheduleChatRender();
+        return;
+      }
+      if (status?.history?.length) {
+        this._finalizeStreamFromHistory(status.history);
+        await Promise.all([this._loadPendingDraft(), this._refreshStatus()]);
+        return;
+      }
+    } catch (_err) {
+      /* best-effort */
+    }
+    this._scheduleChatRender();
   }
 
   async _ensureEventSubscription() {
@@ -337,9 +374,24 @@ class HaAgentPanel extends HTMLElement {
         this._conversationId = this._threads[0].conversation_id;
       }
       try {
-        await this._loadHistory();
+        const status = await this._call("ha_agent/chat/turn/status", {
+          entry_id: this._entryId,
+          conversation_id: this._conversationId,
+        });
+        if (status?.in_progress) {
+          this._messages = this._historyToMessages(status.history || []);
+          this._messages.push(this._newStreamMessage());
+          this._streaming = true;
+          this._armTurnTimeout();
+        } else {
+          await this._loadHistory();
+        }
       } catch (_err) {
-        this._messages = [];
+        try {
+          await this._loadHistory();
+        } catch (_err2) {
+          this._messages = [];
+        }
       }
       await this._loadHacsStatus();
     } catch (err) {
@@ -1310,29 +1362,64 @@ class HaAgentPanel extends HTMLElement {
 
   _applyHistory(history) {
     if (this._streaming) return;
+    const openMsg = this._findOpenStreamMessage();
+    if (openMsg) {
+      this._finalizeStreamFromHistory(history || []);
+      return;
+    }
+    this._messages = this._historyToMessages(history || []);
+  }
+
+  _historyToMessages(history, openMsg = null) {
     const priorMeta = new Map();
     for (const msg of this._messages) {
       if (msg.role === "assistant" && msg.content && msg.turnMeta) {
         priorMeta.set(String(msg.content).trim(), msg.turnMeta);
       }
     }
-    this._messages = (history || []).map((item) => {
+    let lastAssistantIndex = -1;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      if (history[index]?.role === "assistant") {
+        lastAssistantIndex = index;
+        break;
+      }
+    }
+    return (history || []).map((item, index) => {
       const thinking = String(item.thinking || "");
       const content = item.content || "";
+      const preserveStream =
+        openMsg && index === lastAssistantIndex && item.role === "assistant";
       return {
         id: this._msgId++,
         role: item.role,
-        content,
-        thinking,
-        tools: item.tools || [],
+        content: preserveStream && !content.trim() ? openMsg.content || "" : content,
+        thinking: preserveStream ? openMsg.thinking || thinking : thinking,
+        tools: preserveStream ? openMsg.tools || [] : item.tools || [],
+        subagents: preserveStream ? openMsg.subagents || [] : [],
+        activeSkill: preserveStream ? openMsg.activeSkill || null : null,
         turnMeta:
           item.turn_meta ||
           priorMeta.get(String(content).trim()) ||
+          (preserveStream ? openMsg.turnMeta : null) ||
           null,
-        thinkingCollapsed: Boolean(thinking.trim()),
-        thinkingUserToggled: false,
+        thinkingCollapsed: preserveStream
+          ? openMsg.thinkingCollapsed
+          : Boolean(thinking.trim()),
+        thinkingUserToggled: preserveStream
+          ? Boolean(openMsg.thinkingUserToggled)
+          : false,
+        _streamOpen: false,
       };
     });
+  }
+
+  _finalizeStreamFromHistory(history) {
+    const openMsg = this._findOpenStreamMessage();
+    this._streaming = false;
+    this._clearTurnTimeout();
+    this._messages = this._historyToMessages(history || [], openMsg);
+    this._closeOpenStreamMessages();
+    this._scheduleChatRender();
   }
 
   async _loadHistory() {
@@ -1848,11 +1935,14 @@ class HaAgentPanel extends HTMLElement {
       break;
     }
     if (data.error) {
-      this._messages.push({
-        role: "assistant",
-        content: `Error: ${data.error}`,
-        thinking: "",
-      });
+      const last = this._messages[this._messages.length - 1];
+      if (!(last?.role === "assistant" && String(last.content || "").trim())) {
+        this._messages.push({
+          role: "assistant",
+          content: `Error: ${data.error}`,
+          thinking: "",
+        });
+      }
     }
     this._render();
     await Promise.all([this._loadThreads(), this._loadPendingDraft()]);
@@ -3990,8 +4080,8 @@ class HaAgentPanel extends HTMLElement {
           }
         }
         this._render();
-        if (this._tab === "chat" && (this._streaming || this._findOpenStreamMessage())) {
-          this._scheduleChatRender();
+        if (this._tab === "chat") {
+          void this._resyncAfterReconnect();
         }
       };
     });

@@ -74,6 +74,29 @@ def cancel_chat_task(hass: HomeAssistant, entry_id: str, conversation_id: str) -
     _cancel_chat_task(hass, entry_id, conversation_id)
 
 
+def chat_turn_in_progress(
+    hass: HomeAssistant,
+    entry_id: str,
+    conversation_id: str,
+) -> bool:
+    """Return True when a console chat task is still running."""
+    key = (entry_id, conversation_id)
+    task = _chat_tasks(hass).get(key)
+    return task is not None and not task.done()
+
+
+def turn_status(
+    hass: HomeAssistant,
+    entry_id: str,
+    conversation_id: str,
+) -> dict[str, Any]:
+    """Return whether a chat turn is running and the stored history snapshot."""
+    return {
+        "in_progress": chat_turn_in_progress(hass, entry_id, conversation_id),
+        "history": list_history(hass, entry_id, conversation_id),
+    }
+
+
 def start_chat(
     hass: HomeAssistant,
     *,
