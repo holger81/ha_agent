@@ -30,20 +30,19 @@ def _integration_version() -> str:
 
 async def async_register_panel(hass: HomeAssistant) -> None:
     """Register the console panel once per Home Assistant instance."""
-    domain_data = hass.data.setdefault(DATA_KEY, {})
-    if domain_data.get("panel_registered"):
-        return
-
     frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                PANEL_STATIC_URL,
-                frontend_dir,
-                cache_headers=False,
-            )
-        ]
-    )
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    PANEL_STATIC_URL,
+                    frontend_dir,
+                    cache_headers=False,
+                )
+            ]
+        )
+    except Exception as err:
+        LOGGER.debug("HA Agent static path may already be registered: %s", err)
 
     module_url = f"{PANEL_STATIC_URL}/ha-agent-panel.js?v={_integration_version()}"
 
@@ -60,4 +59,4 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         )
     except ValueError as err:
         LOGGER.warning("HA Agent panel already registered: %s", err)
-    domain_data["panel_registered"] = True
+    hass.data.setdefault(DATA_KEY, {})["panel_registered"] = True

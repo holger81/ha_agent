@@ -8,7 +8,6 @@ import uuid
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_homeassistant_event
 
 from ..activity import get_turn
 from ..diagnostics.analyze import analyze_turn_dict
@@ -58,16 +57,8 @@ async def inject_console_turn(
         ):
             recorded_future.set_result(dict(data))
 
-    unsub_done = async_track_homeassistant_event(
-        hass,
-        "ha_agent_chat_done",
-        _on_done,
-    )
-    unsub_recorded = async_track_homeassistant_event(
-        hass,
-        "ha_agent_turn_recorded",
-        _on_recorded,
-    )
+    unsub_done = hass.bus.async_listen("ha_agent_chat_done", _on_done)
+    unsub_recorded = hass.bus.async_listen("ha_agent_turn_recorded", _on_recorded)
     try:
         start_chat(
             hass,

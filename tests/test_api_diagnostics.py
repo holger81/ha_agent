@@ -88,12 +88,15 @@ async def test_inject_console_turn_waits_for_events() -> None:
     entry = MagicMock()
     entry.entry_id = "entry-1"
     diag.get_entry = MagicMock(return_value=entry)
+    hass.bus.async_listen = MagicMock(side_effect=lambda _event, cb: cb)
 
     handlers: dict[str, object] = {}
 
-    def track(_hass, event_type, callback):
+    def capture_listen(event_type, callback):
         handlers[event_type] = callback
         return lambda: None
+
+    hass.bus.async_listen.side_effect = capture_listen
 
     turn_payload = {
         "user_text": "turn on lights",
@@ -103,11 +106,7 @@ async def test_inject_console_turn_waits_for_events() -> None:
         "conversation_id": "inject-abc",
     }
 
-    with patch.object(
-        diag,
-        "async_track_homeassistant_event",
-        side_effect=track,
-    ):
+    with patch.object(diag, "start_chat") as start_chat_mock:
         task = asyncio.create_task(
             diag.inject_console_turn(
                 hass,
@@ -117,7 +116,7 @@ async def test_inject_console_turn_waits_for_events() -> None:
             )
         )
         await asyncio.sleep(0)
-        assert diag.start_chat.called
+        assert start_chat_mock.called
         handlers["ha_agent_chat_done"](
             MagicMock(
                 data={
