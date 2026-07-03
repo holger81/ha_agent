@@ -358,6 +358,18 @@ def _plan_progress_snapshot(loop_state: LoopState) -> list[dict[str, str]] | Non
     return rows
 
 
+def _attach_plan_progress(
+    turn_meta: dict[str, Any],
+    loop_state: LoopState,
+    trace: TurnTrace,
+) -> None:
+    """Copy plan step statuses into turn metadata and the activity trace."""
+    plan_progress = _plan_progress_snapshot(loop_state)
+    if plan_progress is not None:
+        turn_meta["plan_progress"] = plan_progress
+        trace.plan_progress = plan_progress
+
+
 def _preferred_loop_tool_names(skill_steps: list[dict[str, Any]] | None) -> list[str]:
     names: list[str] = []
     for step in skill_steps or []:
@@ -1530,6 +1542,7 @@ async def run_agent(
         "llm_calls": len(trace.llm_calls),
         "prepass": prepass_result.method if prepass_result else None,
     }
+    _attach_plan_progress(turn_meta, loop_state, trace)
     yield AgentDelta(meta=turn_meta)
 
     verifier_retries = 0
@@ -1559,11 +1572,14 @@ async def run_agent(
             prefer_action=route == TaskRoute.HA_ACTION and not use_chat_backend,
         )
         model_role = _agent_model_role(route, use_chat_backend=use_chat_backend)
+        _attach_plan_progress(turn_meta, loop_state, trace)
         iteration_meta = {
             "iteration": iteration + 1,
             "model_role": model_role,
             **_model_chip(active_backend),
         }
+        if turn_meta.get("plan_progress"):
+            iteration_meta["plan_progress"] = turn_meta["plan_progress"]
         turn_meta.update(iteration_meta)
         yield AgentDelta(meta=iteration_meta)
 
@@ -1619,7 +1635,11 @@ async def run_agent(
                     yield delta
                 mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
-                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    _attach_plan_progress(turn_meta, loop_state, trace)
+                    yield AgentDelta(
+                        content=_finalize_stuck_turn(trace, loop_state),
+                        meta=dict(turn_meta),
+                    )
                     append_turn(
                         hass,
                         conversation_id,
@@ -1627,6 +1647,7 @@ async def run_agent(
                         loop_state.stuck_message,
                         max_turns=agent_config.history_turns,
                         entry_id=entry_id,
+                        turn_meta=turn_meta,
                     )
                     record_turn(hass, entry_id, trace)
                     return
@@ -1652,7 +1673,11 @@ async def run_agent(
                     yield delta
                 mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
-                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    _attach_plan_progress(turn_meta, loop_state, trace)
+                    yield AgentDelta(
+                        content=_finalize_stuck_turn(trace, loop_state),
+                        meta=dict(turn_meta),
+                    )
                     append_turn(
                         hass,
                         conversation_id,
@@ -1660,6 +1685,7 @@ async def run_agent(
                         loop_state.stuck_message,
                         max_turns=agent_config.history_turns,
                         entry_id=entry_id,
+                        turn_meta=turn_meta,
                     )
                     record_turn(hass, entry_id, trace)
                     return
@@ -1698,7 +1724,11 @@ async def run_agent(
                     yield delta
                 mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
-                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    _attach_plan_progress(turn_meta, loop_state, trace)
+                    yield AgentDelta(
+                        content=_finalize_stuck_turn(trace, loop_state),
+                        meta=dict(turn_meta),
+                    )
                     append_turn(
                         hass,
                         conversation_id,
@@ -1706,6 +1736,7 @@ async def run_agent(
                         loop_state.stuck_message,
                         max_turns=agent_config.history_turns,
                         entry_id=entry_id,
+                        turn_meta=turn_meta,
                     )
                     record_turn(hass, entry_id, trace)
                     return
@@ -1731,7 +1762,11 @@ async def run_agent(
                     yield delta
                 mark_iteration_outcome(loop_state)
                 if loop_state.stuck:
-                    yield AgentDelta(content=_finalize_stuck_turn(trace, loop_state))
+                    _attach_plan_progress(turn_meta, loop_state, trace)
+                    yield AgentDelta(
+                        content=_finalize_stuck_turn(trace, loop_state),
+                        meta=dict(turn_meta),
+                    )
                     append_turn(
                         hass,
                         conversation_id,
@@ -1739,6 +1774,7 @@ async def run_agent(
                         loop_state.stuck_message,
                         max_turns=agent_config.history_turns,
                         entry_id=entry_id,
+                        turn_meta=turn_meta,
                     )
                     record_turn(hass, entry_id, trace)
                     return
@@ -1831,15 +1867,14 @@ async def run_agent(
         trace.recovery_hints = list(loop_state.mcp_guidance)
         trace.skill_plan_override = loop_state.skill_plan_override
         trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
-        plan_progress = _plan_progress_snapshot(loop_state)
-        if plan_progress is not None:
-            turn_meta["plan_progress"] = plan_progress
-            trace.plan_progress = plan_progress
+        _attach_plan_progress(turn_meta, loop_state, trace)
         turn_meta.update(
             {
                 "verifier_verdict": trace.verifier_verdict,
                 "verifier_detail": trace.verifier_detail,
                 "llm_calls": trace.llm_calls,
+                "skill_plan_override": trace.skill_plan_override,
+                "skill_plan_override_reason": trace.skill_plan_override_reason,
             }
         )
         yield AgentDelta(meta=dict(turn_meta))
@@ -1874,7 +1909,8 @@ async def run_agent(
         f"{FALLBACK_MESSAGE} I used {trace.iterations} steps"
         f"{' and hit a repeated-tool guard' if loop_state.stuck else ''}."
     )
-    yield AgentDelta(content=fallback)
+    _attach_plan_progress(turn_meta, loop_state, trace)
+    yield AgentDelta(content=fallback, meta=dict(turn_meta))
     append_turn(
         hass,
         conversation_id,

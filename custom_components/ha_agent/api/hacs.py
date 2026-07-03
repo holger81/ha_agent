@@ -167,20 +167,27 @@ async def install_update(
     if not status["update_available"] and not force_reinstall:
         return {**status, "installed": False}
 
-    entity_id = status.get("entity_id")
-    if entity_id:
-        await hass.services.async_call(
-            "update",
-            "install",
-            {"entity_id": entity_id},
-            blocking=True,
-        )
-    else:
+    if force_reinstall:
         downloader = getattr(repo, "async_download_repository", None)
         if callable(downloader):
             await downloader()
         else:
             await repo.async_install()
+    else:
+        entity_id = status.get("entity_id")
+        if entity_id:
+            await hass.services.async_call(
+                "update",
+                "install",
+                {"entity_id": entity_id},
+                blocking=True,
+            )
+        else:
+            downloader = getattr(repo, "async_download_repository", None)
+            if callable(downloader):
+                await downloader()
+            else:
+                await repo.async_install()
 
     refreshed = await refresh_repository(hass)
     return {**refreshed, "installed": True}
