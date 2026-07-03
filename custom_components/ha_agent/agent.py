@@ -38,7 +38,9 @@ from .loop_policy import (
     finalize_output,
     initialize_loop_plan,
     inject_loop_context,
+    mark_iteration_after_tools,
     mark_iteration_outcome,
+    mark_iteration_preserve_stream,
     maybe_omit_plan_steps_from_reasoning,
     maybe_suspend_skill_plan_from_reasoning,
     reasoning_execution_mismatch,
@@ -1586,10 +1588,11 @@ async def run_agent(
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
-        if iteration > 0:
+        if iteration > 0 and not loop_state.preserve_stream_ui:
             yield AgentDelta(content_clear=True)
             if agent_config.show_reasoning_in_chat:
                 yield AgentDelta(thinking_clear=True)
+        loop_state.preserve_stream_ui = False
         inject_loop_context(messages, loop_state)
         if agent_config.turn_token_budget > 0:
             compact_messages_if_needed(
@@ -1689,6 +1692,7 @@ async def run_agent(
                     record_turn(hass, entry_id, trace)
                     return
                 _prepare_next_loop_iteration(loop_state)
+                mark_iteration_after_tools(loop_state)
                 use_chat_backend = True
                 continue
 
@@ -1729,6 +1733,7 @@ async def run_agent(
                 embedded_ran = True
             if embedded_ran:
                 _prepare_next_loop_iteration(loop_state)
+                mark_iteration_after_tools(loop_state)
                 use_chat_backend = True
                 continue
 
@@ -1778,6 +1783,7 @@ async def run_agent(
                     record_turn(hass, entry_id, trace)
                     return
                 _prepare_next_loop_iteration(loop_state)
+                mark_iteration_after_tools(loop_state)
                 use_chat_backend = True
                 continue
 
@@ -1818,6 +1824,7 @@ async def run_agent(
                 embedded_ran = True
             if embedded_ran:
                 _prepare_next_loop_iteration(loop_state)
+                mark_iteration_after_tools(loop_state)
                 use_chat_backend = True
                 continue
 
@@ -1839,6 +1846,7 @@ async def run_agent(
                 }
             )
             _prepare_next_loop_iteration(loop_state)
+            mark_iteration_preserve_stream(loop_state)
             use_chat_backend = True
             continue
 
@@ -1878,6 +1886,8 @@ async def run_agent(
         )
         if not v_result.passed and verifier_retries < _MAX_VERIFIER_RETRIES:
             verifier_retries += 1
+            if assistant_text.strip():
+                messages.append({"role": "assistant", "content": assistant_text})
             messages.append(
                 {
                     "role": INTERNAL_GUIDANCE_ROLE,
@@ -1885,6 +1895,10 @@ async def run_agent(
                 }
             )
             _prepare_next_loop_iteration(loop_state)
+            mark_iteration_preserve_stream(
+                loop_state,
+                draft_answer=assistant_text,
+            )
             use_chat_backend = True
             continue
 

@@ -741,10 +741,10 @@ def test_reasoning_declares_skill_mismatch_without_marker() -> None:
 
 
 def test_build_plan_progress_summary_when_skill_overridden() -> None:
-    """Injected plan guidance reflects a suspended skill workflow."""
+    """Override keeps the full step checklist and suspension reason."""
     policy = _load_loop_policy()
     state = policy.LoopState()
-    state.plan_goal = "mark emails read"
+    state.plan_goal = "mark all unread emails as read"
     policy.suspend_skill_plan(state, "Skill only covers unread checks.")
 
     summary = policy.build_plan_progress_summary(state)
@@ -752,6 +752,44 @@ def test_build_plan_progress_summary_when_skill_overridden() -> None:
     assert summary is not None
     assert "suspended" in summary
     assert "Skill only covers unread checks." in summary
+    assert "Override exploration plan:" in summary
+    assert "mail_mcp__imap_search_messages" in summary
+    assert "mail_mcp__imap_bulk_update_flags" in summary
+    assert "Next action:" in summary
+
+
+def test_build_plan_progress_summary_includes_rejected_draft() -> None:
+    """Verifier retries inject the previous answer into plan guidance."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    policy.mark_iteration_preserve_stream(
+        state,
+        draft_answer="I marked all unread emails as read.",
+    )
+    policy.initialize_loop_plan(
+        state,
+        goal=state.plan_goal,
+        route="email",
+        tool_steps=[{"toolName": "mail_mcp__imap_bulk_update_flags"}],
+    )
+
+    summary = policy.build_plan_progress_summary(state)
+
+    assert summary is not None
+    assert "Previous answer attempt" in summary
+    assert "I marked all unread emails as read." in summary
+    assert "mail_mcp__imap_bulk_update_flags" in summary
+
+
+def test_mark_iteration_after_tools_clears_stream_preservation() -> None:
+    """Tool iterations reset stream preservation for the next UI pass."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.mark_iteration_preserve_stream(state, draft_answer="draft")
+    policy.mark_iteration_after_tools(state)
+    assert state.preserve_stream_ui is False
+    assert state.last_draft_answer == "draft"
 
 
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:

@@ -52,6 +52,8 @@ class LoopState:
     mcp_guidance: list[str] = field(default_factory=list)
     include_full_tool_catalog: bool = False
     pagination_pending: dict[str, Any] = field(default_factory=dict)
+    preserve_stream_ui: bool = False
+    last_draft_answer: str = ""
 
 
 # Role used for internal/system-injected guidance (plan progress, failure
@@ -859,21 +861,31 @@ def build_plan_progress_summary(loop_state: LoopState) -> str | None:
     if not loop_state.plan_goal:
         return None
 
-    if loop_state.skill_plan_override:
-        reason = loop_state.skill_plan_override_reason or (
-            "Active skill does not fit the user's goal."
-        )
-        return (
-            "AGENT PLAN (internal — not from the user): Active skill workflow "
-            f"suspended — {reason} Use discovery and other tools as needed."
-        )
-
     lines = [
         "AGENT PLAN PROGRESS (internal — not from the user):",
         f"Goal: {loop_state.plan_goal}",
     ]
-    if loop_state.plan_skill_title:
+    if loop_state.skill_plan_override:
+        reason = loop_state.skill_plan_override_reason or (
+            "Active skill does not fit the user's goal."
+        )
+        lines.append(f"Skill workflow suspended — {reason}")
+        if loop_state.plan_steps:
+            lines.append("Override exploration plan:")
+        else:
+            lines.append(
+                "No concrete override steps seeded — use discovery and tools "
+                "as needed."
+            )
+    elif loop_state.plan_skill_title:
         lines.append(f"Workflow skill: {loop_state.plan_skill_title}")
+
+    if loop_state.last_draft_answer:
+        lines.append(
+            "Previous answer attempt (verifier rejected — build on prior work, "
+            "do not restart from scratch):"
+        )
+        lines.append(loop_state.last_draft_answer[:800])
 
     if loop_state.plan_steps:
         lines.append("Plan steps:")
@@ -920,6 +932,22 @@ def build_plan_progress_summary(loop_state: LoopState) -> str | None:
         lines.append("The current plan step still needs work before advancing.")
 
     return "\n".join(lines)
+
+
+def mark_iteration_after_tools(loop_state: LoopState) -> None:
+    """Prepare the next loop iteration after tool execution."""
+    loop_state.preserve_stream_ui = False
+
+
+def mark_iteration_preserve_stream(
+    loop_state: LoopState,
+    *,
+    draft_answer: str = "",
+) -> None:
+    """Prepare the next loop iteration without clearing streamed UI content."""
+    loop_state.preserve_stream_ui = True
+    if draft_answer.strip():
+        loop_state.last_draft_answer = draft_answer.strip()[:2000]
 
 
 def inject_loop_context(
