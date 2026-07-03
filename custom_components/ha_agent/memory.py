@@ -160,6 +160,47 @@ def _record_thread_metadata(
 
 
 @callback
+def patch_last_assistant_turn(
+    hass: HomeAssistant,
+    conversation_id: str | None,
+    *,
+    meta_patch: dict[str, Any] | None = None,
+    content_suffix: str | None = None,
+    entry_id: str | None = None,
+) -> bool:
+    """Merge metadata and/or append text on the latest assistant message."""
+    if not conversation_id:
+        return False
+    store = _memory_store(hass)
+    history = store.get(conversation_id)
+    if not history:
+        return False
+    for index in range(len(history) - 1, -1, -1):
+        entry = history[index]
+        if entry.get("role") != "assistant":
+            continue
+        if content_suffix:
+            suffix = content_suffix.strip()
+            if suffix:
+                current = str(entry.get("content") or "").rstrip()
+                entry["content"] = f"{current} {suffix}".strip() if current else suffix
+        if meta_patch:
+            existing = entry.get("turn_meta")
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            for key, value in meta_patch.items():
+                if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged[key] = {**merged[key], **value}
+                elif value is not None:
+                    merged[key] = value
+            entry["turn_meta"] = merged
+        history[index] = entry
+        if entry_id:
+            _maybe_persist(hass, entry_id)
+        return True
+    return False
+
+
+@callback
 def clear_conversation(hass: HomeAssistant, conversation_id: str | None) -> None:
     """Clear stored history for a conversation."""
     if not conversation_id:

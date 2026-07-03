@@ -1400,6 +1400,13 @@ class HaAgentPanel extends HTMLElement {
         `${m.skill_update.title} v${fromV}→v${toV}: ${m.skill_update.reason || ""}`
       );
     }
+    if (m.skill_repair?.issue_kind) {
+      const fields = (m.skill_repair.fields || []).join(", ");
+      add(
+        "Skill repair",
+        `${m.skill_repair.issue_kind}${fields ? ` (${fields})` : ""}`
+      );
+    }
     if (m.slot_bindings && typeof m.slot_bindings === "object") {
       const bound = Object.entries(m.slot_bindings)
         .filter(([, value]) => value)
@@ -1578,6 +1585,19 @@ class HaAgentPanel extends HTMLElement {
     }
 
     if (!this._streaming) {
+      if (data.meta) {
+        for (let index = this._messages.length - 1; index >= 0; index -= 1) {
+          const msg = this._messages[index];
+          if (msg.role !== "assistant") continue;
+          msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, data.meta);
+          if (data.content) {
+            msg.content = `${String(msg.content || "").trim()} ${data.content}`.trim();
+          }
+          break;
+        }
+        this._render();
+        return;
+      }
       this._streaming = true;
       this._armTurnTimeout();
     }

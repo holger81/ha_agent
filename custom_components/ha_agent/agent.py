@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from homeassistant.core import HomeAssistant
 
 from .activity import record_turn
+from .chat_events import publish_chat_delta
 from .compaction import compact_messages_if_needed
 from .config_helpers import AgentConfig, LlmBackend, RouterConfig, SkillsConfig
 from .const import LOGGER
@@ -64,7 +65,11 @@ from .loop_policy import (
     user_requests_skill_override,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
-from .memory import append_turn, conversation_history_for_turn
+from .memory import (
+    append_turn,
+    conversation_history_for_turn,
+    patch_last_assistant_turn,
+)
 from .orchestrator import (
     Complexity,
     plan_subtasks,
@@ -106,7 +111,7 @@ from .skills.params import (
     infer_slot_bindings,
     missing_required_bindings,
 )
-from .skills.repair import auto_repair_skill
+from .skills.repair import auto_repair_skill, detect_repairable_issues
 from .skills.route_skills import load_route_skill, merge_route_and_learned_skills
 from .skills.runtime import (
     override_turn_eligible_for_learning,
@@ -408,13 +413,44 @@ def _merge_learned_skills_for_post_turn(
 
 def _schedule_post_turn_skills(
     hass: HomeAssistant,
+    *,
+    entry_id: str,
+    conversation_id: str | None,
     **kwargs: Any,
 ) -> None:
     """Run learning hooks off the critical path (Phase 8e)."""
 
     async def _run() -> None:
         try:
-            await _post_turn_skills(hass, **kwargs)
+            suffix, meta_patch = await _post_turn_skills(
+                hass,
+                entry_id=entry_id,
+                **kwargs,
+            )
+            if not conversation_id or (not meta_patch and not suffix):
+                return
+            patch_last_assistant_turn(
+                hass,
+                conversation_id,
+                meta_patch=meta_patch,
+                content_suffix=suffix or None,
+                entry_id=entry_id,
+            )
+            publish_chat_delta(
+                hass,
+                entry_id,
+                conversation_id,
+                meta=meta_patch,
+                content=suffix.strip() if suffix else None,
+            )
+            hass.bus.async_fire(
+                "ha_agent_chat_done",
+                {
+                    "entry_id": entry_id,
+                    "conversation_id": conversation_id,
+                    "turn_meta": meta_patch,
+                },
+            )
         except Exception as err:
             LOGGER.warning("Post-turn skill hooks failed: %s", err)
 
@@ -873,21 +909,6 @@ async def _run_orchestrated_turn(
 
     trace.assistant_text = assistant_text
     trace.outcome = TurnOutcome.SUCCESS if v_result.passed else TurnOutcome.PARTIAL
-    _schedule_post_turn_skills(
-        hass,
-        entry_id=entry_id,
-        llm=llm,
-        backend=backend,
-        observer_backend=registry.backend_for(ModelRole.OBSERVER),
-        skills_config=skills_config,
-        trace=trace,
-        history=[],
-        matched_skills=_merge_learned_skills_for_post_turn(
-            matched_skills,
-            subtask_learned,
-        ),
-    )
-
     append_turn(
         hass,
         conversation_id,
@@ -900,6 +921,21 @@ async def _run_orchestrated_turn(
             "verifier_verdict": trace.verifier_verdict,
             "subtask_count": len(worker_results),
         },
+    )
+    _schedule_post_turn_skills(
+        hass,
+        entry_id=entry_id,
+        conversation_id=conversation_id,
+        llm=llm,
+        backend=backend,
+        observer_backend=registry.backend_for(ModelRole.OBSERVER),
+        skills_config=skills_config,
+        trace=trace,
+        history=[],
+        matched_skills=_merge_learned_skills_for_post_turn(
+            matched_skills,
+            subtask_learned,
+        ),
     )
     record_turn(hass, entry_id, trace)
 
@@ -964,6 +1000,15 @@ async def _post_turn_skills(
     primary_learned = resolved_skills[0] if resolved_skills else None
 
     if primary_learned and skills_config.use_enabled:
+        repair_issues = detect_repairable_issues(trace, primary_learned)
+        if repair_issues:
+            meta_patch = {
+                "skill_repair": {
+                    "issue_kind": repair_issues[0].kind,
+                    "fields": repair_issues[0].fields or [],
+                }
+            }
+
         repair_result = await hass.async_add_executor_job(
             auto_repair_skill,
             hass,
@@ -978,13 +1023,14 @@ async def _post_turn_skills(
                 f"— {repair_result.reason}."
             )
             meta_patch = {
+                **(meta_patch or {}),
                 "skill_update": {
                     "title": repair_result.skill.title,
                     "from_version": repair_result.from_version,
                     "to_version": repair_result.skill.version,
                     "reason": repair_result.reason,
                     "revision_id": repair_result.revision_id,
-                }
+                },
             }
             update_agent_status(
                 hass,
@@ -1944,18 +1990,6 @@ async def run_agent(
             }
         )
         yield AgentDelta(meta=dict(turn_meta))
-        _schedule_post_turn_skills(
-            hass,
-            entry_id=entry_id,
-            llm=llm,
-            backend=backend,
-            observer_backend=role_registry.backend_for(ModelRole.OBSERVER),
-            skills_config=skills_config,
-            trace=trace,
-            history=history,
-            matched_skills=matched_skills,
-        )
-
         append_turn(
             hass,
             conversation_id,
@@ -1965,6 +1999,19 @@ async def run_agent(
             entry_id=entry_id,
             turn_meta=turn_meta,
         )
+        _schedule_post_turn_skills(
+            hass,
+            entry_id=entry_id,
+            conversation_id=conversation_id,
+            llm=llm,
+            backend=backend,
+            observer_backend=role_registry.backend_for(ModelRole.OBSERVER),
+            skills_config=skills_config,
+            trace=trace,
+            history=history,
+            matched_skills=matched_skills,
+        )
+
         record_turn(hass, entry_id, trace)
         return
 

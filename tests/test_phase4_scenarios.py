@@ -535,7 +535,7 @@ async def test_phase4_email_param_error_repairs_skill(tmp_path) -> None:
     )
 
     with patch.object(repair_mod, "mirror_skill_to_file"):
-        await agent_mod._post_turn_skills(
+        suffix, meta_patch = await agent_mod._post_turn_skills(
             hass,
             entry_id="phase4-entry",
             llm=MagicMock(),
@@ -551,6 +551,12 @@ async def test_phase4_email_param_error_repairs_skill(tmp_path) -> None:
             history=[],
             matched_skills=[skill],
         )
+
+    assert meta_patch is not None
+    assert meta_patch["skill_update"]["title"] == "Email Management"
+    assert meta_patch["skill_repair"]["issue_kind"] == "missing_param"
+    assert "mailbox" in meta_patch["skill_repair"]["fields"]
+    assert "Updated skill" in suffix
 
     updated = store.get_skill(skill.id)
     assert updated is not None

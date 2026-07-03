@@ -99,3 +99,38 @@ def test_conversation_history_for_turn_keeps_completed_turns() -> None:
     assert len(prior) == 2
     assert prior[0]["role"] == "user"
     assert prior[1]["role"] == "assistant"
+
+
+def test_patch_last_assistant_turn_merges_meta_and_suffix() -> None:
+    """Post-turn hooks can patch the latest assistant message in memory."""
+    hass = _hass()
+    conversation_id = "patch-test"
+    memory.append_turn(
+        hass,
+        conversation_id,
+        "check email",
+        "You have mail.",
+        max_turns=10,
+        turn_meta={"route": "email"},
+    )
+    patched = memory.patch_last_assistant_turn(
+        hass,
+        conversation_id,
+        meta_patch={
+            "skill_update": {
+                "title": "Email Management",
+                "from_version": 1,
+                "to_version": 2,
+                "reason": "added mailbox",
+            },
+            "skill_repair": {"issue_kind": "missing_param", "fields": ["mailbox"]},
+        },
+        content_suffix=" Updated skill: Email Management (v1→v2).",
+    )
+    assert patched is True
+    history = memory.get_history(hass, conversation_id, max_turns=10)
+    assistant = history[-1]
+    assert "Updated skill" in assistant["content"]
+    assert assistant["turn_meta"]["skill_update"]["to_version"] == 2
+    assert assistant["turn_meta"]["skill_repair"]["issue_kind"] == "missing_param"
+    assert assistant["turn_meta"]["route"] == "email"
