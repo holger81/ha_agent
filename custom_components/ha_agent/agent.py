@@ -338,6 +338,21 @@ def _preferred_loop_tool_names(skill_steps: list[dict[str, Any]] | None) -> list
     return names
 
 
+def _merge_learned_skills_for_post_turn(
+    matched_skills: list,
+    extra_learned: list | None = None,
+) -> list:
+    """Deduplicate learned skills for post-turn eval/repair."""
+    seen: set[str] = set()
+    merged: list = []
+    for skill in list(matched_skills) + list(extra_learned or []):
+        if skill.is_builtin or skill.id in seen:
+            continue
+        seen.add(skill.id)
+        merged.append(skill)
+    return merged
+
+
 def _schedule_post_turn_skills(
     hass: HomeAssistant,
     **kwargs: Any,
@@ -629,11 +644,13 @@ async def _run_orchestrated_turn(
     backend: LlmBackend,
     trace: TurnTrace,
     hint_rules: list[Any] | None,
+    matched_skills: list,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Execute a complex multi-subtask turn via worker subagents."""
     from .context import build_messages, build_system_message
 
     worker_results: list[WorkerResult] = []
+    subtask_learned: list = []
     pending_subtasks = list(orch_plan.subtasks)
     replans = 0
     structured = agent_config.structured_output_enabled
@@ -665,6 +682,11 @@ async def _run_orchestrated_turn(
                 history=[],
             )
             sub_skills = merge_route_and_learned_skills(route_skill, sub_skills)
+            for skill in sub_skills:
+                if not skill.is_builtin and skill.id not in {
+                    item.id for item in subtask_learned
+                }:
+                    subtask_learned.append(skill)
 
         worker_result: WorkerResult | None = None
         async for meta, result in run_worker(
@@ -774,7 +796,10 @@ async def _run_orchestrated_turn(
         skills_config=skills_config,
         trace=trace,
         history=[],
-        matched_skills=[],
+        matched_skills=_merge_learned_skills_for_post_turn(
+            matched_skills,
+            subtask_learned,
+        ),
     )
 
     append_turn(
@@ -809,6 +834,26 @@ async def _update_skill_status(hass: HomeAssistant, entry_id: str) -> None:
     )
 
 
+async def _resolve_post_turn_skills(
+    hass: HomeAssistant,
+    entry_id: str,
+    matched_skills: list,
+    trace: TurnTrace,
+) -> list:
+    """Resolve learned skills for post-turn hooks."""
+    learned = _merge_learned_skills_for_post_turn(matched_skills)
+    if learned:
+        return learned
+    if not trace.matched_learned_skill_ids:
+        return []
+    store = get_skill_store(hass, entry_id)
+
+    def _load() -> list:
+        return store.load_skills_by_ids(trace.matched_learned_skill_ids)
+
+    return await hass.async_add_executor_job(_load)
+
+
 async def _post_turn_skills(
     hass: HomeAssistant,
     *,
@@ -824,7 +869,13 @@ async def _post_turn_skills(
     """Run skill learning/evaluation hooks. Return suffix and optional meta patch."""
     suffix = ""
     meta_patch: dict[str, Any] | None = None
-    primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
+    resolved_skills = await _resolve_post_turn_skills(
+        hass,
+        entry_id,
+        matched_skills,
+        trace,
+    )
+    primary_learned = resolved_skills[0] if resolved_skills else None
 
     if primary_learned and skills_config.use_enabled:
         repair_result = await hass.async_add_executor_job(
@@ -1347,6 +1398,7 @@ async def run_agent(
             backend=backend,
             trace=trace,
             hint_rules=hint_rules,
+            matched_skills=matched_skills,
         ):
             yield handled
         return

@@ -155,6 +155,39 @@ def test_parse_observer_response_reads_update_parent() -> None:
     assert parsed.update_parent is True
 
 
+def test_parse_observer_response_parses_slots() -> None:
+    parsed = parse_observer_response(
+        json.dumps(
+            {
+                "learn": True,
+                "reason": "parameterized email workflow",
+                "title": "Email Management",
+                "description": "Check mailbox status.",
+                "triggers": ["check email"],
+                "body": "Call imap mailbox status.",
+                "tool_steps": [
+                    {
+                        "toolName": "mail_mcp__imap_mailbox_status",
+                        "arguments": {"mailbox": "{{mailbox}}"},
+                    }
+                ],
+                "slots": [
+                    {
+                        "name": "mailbox",
+                        "description": "IMAP folder",
+                        "source": "default",
+                        "default": "INBOX",
+                    }
+                ],
+            }
+        )
+    )
+    assert parsed is not None
+    assert parsed.draft is not None
+    assert any(slot.name == "mailbox" for slot in parsed.draft.slots)
+    assert parsed.draft.slots[0].default == "INBOX"
+
+
 def test_build_observer_payload_includes_override_fields() -> None:
     trace = TurnTrace(
         user_text="mark all emails read",

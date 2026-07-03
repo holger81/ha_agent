@@ -1007,17 +1007,23 @@ async def ws_activity_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_agent/threads/list",
-        **_entry_id_schema({vol.Optional("query"): str}),
+        **_entry_id_schema(
+            {
+                vol.Optional("query"): str,
+                vol.Optional("source"): vol.In(("assist", "console")),
+            }
+        ),
     }
 )
 @websocket_api.async_response
 async def ws_threads_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     query = (msg.get("query") or "").strip()
+    source = msg.get("source")
     if query:
-        threads = search_threads(hass, msg["entry_id"], query)
+        threads = search_threads(hass, msg["entry_id"], query, source=source)
     else:
-        threads = list_threads(hass, msg["entry_id"])
+        threads = list_threads(hass, msg["entry_id"], source=source)
     connection.send_message(
         websocket_api.result_message(msg["id"], {"threads": threads})
     )

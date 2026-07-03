@@ -71,7 +71,7 @@ All commands require an authenticated admin WebSocket connection. Pass `entry_id
 | `ha_agent/hacs/refresh` | Force HACS to refresh repository metadata from GitHub. |
 | `ha_agent/hacs/update` | Refresh (optional), then download/install when an update is available. |
 | `ha_agent/activity/list` | Paginated turn traces. |
-| `ha_agent/threads/list` | Conversation thread metadata; optional `query` searches titles and message history. |
+| `ha_agent/threads/list` | Conversation thread metadata; optional `query` searches titles and message history; optional `source` (`assist` or `console`) filters by origin. Assist chats are included from memory even before thread metadata exists. |
 | `ha_agent/threads/update` | Rename or pin a thread. |
 | `ha_agent/threads/delete` | Delete a thread, its history, and any pending skill draft. |
 

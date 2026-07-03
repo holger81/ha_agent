@@ -136,3 +136,56 @@ def test_build_fts_query_strips_stop_words() -> None:
     query = _build_fts_query("please turn on the dining room lights")
     assert "please" not in query
     assert "dining" in query
+
+
+def test_search_prefers_higher_scored_skill(store: SkillStore) -> None:
+    """Composite FTS ranking favors skills with better scores."""
+    low = store.insert_skill(
+        title="Email check low",
+        description="Check email inbox unread messages.",
+        triggers=["check email inbox"],
+        body="workflow",
+        tool_steps=[],
+    )
+    high = store.insert_skill(
+        title="Email check high",
+        description="Check email inbox unread messages.",
+        triggers=["check email inbox"],
+        body="workflow",
+        tool_steps=[],
+    )
+    low.score = 0.2
+    high.score = 0.95
+    store.update_skill(low)
+    store.update_skill(high)
+
+    matches = store.search("check email inbox", limit=5)
+    assert len(matches) >= 2
+    assert matches[0].id == high.id
+
+
+def test_revision_save_list_restore(store: SkillStore) -> None:
+    """Revision snapshots can be saved, listed, and restored."""
+    skill = store.insert_skill(
+        title="Revision test",
+        description="Original description.",
+        triggers=["revision test"],
+        body="original body",
+        tool_steps=[{"toolName": "tool_a"}],
+    )
+    revision_id = store.save_revision(skill, reason="before edit")
+    skill.description = "Updated description."
+    skill.body = "updated body"
+    skill.version += 1
+    store.update_skill(skill)
+
+    revisions = store.list_revisions(skill.id)
+    assert len(revisions) == 1
+    assert revisions[0].id == revision_id
+    assert revisions[0].reason == "before edit"
+
+    restored = store.restore_revision(revision_id)
+    assert restored is not None
+    assert restored.description == "Original description."
+    assert restored.body == "original body"
+    assert restored.version > skill.version

@@ -136,6 +136,27 @@ def append_turn(
 
     if entry_id:
         _maybe_persist(hass, entry_id)
+        _record_thread_metadata(hass, entry_id, conversation_id, user_text=user_text)
+
+
+@callback
+def _record_thread_metadata(
+    hass: HomeAssistant,
+    entry_id: str,
+    conversation_id: str,
+    *,
+    user_text: str,
+) -> None:
+    """Track Assist and console turns in the thread sidebar."""
+    from .threads import (
+        CONSOLE_CONVERSATION_PREFIX,
+        async_save_threads,
+        ensure_thread_from_turn,
+    )
+
+    ensure_thread_from_turn(hass, entry_id, conversation_id, user_text=user_text)
+    if not conversation_id.startswith(CONSOLE_CONVERSATION_PREFIX):
+        hass.async_create_task(async_save_threads(hass, entry_id))
 
 
 @callback

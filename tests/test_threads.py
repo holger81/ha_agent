@@ -110,6 +110,59 @@ def test_search_threads_matches_title_and_message() -> None:
     assert "milk" in message_hits[0]["snippet"].lower()
 
 
+def test_list_threads_includes_memory_only_assist_chats() -> None:
+    memory, threads = _load_threads_modules()
+    hass = MagicMock()
+    hass.data = {}
+    hass.config.path.return_value = "/config"
+    entry_id = "entry-1"
+
+    memory._memory_store(hass)["assist-conv-1"] = [
+        {"role": "user", "content": "turn on the patio lights"},
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    listed = threads.list_threads(hass, entry_id)
+    assert len(listed) == 1
+    assert listed[0]["conversation_id"] == "assist-conv-1"
+    assert listed[0]["source"] == "assist"
+    assert listed[0]["title"] == "turn on the patio lights"
+
+
+def test_list_threads_filters_by_source() -> None:
+    memory, threads = _load_threads_modules()
+    hass = MagicMock()
+    hass.data = {}
+    hass.config.path.return_value = "/config"
+    entry_id = "entry-1"
+
+    threads.upsert_thread(
+        hass,
+        entry_id,
+        "console-abc",
+        title="Panel chat",
+        source="console",
+    )
+    memory._memory_store(hass)["assist-xyz"] = [
+        {"role": "user", "content": "what is the weather"},
+        {"role": "assistant", "content": "Sunny."},
+    ]
+
+    assist_only = threads.list_threads(hass, entry_id, source="assist")
+    assert len(assist_only) == 1
+    assert assist_only[0]["conversation_id"] == "assist-xyz"
+
+    console_only = threads.list_threads(hass, entry_id, source="console")
+    assert len(console_only) == 1
+    assert console_only[0]["conversation_id"] == "console-abc"
+
+
+def test_conversation_source() -> None:
+    _, threads = _load_threads_modules()
+    assert threads.conversation_source("console-123") == "console"
+    assert threads.conversation_source("ha-assist-uuid") == "assist"
+
+
 @pytest.mark.asyncio
 async def test_async_delete_thread_removes_metadata_and_memory() -> None:
     memory, threads = _load_threads_modules()

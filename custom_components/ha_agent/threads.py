@@ -19,6 +19,57 @@ from .memory import (
 from .skills.runtime import pop_pending_draft
 
 THREADS_KEY = "conversation_threads"
+CONSOLE_CONVERSATION_PREFIX = "console-"
+
+
+def conversation_source(conversation_id: str) -> str:
+    """Return ``console`` or ``assist`` for a conversation id."""
+    if conversation_id.startswith(CONSOLE_CONVERSATION_PREFIX):
+        return "console"
+    return "assist"
+
+
+def _title_from_memory(
+    memory: dict[str, list[dict[str, Any]]],
+    conversation_id: str,
+) -> str | None:
+    """Infer a thread title from the first user message."""
+    for message in memory.get(conversation_id, []):
+        if message.get("role") != "user":
+            continue
+        content = str(message.get("content") or "").strip()
+        if content:
+            return content[:48]
+    return None
+
+
+def _thread_item(
+    conversation_id: str,
+    meta: dict[str, Any],
+    *,
+    memory: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Build a thread list row with inferred title and source."""
+    item = {"conversation_id": conversation_id, **meta}
+    title = str(item.get("title") or "").strip()
+    if not title or title == conversation_id[:8]:
+        inferred = _title_from_memory(memory, conversation_id)
+        if inferred:
+            item["title"] = inferred
+    item.setdefault("title", conversation_id[:8])
+    item.setdefault("pinned", False)
+    item.setdefault("updated_at", 0)
+    item.setdefault("source", conversation_source(conversation_id))
+    return item
+
+
+def _filter_threads_by_source(
+    threads: list[dict[str, Any]],
+    source: str | None,
+) -> list[dict[str, Any]]:
+    if not source:
+        return threads
+    return [item for item in threads if item.get("source") == source]
 
 
 def _threads_path(hass: HomeAssistant, entry_id: str) -> Path:
@@ -48,6 +99,7 @@ def upsert_thread(
     *,
     title: str | None = None,
     pinned: bool | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     """Create or update thread metadata."""
     threads = get_threads(hass, entry_id)
@@ -56,21 +108,59 @@ def upsert_thread(
         current["title"] = title
     if pinned is not None:
         current["pinned"] = pinned
+    if source is not None:
+        current["source"] = source
     current["updated_at"] = time.time()
     current.setdefault("title", conversation_id[:8])
     current.setdefault("pinned", False)
+    current.setdefault("source", conversation_source(conversation_id))
     threads[conversation_id] = current
     return current
 
 
 @callback
-def list_threads(hass: HomeAssistant, entry_id: str) -> list[dict[str, Any]]:
-    """Return thread list with conversation_id included."""
+def ensure_thread_from_turn(
+    hass: HomeAssistant,
+    entry_id: str,
+    conversation_id: str | None,
+    *,
+    user_text: str,
+) -> bool:
+    """Ensure thread metadata exists after a completed turn."""
+    if not conversation_id or not entry_id:
+        return False
     threads = get_threads(hass, entry_id)
+    created = conversation_id not in threads
+    upsert_thread(
+        hass,
+        entry_id,
+        conversation_id,
+        title=user_text[:48] if created and user_text.strip() else None,
+        source=conversation_source(conversation_id),
+    )
+    return created
+
+
+@callback
+def list_threads(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    source: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return thread list with conversation_id included."""
+    threads_map = get_threads(hass, entry_id)
+    memory = _memory_store(hass)
+    conversation_ids = set(threads_map) | set(memory)
     result = [
-        {"conversation_id": cid, **meta}
-        for cid, meta in threads.items()
+        _thread_item(
+            conversation_id,
+            dict(threads_map.get(conversation_id, {})),
+            memory=memory,
+        )
+        for conversation_id in conversation_ids
     ]
+    result = _filter_threads_by_source(result, source)
     result.sort(
         key=lambda item: (
             not item.get("pinned", False),
@@ -102,11 +192,13 @@ def search_threads(
     hass: HomeAssistant,
     entry_id: str,
     query: str,
+    *,
+    source: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return threads whose title or message history matches the query."""
     needle = query.strip().lower()
     if not needle:
-        return list_threads(hass, entry_id)
+        return list_threads(hass, entry_id, source=source)
 
     threads_map = get_threads(hass, entry_id)
     memory = _memory_store(hass)
@@ -115,13 +207,10 @@ def search_threads(
     results: list[dict[str, Any]] = []
     for conversation_id in conversation_ids:
         meta = threads_map.get(conversation_id, {})
-        title = str(meta.get("title") or conversation_id[:8])
-        item: dict[str, Any] = {
-            "conversation_id": conversation_id,
-            "title": title,
-            "pinned": bool(meta.get("pinned", False)),
-            "updated_at": meta.get("updated_at") or 0,
-        }
+        item = _thread_item(conversation_id, dict(meta), memory=memory)
+        if source and item.get("source") != source:
+            continue
+        title = str(item.get("title") or conversation_id[:8])
         if needle in title.lower():
             item["match_in"] = "title"
             results.append(item)

@@ -130,6 +130,7 @@ def start_chat(
             entry_id,
             conversation_id,
             title=text[:48] if text else None,
+            source="console",
         )
         await async_save_threads(hass, entry_id)
 

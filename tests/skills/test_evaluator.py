@@ -84,3 +84,56 @@ def test_build_run_result_with_tool_error() -> None:
     )
     result = build_run_result(skill.id, trace, skill)
     assert result.succeeded is False
+
+
+def test_build_run_result_penalizes_discovery_with_concrete_skill() -> None:
+    """Discovery calls when the skill lists concrete steps count as not followed."""
+    skill = Skill(
+        id="1",
+        slug="email",
+        title="Email",
+        description="Email workflow.",
+        triggers=["email"],
+        body="Search then fetch.",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+    )
+    trace = TurnTrace(
+        user_text="read email",
+        history_len=0,
+        tool_calls=[
+            {"toolName": "searchToolsForDomain", "arguments": {}},
+        ],
+        assistant_text="Done.",
+        iterations=1,
+        verifier_verdict="pass",
+    )
+    result = build_run_result(skill.id, trace, skill)
+    assert result.followed_steps is False
+    assert result.succeeded is False
+
+
+def test_build_run_result_penalizes_skill_not_followed() -> None:
+    """Verifier skill_followed=False marks the run as failed."""
+    skill = Skill(
+        id="1",
+        slug="test",
+        title="Test",
+        description="Test.",
+        triggers=["test"],
+        body="body",
+        tool_steps=[{"toolName": "callTool"}],
+    )
+    trace = TurnTrace(
+        user_text="test",
+        history_len=0,
+        tool_calls=[{"toolName": "callTool", "arguments": {}}],
+        assistant_text="Done.",
+        iterations=1,
+        verifier_verdict="pass",
+        skill_followed=False,
+    )
+    result = build_run_result(skill.id, trace, skill)
+    assert result.succeeded is False

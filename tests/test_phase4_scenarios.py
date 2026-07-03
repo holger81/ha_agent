@@ -83,6 +83,9 @@ def _load_skills_modules() -> None:
         "creator",
         "evaluator",
         "commands",
+        "defaults",
+        "repair",
+        "files",
     ):
         mod_name = f"ha_agent.skills.{name}"
         if mod_name in sys.modules:
@@ -97,6 +100,8 @@ def _load_skills_modules() -> None:
 
 def _load_module(name: str):
     module_name = f"ha_agent.{name}"
+    if name == "agent":
+        _load_skills_modules()
     if module_name in sys.modules:
         return sys.modules[module_name]
 
@@ -480,3 +485,101 @@ async def test_phase4_conversation_memory_across_turns() -> None:
     assert "what is the weather" in contents
     assert "Sunny today." in contents
     assert second_messages[-1]["content"] == "and tomorrow"
+
+
+def _skill_store(tmp_path: Path):
+    store_mod = sys.modules["ha_agent.skills.store"]
+    store = store_mod.SkillStore(tmp_path / "skills.db")
+    store.connect()
+    return store
+
+
+@pytest.mark.asyncio
+async def test_phase4_email_param_error_repairs_skill(tmp_path) -> None:
+    """Mailbox param errors during email skill use trigger auto-repair."""
+    from unittest.mock import patch
+
+    _load_skills_modules()
+    store = _skill_store(tmp_path)
+    models_mod = sys.modules["ha_agent.skills.models"]
+    repair_mod = sys.modules["ha_agent.skills.repair"]
+    repair_mod._last_repair_at.clear()
+
+    skill = store.insert_skill(
+        title="Email Management",
+        description="Check email inbox.",
+        triggers=["check email", "any new emails"],
+        body="Check mailbox status.",
+        tool_steps=[{"toolName": "mail_mcp__imap_mailbox_status"}],
+        route_scope="email",
+    )
+    hass = _hass()
+    hass.data = {"ha_agent": {"skill_stores": {"phase4-entry": store}}}
+
+    trace = models_mod.TurnTrace(
+        user_text="any new emails?",
+        history_len=0,
+        route="email",
+        tool_calls=[
+            {
+                "toolName": "mail_mcp__imap_mailbox_status",
+                "arguments": {},
+                "succeeded": False,
+                "error_kind": "param",
+                "missing_fields": ["mailbox"],
+                "error": "Tool error: missing field 'mailbox'",
+            }
+        ],
+        assistant_text="You have 2 unread emails.",
+        iterations=2,
+    )
+
+    with patch.object(repair_mod, "mirror_skill_to_file"):
+        await agent_mod._post_turn_skills(
+            hass,
+            entry_id="phase4-entry",
+            llm=MagicMock(),
+            backend=_backend(),
+            observer_backend=_backend(),
+            skills_config=config_helpers.SkillsConfig(
+                learning_enabled=False,
+                auto_save=False,
+                use_enabled=True,
+                max_inject=3,
+            ),
+            trace=trace,
+            history=[],
+            matched_skills=[skill],
+        )
+
+    updated = store.get_skill(skill.id)
+    assert updated is not None
+    assert updated.version > 1
+    assert any(
+        (step.get("arguments") or {}).get("mailbox") == "{{mailbox}}"
+        for step in updated.tool_steps
+    )
+
+
+def test_merge_learned_skills_for_post_turn_deduplicates() -> None:
+    """Orchestrated and top-level learned skills merge without duplicates."""
+    models_mod = sys.modules["ha_agent.skills.models"]
+    Skill = models_mod.Skill
+
+    def _skill(skill_id: str, *, builtin: bool = False) -> Skill:
+        return Skill(
+            id=skill_id,
+            slug=skill_id,
+            title=skill_id,
+            description="desc",
+            triggers=["t"],
+            body="body",
+            tool_steps=[],
+            is_builtin=builtin,
+        )
+
+    merged = agent_mod._merge_learned_skills_for_post_turn(
+        [_skill("builtin", builtin=True), _skill("learned-a")],
+        [_skill("learned-a"), _skill("learned-b")],
+    )
+    assert [item.id for item in merged] == ["learned-a", "learned-b"]

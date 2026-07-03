@@ -26,6 +26,7 @@ class HaAgentPanel extends HTMLElement {
     this._chatRenderPending = false;
     this._streamPatchPending = false;
     this._threadSearch = "";
+    this._threadSourceFilter = "all";
     this._threadSearchTimer = null;
     this._messagesScrollEl = null;
     this._messagesInteractEl = null;
@@ -1215,12 +1216,33 @@ class HaAgentPanel extends HTMLElement {
     }, 250);
   }
 
+  _conversationSource(conversationId) {
+    return String(conversationId || "").startsWith("console-") ? "console" : "assist";
+  }
+
+  _threadSourceLabel(source) {
+    return source === "assist" ? "Assist" : "Console";
+  }
+
+  async _openChatFromActivity(conversationId) {
+    if (!conversationId || this._streaming || !this._entryId) return;
+    this._tab = "chat";
+    this._conversationId = conversationId;
+    this._stickToBottom = true;
+    this._pendingDraft = null;
+    await Promise.all([this._loadHistory(), this._loadPendingDraft()]);
+    this._render();
+  }
+
   async _loadThreads(query = this._threadSearch) {
     if (!this._entryId) return;
     const payload = { entry_id: this._entryId };
     const trimmed = String(query || "").trim();
     if (trimmed) {
       payload.query = trimmed;
+    }
+    if (this._threadSourceFilter === "assist" || this._threadSourceFilter === "console") {
+      payload.source = this._threadSourceFilter;
     }
     try {
       const data = await this._call("ha_agent/threads/list", payload);
@@ -2111,6 +2133,41 @@ class HaAgentPanel extends HTMLElement {
         opacity: 0.65;
         margin: 0;
       }
+      .thread-source-filters {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .thread-source-filters button {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.78rem;
+        padding: 6px 8px;
+      }
+      .thread-source-filters button.active {
+        border-color: var(--primary-color);
+        background: color-mix(in srgb, var(--primary-color) 18%, transparent);
+      }
+      .thread-source-badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        vertical-align: middle;
+        opacity: 0.85;
+      }
+      .thread-source-badge.assist {
+        background: color-mix(in srgb, var(--info-color, #03a9f4) 22%, transparent);
+        color: var(--info-color, #03a9f4);
+      }
+      .thread-source-badge.console {
+        background: color-mix(in srgb, var(--primary-color) 22%, transparent);
+        color: var(--primary-color);
+      }
       .thread {
         padding: 8px 10px;
         border-radius: 8px;
@@ -2639,11 +2696,14 @@ class HaAgentPanel extends HTMLElement {
         const snippet = t.snippet
           ? `<span class="thread-snippet">${this._escape(t.snippet)}</span>`
           : "";
+        const source = t.source || this._conversationSource(t.conversation_id);
+        const sourceBadge =
+          `<span class="thread-source-badge ${source}">${this._threadSourceLabel(source)}</span>`;
         return `
       <div class="thread-row">
         <div class="thread ${t.conversation_id === this._conversationId ? "active" : ""}"
              data-thread="${t.conversation_id}">
-          <div class="thread-title">${t.pinned ? "📌 " : ""}${this._escape(t.title || t.conversation_id)}</div>
+          <div class="thread-title">${t.pinned ? "📌 " : ""}${this._escape(t.title || t.conversation_id)}${sourceBadge}</div>
           ${snippet}
         </div>
         <button class="thread-delete" data-delete-thread="${t.conversation_id}" title="Delete chat" ${this._streaming ? "disabled" : ""}>×</button>
@@ -2667,12 +2727,25 @@ class HaAgentPanel extends HTMLElement {
 
     const emptyThreads = this._threadSearch.trim()
       ? "No chats match your search."
-      : "No chats yet";
+      : this._threadSourceFilter === "assist"
+        ? "No Assist chats yet."
+        : this._threadSourceFilter === "console"
+          ? "No console chats yet."
+          : "No chats yet";
+
+    const sourceFilters = ["all", "assist", "console"]
+      .map((value) => {
+        const label = value === "all" ? "All" : this._threadSourceLabel(value);
+        const active = this._threadSourceFilter === value ? "active" : "";
+        return `<button type="button" class="${active}" data-thread-source="${value}" ${this._streaming ? "disabled" : ""}>${label}</button>`;
+      })
+      .join("");
 
     return `
       <div class="chat-layout">
         <div class="thread-sidebar ${this._narrow ? "hidden" : ""}">
           <p class="thread-list-title">Chats</p>
+          <div class="thread-source-filters">${sourceFilters}</div>
           <button data-action="new-thread" ${this._streaming ? "disabled" : ""}>New chat</button>
           <input
             id="thread-search"
@@ -3433,9 +3506,14 @@ class HaAgentPanel extends HTMLElement {
           t.timestamp && promotable
             ? `<button data-action="activity-promote" data-timestamp="${t.timestamp}">Promote</button>`
             : "—";
+        const source = this._conversationSource(t.conversation_id);
+        const openChatBtn = t.conversation_id
+          ? `<button data-action="activity-open-chat" data-conversation-id="${this._escape(t.conversation_id)}">Open</button>`
+          : "—";
         return `
       <tr title="${this._escape(title)}">
         <td>${t.timestamp ? new Date(t.timestamp * 1000).toLocaleString() : "—"}</td>
+        <td><span class="thread-source-badge ${source}">${this._threadSourceLabel(source)}</span></td>
         <td>${this._escape(t.route || "—")}</td>
         <td>${this._escape(t.user_text || "")}</td>
         <td>${this._escape(t.outcome || "—")}</td>
@@ -3443,6 +3521,7 @@ class HaAgentPanel extends HTMLElement {
         <td>${(t.tool_calls || []).length}</td>
         <td>${(t.llm_calls || []).length}</td>
         <td>${t.tool_errors || 0}</td>
+        <td>${openChatBtn}</td>
         <td>${promoteBtn}</td>
       </tr>`;
       })
@@ -3453,9 +3532,10 @@ class HaAgentPanel extends HTMLElement {
     return `
       ${notice}
       <table>
-        <thead><tr><th>Time</th><th>Route</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>LLM</th><th>Errors</th><th>Eval</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="9">No activity yet.</td></tr>'}</tbody>
+        <thead><tr><th>Time</th><th>Source</th><th>Route</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>LLM</th><th>Errors</th><th>Chat</th><th>Eval</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="11">No activity yet.</td></tr>'}</tbody>
       </table>
+      <p class="activity-hint">Open Assist or console chats from Activity. Assist conversations also appear in the Chats sidebar after each voice/text turn.</p>
       <p class="activity-hint">Promote successful turns to custom eval cases. They run with the built-in suite on the next eval (mock MCP, same scoring).</p>`;
   }
 
@@ -3663,6 +3743,13 @@ class HaAgentPanel extends HTMLElement {
         const raw = button.getAttribute("data-timestamp");
         if (!raw) return;
         await this._promoteActivityTurn(Number(raw));
+      });
+    });
+    this.shadowRoot.querySelectorAll('[data-action="activity-open-chat"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        const conversationId = button.getAttribute("data-conversation-id");
+        if (!conversationId) return;
+        await this._openChatFromActivity(conversationId);
       });
     });
   }
@@ -4144,6 +4231,17 @@ class HaAgentPanel extends HTMLElement {
 
     this.shadowRoot.querySelector("#thread-search")?.addEventListener("input", (ev) => {
       this._onThreadSearchInput(ev.target.value);
+    });
+
+    this.shadowRoot.querySelectorAll("[data-thread-source]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        if (this._streaming) return;
+        const next = el.getAttribute("data-thread-source") || "all";
+        if (next === this._threadSourceFilter) return;
+        this._threadSourceFilter = next;
+        await this._loadThreads();
+        this._render();
+      });
     });
 
     this.shadowRoot.querySelectorAll("[data-delete-thread]").forEach((el) => {
