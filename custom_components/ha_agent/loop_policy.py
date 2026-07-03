@@ -693,9 +693,14 @@ def inject_loop_context(
         loop_state.pending_failure_summary = None
     if not parts:
         return
-    messages.append(
-        {"role": INTERNAL_GUIDANCE_ROLE, "content": "\n\n".join(parts)}
-    )
+    entry = {
+        "role": INTERNAL_GUIDANCE_ROLE,
+        "content": "\n\n".join(parts),
+    }
+    if messages and messages[-1].get("role") == "user":
+        messages.insert(len(messages) - 1, entry)
+    else:
+        messages.append(entry)
 
 
 def extract_mcp_guidance(tool_name: str, output: str) -> list[str]:

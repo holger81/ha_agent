@@ -325,17 +325,21 @@ def test_build_plan_progress_summary_shows_omitted_steps() -> None:
 
 
 def test_inject_loop_context_includes_plan_on_first_step() -> None:
-    """Plan progress is injected even before the first model call."""
+    """Plan progress is injected before the trailing user turn when present."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     policy.initialize_loop_plan(state, goal="check inbox", route="email")
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "check inbox"},
+    ]
 
     policy.inject_loop_context(messages, state)
 
-    assert len(messages) == 1
-    assert "AGENT PLAN PROGRESS" in messages[0]["content"]
-    assert "Execute step 1" in messages[0]["content"]
+    assert len(messages) == 3
+    assert messages[-1]["content"] == "check inbox"
+    assert "AGENT PLAN PROGRESS" in messages[-2]["content"]
+    assert "Execute step 1" in messages[-2]["content"]
 
 
 def test_should_retry_empty_response_caps_attempts() -> None:
