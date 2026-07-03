@@ -34,7 +34,9 @@ from .loop_policy import (
     TurnOutcome,
     analyze_imap_search_result,
     build_empty_response_nudge,
+    build_mcp_tool_adherence_hint,
     build_pending_failure_summary,
+    cache_mcp_tools_from_schemas,
     check_stuck,
     finalize_output,
     initialize_loop_plan,
@@ -456,8 +458,15 @@ def _handle_tool_result(
                         line.strip(),
                     )
                     break
-    else:
+    elif phase == "error":
         record_iteration_failure(loop_state, tool_name, arguments, output)
+        hint = build_mcp_tool_adherence_hint(
+            loop_state,
+            tool_name,
+            lead_in="Previous tool call failed.",
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
     record_pagination_state(loop_state, tool_name, output, arguments)
     record_plan_tool_result(
         loop_state,
@@ -1530,6 +1539,7 @@ async def run_agent(
         skill_title=matched_skills[0].title if matched_skills else "",
         slot_bindings=slot_bindings or None,
     )
+    cache_mcp_tools_from_schemas(loop_state, llm_tools)
     if user_requests_skill_override(user_text):
         suspend_skill_plan(
             loop_state,

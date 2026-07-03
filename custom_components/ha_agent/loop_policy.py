@@ -55,6 +55,7 @@ class LoopState:
     preserve_stream_ui: bool = False
     last_draft_answer: str = ""
     override_block_count: int = 0
+    mcp_tool_catalog: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 # Role used for internal/system-injected guidance (plan progress, failure
@@ -544,8 +545,8 @@ _EXPLORATION_GUIDANCE = (
 )
 _ROUTE_EXPLORATION_HINTS: dict[str, str] = {
     "email": (
-        "Email goals often need imap_search_messages for unread UIDs, then "
-        "imap_bulk_update_flags or imap_mark_read to change flags."
+        "Discover MCP tools for the goal, then adhere strictly to each tool's "
+        "MCP description and serverLlmContext when calling it."
     ),
 }
 _OVERRIDE_EXPLORATION_PLANS: dict[str, list[dict[str, Any]]] = {
@@ -716,6 +717,167 @@ def redundant_override_tool_block(
     return None
 
 
+def _catalog_tool_key(tool_name: str) -> str:
+    return tool_name.strip()
+
+
+def _lookup_catalog_entry(
+    loop_state: LoopState,
+    tool_name: str,
+) -> dict[str, str]:
+    key = _catalog_tool_key(tool_name)
+    if key in loop_state.mcp_tool_catalog:
+        return loop_state.mcp_tool_catalog[key]
+    for stored, entry in loop_state.mcp_tool_catalog.items():
+        if _tool_names_match(stored, tool_name):
+            return entry
+    return {}
+
+
+def _parameters_summary(schema: dict[str, Any]) -> str:
+    if not isinstance(schema, dict):
+        return ""
+    lines: list[str] = []
+    required = schema.get("required")
+    props = schema.get("properties")
+    if isinstance(required, list) and required:
+        lines.append("Required: " + ", ".join(str(name) for name in required))
+    if isinstance(props, dict):
+        keys = list(required) if isinstance(required, list) else list(props.keys())
+        for name in keys[:10]:
+            prop = props.get(name)
+            if not isinstance(prop, dict):
+                continue
+            desc = prop.get("description")
+            if isinstance(desc, str) and desc.strip():
+                lines.append(f"- {name}: {desc.strip()[:160]}")
+    return "\n".join(lines)
+
+
+def cache_mcp_tool_catalog_entry(
+    loop_state: LoopState,
+    tool_name: str,
+    *,
+    description: str = "",
+    server_llm_context: str = "",
+    parameters: str = "",
+) -> None:
+    """Store MCP metadata for one tool so later guidance can cite it."""
+    key = _catalog_tool_key(tool_name)
+    if not key:
+        return
+    entry = dict(loop_state.mcp_tool_catalog.get(key, {}))
+    if description.strip():
+        entry["description"] = description.strip()[:800]
+    if server_llm_context.strip():
+        entry["serverLlmContext"] = server_llm_context.strip()[:_MAX_MCP_GUIDANCE_CHARS]
+    if parameters.strip():
+        entry["parameters"] = parameters.strip()[:800]
+    loop_state.mcp_tool_catalog[key] = entry
+
+
+def cache_mcp_tools_from_schemas(
+    loop_state: LoopState,
+    llm_tools: list[dict[str, Any]],
+) -> None:
+    """Seed the MCP tool catalog from session tools passed to the LLM."""
+    for tool in llm_tools:
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        params = function.get("parameters")
+        cache_mcp_tool_catalog_entry(
+            loop_state,
+            name,
+            description=str(function.get("description") or ""),
+            parameters=_parameters_summary(params if isinstance(params, dict) else {}),
+        )
+
+
+def _discovery_tool_entries(output: str) -> list[dict[str, Any]]:
+    if output.startswith("Tool error:"):
+        return []
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        for key in ("tools", "results", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        if data.get("toolName") or data.get("name"):
+            return [data]
+    return []
+
+
+def cache_discovery_tool_catalog(loop_state: LoopState, output: str) -> None:
+    """Cache description and serverLlmContext from discovery tool output."""
+    for entry in _discovery_tool_entries(output):
+        name = entry.get("toolName") or entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        schema = entry.get("inputSchema")
+        cache_mcp_tool_catalog_entry(
+            loop_state,
+            name,
+            description=str(entry.get("description") or ""),
+            server_llm_context=str(entry.get("serverLlmContext") or ""),
+            parameters=_parameters_summary(schema if isinstance(schema, dict) else {}),
+        )
+
+
+def build_mcp_tool_adherence_hint(
+    loop_state: LoopState,
+    tool_name: str,
+    *,
+    lead_in: str = "",
+) -> str:
+    """Build guidance that cites MCP metadata instead of hard-coded arguments."""
+    entry = _lookup_catalog_entry(loop_state, tool_name)
+    parts: list[str] = []
+    if lead_in.strip():
+        parts.append(lead_in.strip())
+    parts.append(f"Adhere strictly to the MCP tool definition for `{tool_name}`:")
+    if entry.get("description"):
+        parts.append(entry["description"])
+    if entry.get("serverLlmContext"):
+        parts.append(entry["serverLlmContext"])
+    if entry.get("parameters"):
+        parts.append(entry["parameters"])
+    if len(parts) == 1:
+        parts.append(
+            "Discover this tool with searchTool or searchToolsForDomain to load "
+            "its MCP description, required parameters, and serverLlmContext "
+            "before calling it."
+        )
+    return "\n".join(parts)
+
+
+def _next_plan_tool_name(loop_state: LoopState) -> str | None:
+    next_index = _next_incomplete_plan_step(loop_state)
+    if next_index is None or next_index >= len(loop_state.plan_steps):
+        return None
+    name = loop_state.plan_steps[next_index].get("toolName")
+    return str(name).strip() if name else None
+
+
+def _inject_next_tool_adherence(loop_state: LoopState, *, lead_in: str) -> None:
+    next_tool = _next_plan_tool_name(loop_state)
+    if not next_tool:
+        hint = f"{lead_in} If the goal is already satisfied, answer the user now."
+        loop_state.mcp_guidance.insert(0, hint)
+        return
+    hint = build_mcp_tool_adherence_hint(loop_state, next_tool, lead_in=lead_in)
+    if hint not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(0, hint)
+
+
 def record_override_block_guidance(
     loop_state: LoopState,
     tool_name: str,
@@ -739,15 +901,26 @@ def record_override_block_guidance(
         loop_state.mcp_guidance.insert(0, hint)
 
 
-def analyze_imap_search_result(
+    if hint not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(0, hint)
+    next_tool = _next_plan_tool_name(loop_state)
+    if next_tool:
+        adherence = build_mcp_tool_adherence_hint(
+            loop_state,
+            next_tool,
+            lead_in="Required next plan tool:",
+        )
+        if adherence not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, adherence)
+
+
+def analyze_search_tool_result(
     loop_state: LoopState,
     tool_name: str,
     output: str,
     arguments: dict[str, Any],
 ) -> None:
-    """Interpret IMAP search output so the loop does not spin on \\Seen results."""
-    if "search_messages" not in tool_name.lower():
-        return
+    """Summarize list/search tool output and point at MCP metadata for the next step."""
     if output.startswith("Tool error:"):
         return
     data = _parse_tool_result_json(output)
@@ -755,20 +928,22 @@ def analyze_imap_search_result(
         return
 
     entries = data.get("messages") or data.get("items") or data.get("results") or []
-    if not isinstance(entries, list) or not entries:
-        if _coerce_bool(arguments.get("unread_only")):
-            loop_state.mcp_guidance.insert(
-                0,
-                (
-                    "SEARCH RESULT: no messages returned with unread_only=true. "
-                    "Tell the user there are no unread emails in INBOX. "
-                    "SKIP bulk_update/mark_read and answer now."
-                ),
-            )
+    if not isinstance(entries, list):
         return
 
-    unread_uids: list[str] = []
-    seen_only = 0
+    filtered = _coerce_bool(
+        arguments.get("unread_only") or arguments.get("unreadOnly")
+    )
+    has_more = _coerce_bool(data.get("hasMore") or data.get("has_more"))
+
+    if not entries:
+        summary = "SEARCH RESULT: the query returned no items."
+        if filtered:
+            summary += " Filters still apply to any follow-up search or update call."
+        _inject_next_tool_adherence(loop_state, lead_in=summary)
+        return
+
+    already_handled = 0
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -780,54 +955,37 @@ def analyze_imap_search_result(
         else:
             flag_text = ""
         if "\\Seen" in flag_text or r"\Seen" in flag_text:
-            seen_only += 1
-            continue
-        uid = entry.get("uid") or entry.get("UID") or entry.get("message_id")
-        if uid is not None:
-            unread_uids.append(str(uid))
+            already_handled += 1
 
-    unread_only = _coerce_bool(arguments.get("unread_only"))
-    has_more = _coerce_bool(data.get("hasMore") or data.get("has_more"))
-    loop_state.mcp_guidance = [
-        hint
-        for hint in loop_state.mcp_guidance
-        if "Unread messages are available from the search result" not in hint
-    ]
-
-    if unread_only and not unread_uids and seen_only == len(entries):
+    pending = len(entries) - already_handled
+    summary = (
+        f"SEARCH RESULT: returned {len(entries)} item(s)"
+        f"{f' with {pending} not yet marked read' if pending else ''}."
+    )
+    if filtered and not pending and already_handled == len(entries):
         if has_more:
-            loop_state.mcp_guidance.insert(
-                0,
-                (
-                    "SEARCH RESULT: unread_only=true but this page only contains "
-                    "already-read (\\Seen) messages. Paginate with offset/limit "
-                    "from the search metadata if more pages exist. Do not repeat "
-                    "the same search without pagination."
-                ),
+            summary += (
+                " This page only contains already-processed items; paginate using "
+                "metadata from the tool result if more pages exist."
             )
-            return
-        loop_state.mcp_guidance.insert(
-            0,
-            (
-                "SEARCH RESULT: unread_only=true and all returned messages are "
-                "already read. There are no unread emails to mark. SKIP "
-                "bulk_update/mark_read and tell the user the inbox has no "
-                "unread mail."
-            ),
-        )
-        return
+        else:
+            summary += " No remaining items match the active filters on this page."
+    elif has_more:
+        summary += " More pages are available per the tool result metadata."
 
-    if unread_uids and loop_state.override_intent == "mark_read":
-        preview = ", ".join(unread_uids[:12])
-        suffix = f" (+{len(unread_uids) - 12} more)" if len(unread_uids) > 12 else ""
-        loop_state.mcp_guidance.insert(
-            0,
-            (
-                f"SEARCH RESULT: found {len(unread_uids)} unread message(s). Call "
-                "mail_mcp__imap_bulk_update_flags with mailbox INBOX and UIDs "
-                f"{preview}{suffix} to set \\Seen. Do not search again."
-            ),
-        )
+    _inject_next_tool_adherence(loop_state, lead_in=summary)
+
+
+def analyze_imap_search_result(
+    loop_state: LoopState,
+    tool_name: str,
+    output: str,
+    arguments: dict[str, Any],
+) -> None:
+    """Backward-compatible alias for search/list tool analysis."""
+    if "search" not in tool_name.lower() and "list" not in tool_name.lower():
+        return
+    analyze_search_tool_result(loop_state, tool_name, output, arguments)
 
 
 def guide_after_override_tool_result(
@@ -839,17 +997,26 @@ def guide_after_override_tool_result(
     """Inject next-step hints after successful override-plan tool calls."""
     if not loop_state.skill_plan_override or not succeeded:
         return
-    lowered = tool_name.lower()
-    if loop_state.override_intent == "mark_read" and (
-        "bulk_update" in lowered or "mark_read" in lowered
+    if loop_state.plan_steps and loop_state.plan_step_statuses and all(
+        status in _PLAN_TERMINAL_STATUSES for status in loop_state.plan_step_statuses
     ):
         loop_state.mcp_guidance.insert(
             0,
             (
-                "Flag update completed. STOP calling tools and tell the user "
-                "how many messages were marked read based on the tool result."
+                "Plan steps are complete. STOP calling tools and answer the user "
+                "using prior tool results."
             ),
         )
+        return
+    next_tool = _next_plan_tool_name(loop_state)
+    if next_tool:
+        hint = build_mcp_tool_adherence_hint(
+            loop_state,
+            next_tool,
+            lead_in="Previous plan step succeeded.",
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
 
 
 def initialize_loop_plan(
@@ -1127,6 +1294,7 @@ def record_mcp_guidance(
     output: str,
 ) -> None:
     """Stash discovery guidance for injection into the next loop step."""
+    cache_discovery_tool_catalog(loop_state, output)
     for hint in extract_mcp_guidance(tool_name, output):
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.append(hint)

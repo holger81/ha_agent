@@ -816,12 +816,57 @@ def test_record_override_block_guidance_injects_next_action() -> None:
     assert any("bulk_update_flags" in hint for hint in state.mcp_guidance)
 
 
+def test_build_mcp_tool_adherence_hint_uses_catalog() -> None:
+    """Next-step guidance cites cached MCP metadata instead of hard-coded args."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.cache_mcp_tool_catalog_entry(
+        state,
+        "mail_mcp__imap_bulk_update_flags",
+        description="Bulk update message flags.",
+        server_llm_context="Pass message_ids from search results.",
+        parameters="Required: mailbox, message_ids, flags",
+    )
+
+    hint = policy.build_mcp_tool_adherence_hint(
+        state,
+        "mail_mcp__imap_bulk_update_flags",
+        lead_in="Next plan step:",
+    )
+
+    assert "Adhere strictly to the MCP tool definition" in hint
+    assert "Bulk update message flags." in hint
+    assert "message_ids" in hint
+    assert "UIDs" not in hint
+
+
 def test_analyze_imap_search_result_all_seen_skips_mark_read() -> None:
-    """All \\Seen results with unread_only tell the agent to answer, not mark."""
+    """All \\Seen results produce factual summary and MCP adherence for next step."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
     state.override_intent = "mark_read"
+    policy.initialize_loop_plan(
+        state,
+        goal=state.plan_goal,
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_bulk_update_flags"},
+        ],
+    )
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+    policy.cache_mcp_tool_catalog_entry(
+        state,
+        "mail_mcp__imap_bulk_update_flags",
+        description="Update flags for message_ids.",
+        parameters="Required: mailbox, message_ids, flags",
+    )
     output = json.dumps(
         {
             "messages": [
@@ -839,15 +884,37 @@ def test_analyze_imap_search_result_all_seen_skips_mark_read() -> None:
         {"mailbox": "INBOX", "unread_only": True},
     )
 
-    assert any("no unread emails" in hint.lower() for hint in state.mcp_guidance)
-    assert any("SKIP" in hint for hint in state.mcp_guidance)
+    assert any("SEARCH RESULT" in hint for hint in state.mcp_guidance)
+    assert any("Adhere strictly" in hint for hint in state.mcp_guidance)
+    assert any("message_ids" in hint for hint in state.mcp_guidance)
+    assert not any("UIDs" in hint for hint in state.mcp_guidance)
 
 
 def test_analyze_imap_search_result_lists_unread_uids() -> None:
-    """Unread UIDs steer the agent to bulk_update instead of re-searching."""
+    """Unread items steer the agent to the next tool via MCP metadata."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.override_intent = "mark_read"
+    policy.initialize_loop_plan(
+        state,
+        goal="mark unread",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_bulk_update_flags"},
+        ],
+    )
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX"},
+        succeeded=True,
+    )
+    policy.cache_mcp_tool_catalog_entry(
+        state,
+        "mail_mcp__imap_bulk_update_flags",
+        description="Set flags using message_ids from prior search output.",
+    )
     output = json.dumps(
         {
             "messages": [
@@ -864,8 +931,9 @@ def test_analyze_imap_search_result_lists_unread_uids() -> None:
         {"mailbox": "INBOX", "unread_only": True},
     )
 
-    assert any("bulk_update_flags" in hint for hint in state.mcp_guidance)
-    assert any("42" in hint for hint in state.mcp_guidance)
+    assert any("not yet marked read" in hint for hint in state.mcp_guidance)
+    assert any("Adhere strictly" in hint for hint in state.mcp_guidance)
+    assert any("message_ids" in hint for hint in state.mcp_guidance)
 
 
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:
