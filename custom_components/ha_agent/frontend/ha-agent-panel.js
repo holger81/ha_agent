@@ -3646,6 +3646,9 @@ class HaAgentPanel extends HTMLElement {
         <label><input type="checkbox" data-config-bool="skills_use_enabled" ${c.skills_use_enabled ? "checked" : ""}/> Skill auto-use</label>
         <label><input type="checkbox" data-config-bool="memory_persist" ${c.memory_persist ? "checked" : ""}/> Persist conversation memory</label>
         <label>History turns<input type="number" data-config="history_turns" value="${c.history_turns || 10}" /></label>
+        <p class="hint">History turns = prior user/assistant pairs kept as context. This is not the per-turn tool loop limit.</p>
+        <label>Max agent steps<input type="number" data-config="max_iterations" value="${c.max_iterations || 8}" min="1" max="32" /></label>
+        <p class="hint">Max agent steps = LLM/tool iterations in one turn (shown as “LLM step” in Turn info).</p>
         <label>Max skills per turn<input type="number" data-config="skills_max_inject" value="${c.skills_max_inject || 3}" /></label>
         <button data-action="save-config">Save settings</button>
       </div>`;

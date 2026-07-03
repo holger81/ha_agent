@@ -49,6 +49,7 @@ from .loop_policy import (
     record_plan_tool_result,
     reset_iteration_flags,
     should_retry_empty_response,
+    skill_goal_mismatch_reason,
     skill_plan_blocks_discovery,
     suspend_skill_plan,
     user_requests_skill_override,
@@ -1495,7 +1496,18 @@ async def run_agent(
         skill_title=matched_skills[0].title if matched_skills else "",
         slot_bindings=slot_bindings or None,
     )
-    if matched_skills and user_requests_skill_override(user_text):
+    primary_learned_for_plan = next(
+        (s for s in matched_skills if not s.is_builtin),
+        None,
+    )
+    if primary_learned_for_plan:
+        mismatch_reason = skill_goal_mismatch_reason(
+            user_text,
+            primary_learned_for_plan,
+        )
+        if mismatch_reason:
+            suspend_skill_plan(loop_state, mismatch_reason)
+    elif matched_skills and user_requests_skill_override(user_text):
         suspend_skill_plan(
             loop_state,
             "User asked to override the active skill workflow.",
@@ -1905,6 +1917,8 @@ async def run_agent(
     trace.fallback = True
     trace.outcome = TurnOutcome.PARTIAL if trace.tool_calls else TurnOutcome.FAILED
     trace.verification_notes = list(loop_state.verification_notes)
+    trace.skill_plan_override = loop_state.skill_plan_override
+    trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
     fallback = (
         f"{FALLBACK_MESSAGE} I used {trace.iterations} steps"
         f"{' and hit a repeated-tool guard' if loop_state.stuck else ''}."

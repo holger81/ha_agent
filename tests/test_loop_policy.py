@@ -459,6 +459,40 @@ def test_user_requests_skill_override() -> None:
     assert not policy.user_requests_skill_override("mark all emails read")
 
 
+def test_skill_goal_mismatch_reason_for_mark_read() -> None:
+    """Mark-as-read goals suspend read-only email skills automatically."""
+    policy = _load_loop_policy()
+    read_skill = type(
+        "Skill",
+        (),
+        {
+            "title": "Check and read unread emails",
+            "body": "Call imap_search_messages for unread mail.",
+            "tool_steps": [
+                {"toolName": "mail_mcp__imap_mailbox_status"},
+                {"toolName": "mail_mcp__imap_search_messages"},
+            ],
+        },
+    )()
+    reason = policy.skill_goal_mismatch_reason(
+        "mark all unread emails as read",
+        read_skill,
+    )
+    assert reason is not None
+    assert "mark mail read" in reason.lower()
+
+    mark_skill = type(
+        "Skill",
+        (),
+        {
+            "title": "Check and read unread emails",
+            "body": "Call imap_search_messages for unread mail.",
+            "tool_steps": [{"toolName": "mail_mcp__imap_mark_read"}],
+        },
+    )()
+    assert policy.skill_goal_mismatch_reason("mark them as read", mark_skill) is None
+
+
 def test_reasoning_skill_override_marker() -> None:
     """SKILL_OVERRIDE marker suspends the enforced skill plan."""
     policy = _load_loop_policy()

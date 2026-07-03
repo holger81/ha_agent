@@ -115,6 +115,21 @@ _USER_SKILL_OVERRIDE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_MARK_READ_INTENT = re.compile(
+    r"\b(?:"
+    r"mark(?:\s+\w+){0,12}\s+(?:as\s+)?read|"
+    r"flag(?:\s+\w+){0,12}\s+(?:as\s+)?read|"
+    r"set(?:\s+\w+){0,12}\s+(?:as\s+)?read"
+    r")\b",
+    re.IGNORECASE,
+)
+_MARK_READ_TOOL_MARKERS = (
+    "mark_read",
+    "bulk_update",
+    "update_flags",
+    "set_flags",
+    "store_flags",
+)
 _PLAN_TERMINAL_STATUSES = frozenset({"done", "omitted"})
 _OMIT_TOOL_MARKER = re.compile(
     r"OMIT(?:TED)?(?::|\s+step\s+\d+\s*[:\-])?\s*"
@@ -439,6 +454,29 @@ def _match_plan_step_index(loop_state: LoopState, tool_name: str) -> int | None:
 def user_requests_skill_override(user_text: str) -> bool:
     """Return True when the user explicitly asks to bypass the active skill."""
     return bool(_USER_SKILL_OVERRIDE.search(user_text.strip()))
+
+
+def _skill_supports_mark_read(skill: Any) -> bool:
+    """Return True when a skill's workflow includes mark-as-read tooling."""
+    body = str(getattr(skill, "body", "") or "").lower()
+    tool_steps = getattr(skill, "tool_steps", None) or []
+    blob = body
+    for step in tool_steps:
+        if isinstance(step, dict):
+            blob += " " + str(step.get("toolName", "")).lower()
+    return any(marker in blob for marker in _MARK_READ_TOOL_MARKERS)
+
+
+def skill_goal_mismatch_reason(user_text: str, skill: Any) -> str | None:
+    """Return a suspend reason when the user goal exceeds the matched skill."""
+    if not _MARK_READ_INTENT.search(user_text.strip()):
+        return None
+    if _skill_supports_mark_read(skill):
+        return None
+    title = str(getattr(skill, "title", "") or "Active skill").strip()
+    return (
+        f"User asked to mark mail read; {title} only checks and reads unread mail."
+    )
 
 
 def reasoning_declares_skill_mismatch(reasoning: str) -> bool:
