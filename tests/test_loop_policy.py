@@ -633,76 +633,15 @@ def test_user_requests_skill_override() -> None:
     assert not policy.user_requests_skill_override("mark all emails read")
 
 
-def test_skill_goal_mismatch_reason_for_mark_read() -> None:
-    """Mark-as-read goals suspend read-only email skills automatically."""
+def test_suspend_skill_plan_leaves_discovery_only_override() -> None:
+    """Skill suspension clears concrete steps and keeps discovery guidance."""
     policy = _load_loop_policy()
-    read_skill = type(
-        "Skill",
-        (),
-        {
-            "title": "Check and read unread emails",
-            "body": "Call imap_search_messages for unread mail.",
-            "tool_steps": [
-                {"toolName": "mail_mcp__imap_mailbox_status"},
-                {"toolName": "mail_mcp__imap_search_messages"},
-            ],
-        },
-    )()
-    reason = policy.skill_goal_mismatch_reason(
-        "mark all unread emails as read",
-        read_skill,
-    )
-    assert reason is not None
-    assert "mark mail read" in reason.lower()
-
-    mark_skill = type(
-        "Skill",
-        (),
-        {
-            "title": "Check and read unread emails",
-            "body": "Call imap_search_messages for unread mail.",
-            "tool_steps": [{"toolName": "mail_mcp__imap_mark_read"}],
-        },
-    )()
-    assert policy.skill_goal_mismatch_reason("mark them as read", mark_skill) is None
-
-
-def test_active_plan_goal_mismatch_for_mark_read_route_plan() -> None:
-    """Route email plans without mark-read tools suspend for mark-as-read goals."""
-    policy = _load_loop_policy()
-    plan_steps = [
-        {"toolName": "mail_mcp__imap_mailbox_status"},
-        {"toolName": "mail_mcp__imap_search_messages"},
-    ]
-    reason = policy.active_plan_goal_mismatch(
-        "mark all unread emails in my INBOX as read",
-        plan_steps,
-    )
-    assert reason is not None
-    assert "active plan" in reason.lower()
-
-
-def test_resolve_skill_plan_conflict_checks_route_plan_without_learned_skill() -> None:
-    """Conflict detection works when only the route playbook plan is active."""
-    policy = _load_loop_policy()
-    route_skill = type(
-        "Skill",
-        (),
-        {
-            "title": "Email",
-            "body": "",
-            "tool_steps": [],
-            "is_builtin": True,
-        },
-    )()
-    reason = policy.resolve_skill_plan_conflict(
-        "mark all unread emails as read",
-        matched_skills=[route_skill],
-        plan_steps=[
-            {"toolName": "mail_mcp__imap_search_messages"},
-        ],
-    )
-    assert reason is not None
+    state = policy.LoopState()
+    state.plan_goal = "mark all unread emails as read"
+    state.plan_route = "email"
+    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
+    assert state.plan_steps == []
+    assert any("Discover MCP tools" in hint for hint in state.mcp_guidance)
 
 
 def test_should_block_reasoning_execution_mismatch_when_plan_suspended() -> None:
@@ -722,18 +661,6 @@ def test_should_block_reasoning_execution_mismatch_when_plan_suspended() -> None
     assert policy.should_block_reasoning_execution_mismatch(state) is True
     policy.suspend_skill_plan(state, "Goal exceeds active skill.")
     assert policy.should_block_reasoning_execution_mismatch(state) is False
-
-
-def test_suspend_skill_plan_leaves_discovery_only_override() -> None:
-    """Skill suspension clears concrete steps and keeps discovery guidance."""
-    policy = _load_loop_policy()
-    state = policy.LoopState()
-    state.plan_goal = "mark all unread emails as read"
-    state.plan_route = "email"
-    policy.suspend_skill_plan(state, "Goal exceeds active skill.")
-    assert state.override_intent == "mark_read"
-    assert state.plan_steps == []
-    assert any("Discover MCP tools" in hint for hint in state.mcp_guidance)
 
 
 def test_record_plan_tool_result_keeps_done_on_later_failure() -> None:
@@ -816,7 +743,6 @@ def test_reasoning_skill_override_marker() -> None:
     )
     assert policy.maybe_suspend_skill_plan_from_reasoning(state, reasoning) is True
     assert state.skill_plan_override is True
-    assert state.override_intent == "mark_read"
     assert state.plan_steps == []
     assert not policy.skill_plan_blocks_discovery(state)
 
@@ -936,12 +862,11 @@ def test_record_override_block_guidance_injects_next_action() -> None:
     assert any("message_ids" in hint for hint in state.mcp_guidance)
 
 
-def test_analyze_search_tool_result_steers_mark_read_to_update_tool() -> None:
-    """After search on a mark-read goal, inject MCP adherence for update tools."""
+def test_analyze_search_tool_result_steers_exploration_after_search() -> None:
+    """After search during exploration, inject MCP adherence for next tool."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails in INBOX as read"
-    state.override_intent = "mark_read"
     state.skill_plan_override = True
     policy.cache_mcp_tool_catalog_entry(
         state,
@@ -987,7 +912,7 @@ def test_analyze_discovery_tool_result_prompts_direct_call() -> None:
     policy = _load_loop_policy()
     state = policy.LoopState()
     state.plan_goal = "mark all unread emails as read"
-    state.override_intent = "mark_read"
+    state.skill_plan_override = True
     output = json.dumps(
         [
             {

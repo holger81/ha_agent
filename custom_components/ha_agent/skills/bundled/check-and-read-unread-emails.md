@@ -39,3 +39,5 @@ When the user asks about new or unread mail:
 2. Call `mail_mcp__imap_search_messages` with mailbox `{{mailbox}}`, `unread_only=true`, and `limit=10`.
 3. To read a specific message, call `mail_mcp__imap_get_message` with `message_id` from the search results.
 4. Answer from tool results only — report unseen count, then summarize subjects/senders. Never invent mail content.
+
+If the user asks to mark messages read or change message flags, this read-only workflow does not apply. Discover and call the appropriate write tool from MCP (for example via `searchTool` or `searchToolsForDomain`).

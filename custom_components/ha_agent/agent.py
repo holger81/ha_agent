@@ -74,7 +74,6 @@ from .loop_policy import (
     record_plan_tool_result,
     redundant_override_tool_block,
     reset_iteration_flags,
-    resolve_skill_plan_conflict,
     should_block_reasoning_execution_mismatch,
     should_retry_empty_response,
     skill_plan_blocks_discovery,
@@ -1650,12 +1649,6 @@ async def run_agent(
             loop_state,
             "User asked to override the active skill workflow.",
         )
-    elif conflict_reason := resolve_skill_plan_conflict(
-        user_text,
-        matched_skills=matched_skills,
-        plan_steps=loop_state.plan_steps,
-    ):
-        suspend_skill_plan(loop_state, conflict_reason)
     if matched_skills and slot_bindings:
         primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
         if primary_learned:

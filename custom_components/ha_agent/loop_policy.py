@@ -47,7 +47,6 @@ class LoopState:
     plan_completed_tools: list[str] = field(default_factory=list)
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
-    override_intent: str = ""
     empty_responses: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
     include_full_tool_catalog: bool = False
@@ -106,21 +105,6 @@ _USER_SKILL_OVERRIDE = re.compile(
     r"not using (?:the )?skill"
     r")\b",
     re.IGNORECASE,
-)
-_MARK_READ_INTENT = re.compile(
-    r"\b(?:"
-    r"mark(?:\s+\w+){0,12}\s+(?:as\s+)?read|"
-    r"flag(?:\s+\w+){0,12}\s+(?:as\s+)?read|"
-    r"set(?:\s+\w+){0,12}\s+(?:as\s+)?read"
-    r")\b",
-    re.IGNORECASE,
-)
-_MARK_READ_TOOL_MARKERS = (
-    "mark_read",
-    "bulk_update",
-    "update_flags",
-    "set_flags",
-    "store_flags",
 )
 _PLAN_TERMINAL_STATUSES = frozenset({"done", "omitted"})
 _OMIT_TOOL_MARKER = re.compile(
@@ -324,9 +308,7 @@ def reasoning_execution_mismatch(
     if not intended or not execution_tools:
         return None
 
-    actionable = [
-        name for name in execution_tools if not is_discovery_tool_name(name)
-    ]
+    actionable = [name for name in execution_tools if not is_discovery_tool_name(name)]
     if not actionable:
         return None
 
@@ -428,33 +410,19 @@ def reconcile_plan_before_answer(loop_state: LoopState) -> None:
         )
 
 
-def _mark_read_tools_equivalent(plan_tool: str, actual_tool: str) -> bool:
-    plan_lower = plan_tool.lower()
-    actual_lower = actual_tool.lower()
-    markers = ("bulk_update", "mark_read", "update_flags")
-    return any(marker in plan_lower for marker in markers) and any(
-        marker in actual_lower for marker in markers
-    )
-
-
 def _match_plan_step_index(loop_state: LoopState, tool_name: str) -> int | None:
     for index, step in enumerate(loop_state.plan_steps):
         plan_tool = str(step.get("toolName", ""))
         if not plan_tool:
             continue
-        matches = _tool_names_match(plan_tool, tool_name)
-        matches = matches or _mark_read_tools_equivalent(plan_tool, tool_name)
-        if not matches:
+        if not _tool_names_match(plan_tool, tool_name):
             continue
         status = loop_state.plan_step_statuses[index]
         if status in {"pending", "needs_work"}:
             return index
     for index, step in enumerate(loop_state.plan_steps):
         plan_tool = str(step.get("toolName", ""))
-        if plan_tool and (
-            _tool_names_match(plan_tool, tool_name)
-            or _mark_read_tools_equivalent(plan_tool, tool_name)
-        ):
+        if plan_tool and _tool_names_match(plan_tool, tool_name):
             return index
     return None
 
@@ -464,80 +432,12 @@ def user_requests_skill_override(user_text: str) -> bool:
     return bool(_USER_SKILL_OVERRIDE.search(user_text.strip()))
 
 
-def _skill_supports_mark_read(skill: Any) -> bool:
-    """Return True when a skill's workflow includes mark-as-read tooling."""
-    body = str(getattr(skill, "body", "") or "").lower()
-    tool_steps = getattr(skill, "tool_steps", None) or []
-    blob = body
-    for step in tool_steps:
-        if isinstance(step, dict):
-            blob += " " + str(step.get("toolName", "")).lower()
-    return any(marker in blob for marker in _MARK_READ_TOOL_MARKERS)
-
-
-def skill_goal_mismatch_reason(user_text: str, skill: Any) -> str | None:
-    """Return a suspend reason when the user goal exceeds the matched skill."""
-    if not _MARK_READ_INTENT.search(user_text.strip()):
-        return None
-    if _skill_supports_mark_read(skill):
-        return None
-    title = str(getattr(skill, "title", "") or "Active skill").strip()
-    return (
-        f"User asked to mark mail read; {title} only checks and reads unread mail."
-    )
-
-
-def _plan_supports_mark_read(plan_steps: list[dict[str, Any]]) -> bool:
-    blob = " ".join(str(step.get("toolName", "")) for step in plan_steps).lower()
-    return any(marker in blob for marker in _MARK_READ_TOOL_MARKERS)
-
-
-def active_plan_goal_mismatch(
-    user_text: str,
-    plan_steps: list[dict[str, Any]],
-) -> str | None:
-    """Return suspend reason when the seeded route/skill plan cannot reach the goal."""
-    if not plan_steps:
-        return None
-    if not _MARK_READ_INTENT.search(user_text.strip()):
-        return None
-    if _plan_supports_mark_read(plan_steps):
-        return None
-    return (
-        "User asked to mark mail read; active plan only covers checking or "
-        "reading unread mail."
-    )
-
-
-def resolve_skill_plan_conflict(
-    user_text: str,
-    *,
-    matched_skills: list[Any],
-    plan_steps: list[dict[str, Any]],
-) -> str | None:
-    """Return a suspend reason when the user goal exceeds matched skills or the plan."""
-    for skill in matched_skills:
-        if getattr(skill, "is_builtin", False):
-            continue
-        reason = skill_goal_mismatch_reason(user_text, skill)
-        if reason:
-            return reason
-    return active_plan_goal_mismatch(user_text, plan_steps)
-
-
 _EXPLORATION_GUIDANCE = (
     "Discover MCP tools for the user's goal (searchToolsForDomain or searchTool), "
     "then call the best match using arguments from discovery output and earlier "
     "tool results. Adhere strictly to each tool's MCP definition. "
     "Do not repeat a mismatched workflow."
 )
-
-
-def override_intent_key(user_text: str) -> str | None:
-    """Return a coarse override intent label for exploration plan seeding."""
-    if _MARK_READ_INTENT.search(user_text.strip()):
-        return "mark_read"
-    return None
 
 
 def reasoning_declares_skill_mismatch(reasoning: str) -> bool:
@@ -576,7 +476,6 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     loop_state.plan_step_statuses = []
     loop_state.plan_step_notes = []
     loop_state.plan_current_step_index = None
-    loop_state.override_intent = override_intent_key(loop_state.plan_goal) or ""
     loop_state.mcp_guidance.insert(
         0,
         f"SKILL PLAN SUSPENDED — {reason.strip()[:200]}. {_EXPLORATION_GUIDANCE}",
@@ -633,9 +532,7 @@ def redundant_override_tool_block(
     ):
         next_index = _next_incomplete_plan_step(loop_state)
         if next_index is not None:
-            next_tool = str(
-                loop_state.plan_steps[next_index].get("toolName", "tool")
-            )
+            next_tool = str(loop_state.plan_steps[next_index].get("toolName", "tool"))
             return (
                 "Tool error: Discovery already completed the information-gathering "
                 f"step. Call `{next_tool}` next using prior tool output. "
@@ -688,27 +585,27 @@ def _is_search_like_tool(tool_name: str) -> bool:
     )
 
 
-def _mark_read_goal(loop_state: LoopState) -> bool:
-    """Return True when the user goal is mark-as-read style."""
-    if loop_state.override_intent == "mark_read":
-        return True
-    return bool(_MARK_READ_INTENT.search(loop_state.plan_goal))
-
-
 def _infer_next_catalog_tool(loop_state: LoopState, *, after_tool: str) -> str | None:
-    """Pick a complementary MCP tool from the cached catalog."""
-    if not _mark_read_goal(loop_state):
+    """Pick a complementary MCP tool from the cached catalog during exploration."""
+    if not loop_state.skill_plan_override:
         return None
+    if not _is_search_like_tool(after_tool):
+        return None
+    completed = {name.lower() for name in loop_state.plan_completed_tools}
+    prefix = after_tool.split("__", 1)[0].lower() if "__" in after_tool else ""
     candidates: list[str] = []
     for key in loop_state.mcp_tool_catalog:
+        lowered = key.lower()
         if _is_search_like_tool(key):
             continue
         if _tool_names_match(key, after_tool):
             continue
-        lower = key.lower()
-        if any(marker in lower for marker in _MARK_READ_TOOL_MARKERS):
-            candidates.append(key)
-    return candidates[0] if candidates else None
+        if lowered in completed:
+            continue
+        if prefix and not lowered.startswith(prefix):
+            continue
+        candidates.append(key)
+    return sorted(candidates)[0] if candidates else None
 
 
 def _catalog_tool_key(tool_name: str) -> str:
@@ -871,10 +768,14 @@ def _inject_next_tool_adherence(
     if not next_tool and after_tool:
         next_tool = _infer_next_catalog_tool(loop_state, after_tool=after_tool)
     if not next_tool:
-        if after_tool and _mark_read_goal(loop_state):
+        if (
+            after_tool
+            and loop_state.skill_plan_override
+            and _is_search_like_tool(after_tool)
+        ):
             hint = (
-                f"{lead_in} Discover a write/update tool with searchTool if needed, "
-                "then adhere strictly to its MCP definition using prior search output."
+                f"{lead_in} Call the next MCP tool required for the user's goal using "
+                "prior search output. Discover tools with searchTool when needed."
             )
         elif after_tool and _is_search_like_tool(after_tool):
             hint = (
@@ -942,9 +843,7 @@ def analyze_search_tool_result(
     if not isinstance(entries, list):
         return
 
-    filtered = _coerce_bool(
-        arguments.get("unread_only") or arguments.get("unreadOnly")
-    )
+    filtered = _coerce_bool(arguments.get("unread_only") or arguments.get("unreadOnly"))
     has_more = _coerce_bool(data.get("hasMore") or data.get("has_more"))
 
     if not entries:
@@ -995,13 +894,13 @@ def analyze_discovery_tool_result(
                 if hint not in loop_state.mcp_guidance:
                     loop_state.mcp_guidance.insert(0, hint)
                 return
-    if _mark_read_goal(loop_state):
+    if loop_state.skill_plan_override:
         next_tool = _infer_next_catalog_tool(loop_state, after_tool=tool_name)
         if next_tool:
             hint = build_mcp_tool_adherence_hint(
                 loop_state,
                 next_tool,
-                lead_in="Discovered tools for mark-as-read — required next tool:",
+                lead_in="Discovered complementary tool for the user's goal:",
             )
             if hint not in loop_state.mcp_guidance:
                 loop_state.mcp_guidance.insert(0, hint)
@@ -1016,8 +915,13 @@ def guide_after_override_tool_result(
     """Inject next-step hints after successful override-plan tool calls."""
     if not loop_state.skill_plan_override or not succeeded:
         return
-    if loop_state.plan_steps and loop_state.plan_step_statuses and all(
-        status in _PLAN_TERMINAL_STATUSES for status in loop_state.plan_step_statuses
+    if (
+        loop_state.plan_steps
+        and loop_state.plan_step_statuses
+        and all(
+            status in _PLAN_TERMINAL_STATUSES
+            for status in loop_state.plan_step_statuses
+        )
     ):
         loop_state.mcp_guidance.insert(
             0,
@@ -1038,12 +942,12 @@ def guide_after_override_tool_result(
         )
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
-    elif _mark_read_goal(loop_state):
+    elif loop_state.skill_plan_override and _is_search_like_tool(tool_name):
         loop_state.mcp_guidance.insert(
             0,
             (
-                "Previous search succeeded. Discover and call the write/update "
-                "tool from the MCP catalog using IDs from the search output."
+                "Previous search succeeded. Call the next MCP tool required for "
+                "the user's goal using IDs from the search output."
             ),
         )
 
@@ -1149,8 +1053,13 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
                 )
             if status == "pending":
                 return f"Execute step {index + 1}: {name}"
-    if loop_state.plan_steps and loop_state.plan_step_statuses and all(
-        status in _PLAN_TERMINAL_STATUSES for status in loop_state.plan_step_statuses
+    if (
+        loop_state.plan_steps
+        and loop_state.plan_step_statuses
+        and all(
+            status in _PLAN_TERMINAL_STATUSES
+            for status in loop_state.plan_step_statuses
+        )
     ):
         return (
             "All planned steps are done or deliberately omitted. STOP calling "
@@ -1189,8 +1098,7 @@ def build_plan_progress_summary(loop_state: LoopState) -> str | None:
             lines.append("Override exploration plan:")
         else:
             lines.append(
-                "No concrete override steps seeded — use discovery and tools "
-                "as needed."
+                "No concrete override steps seeded — use discovery and tools as needed."
             )
     elif loop_state.plan_skill_title:
         lines.append(f"Workflow skill: {loop_state.plan_skill_title}")
@@ -1635,14 +1543,10 @@ def verify_ha_service(
 
     expected = _expected_states_for_service(service)
     if expected is None:
-        return (
-            f"VERIFICATION: {entity_id} is '{state.state}' after {service}."
-        )
+        return f"VERIFICATION: {entity_id} is '{state.state}' after {service}."
 
     if state.state in expected:
-        return (
-            f"VERIFICATION: {entity_id} is '{state.state}' after {service}."
-        )
+        return f"VERIFICATION: {entity_id} is '{state.state}' after {service}."
     return (
         f"VERIFICATION FAILED: {entity_id} is '{state.state}' after {service} "
         f"(expected one of {', '.join(sorted(expected))}). "
