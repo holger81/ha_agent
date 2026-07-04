@@ -60,6 +60,66 @@ def test_check_stuck_hard_blocks_second_duplicate() -> None:
     assert "ask the user for help" in blocked
 
 
+def test_check_stuck_allows_repeat_when_pagination_pending() -> None:
+    """Paginated tool repeats must not hit duplicate-call blocking."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    args = {"mailbox": "INBOX", "unread_only": True, "limit": 10}
+    output = json.dumps(
+        {"messages": [{"uid": 1}], "hasMore": True, "offset": 0, "limit": 10}
+    )
+
+    assert (
+        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
+    )
+    policy.record_pagination_state(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        args,
+    )
+
+    assert (
+        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
+    )
+    assert state.stuck is False
+    assert state.duplicate_blocks == {}
+
+
+def test_check_stuck_blocks_duplicate_after_pagination_completes() -> None:
+    """Duplicate blocking resumes once pagination is no longer pending."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    args = {"mailbox": "INBOX", "limit": 10}
+    paged = json.dumps(
+        {"messages": [{"uid": 1}], "hasMore": True, "offset": 0, "limit": 10}
+    )
+    final = json.dumps({"messages": [{"uid": 2}], "hasMore": False})
+
+    assert (
+        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
+    )
+    policy.record_pagination_state(
+        state,
+        "mail_mcp__imap_search_messages",
+        paged,
+        args,
+    )
+    assert (
+        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
+    )
+    policy.record_pagination_state(
+        state,
+        "mail_mcp__imap_search_messages",
+        final,
+        args,
+    )
+
+    blocked = policy.check_stuck(state, "mail_mcp__imap_search_messages", args)
+    assert blocked is not None
+    assert state.stuck is False
+
+
 def test_reasoning_stream_stuck_on_repeat() -> None:
     """Repeated reasoning tails are treated as stuck output."""
     policy = _load_loop_policy()

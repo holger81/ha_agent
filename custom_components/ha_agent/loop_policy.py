@@ -198,6 +198,9 @@ def check_stuck(
         loop_state.tool_signatures.append(signature)
         return None
 
+    if _pagination_allows_repeat(loop_state, tool_name):
+        return None
+
     blocks = loop_state.duplicate_blocks.get(signature, 0) + 1
     loop_state.duplicate_blocks[signature] = blocks
 
