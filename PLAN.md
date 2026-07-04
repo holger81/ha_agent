@@ -297,3 +297,10 @@ not forced skill save.
 
 **Scope:** Registered users (≥4), guest profiles, voice + text resolution, admin
 override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-identity-design.md).
+
+- [x] SQLite identity registry with 4 seeded registered users + Assist guest
+- [x] Console resolution from HA login + admin “Act as” override
+- [x] Assist fallback guest + VoiceBM `HA_AGENT_IDENTITY` hook in extra_system_prompt
+- [x] Identity on turn traces / activity log
+- [ ] VoiceBM integration (Phase 9b)
+- [ ] Guest promote / merge UI (Phase 9c)
