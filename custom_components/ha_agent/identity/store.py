@@ -11,7 +11,8 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from ..const import DATA_KEY
-from .models import AgentUser, UserKind
+from .embeddings import pack_embedding, unpack_embedding, update_centroid
+from .models import AgentUser, UserKind, VoiceProfile
 
 IDENTITY_STORE_KEY = "identity_stores"
 _REGISTERED_SEED_NAMES = ("Member 1", "Member 2", "Member 3", "Member 4")
@@ -32,7 +33,42 @@ CREATE TABLE IF NOT EXISTS agent_users (
     updated_at REAL NOT NULL,
     last_seen_at REAL
 );
+CREATE TABLE IF NOT EXISTS voice_profiles (
+    id TEXT PRIMARY KEY,
+    agent_user_id TEXT NOT NULL UNIQUE,
+    backend TEXT NOT NULL,
+    model TEXT,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    avg_confidence REAL,
+    centroid BLOB,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    last_seen_at REAL,
+    FOREIGN KEY (agent_user_id) REFERENCES agent_users(id)
+);
 """
+
+
+def is_assist_guest_user(user: AgentUser) -> bool:
+    """Return True for the singleton Assist fallback guest."""
+    return (
+        user.kind == UserKind.GUEST and user.display_name == _ASSIST_GUEST_NAME
+    )
+
+
+def _row_to_voice_profile(row: sqlite3.Row) -> VoiceProfile:
+    return VoiceProfile(
+        id=str(row["id"]),
+        agent_user_id=str(row["agent_user_id"]),
+        backend=str(row["backend"]),
+        model=row["model"],
+        sample_count=int(row["sample_count"]),
+        avg_confidence=row["avg_confidence"],
+        centroid=unpack_embedding(row["centroid"]),
+        created_at=float(row["created_at"]),
+        updated_at=float(row["updated_at"]),
+        last_seen_at=row["last_seen_at"],
+    )
 
 
 def _row_to_user(row: sqlite3.Row) -> AgentUser:
@@ -288,6 +324,118 @@ class IdentityStore:
         self._db().execute(
             "UPDATE agent_users SET last_seen_at = ?, updated_at = ? WHERE id = ?",
             (now, now, user_id),
+        )
+        self._db().commit()
+
+    def next_voice_guest_name(self) -> str:
+        """Return the next display name for a voice-clustered guest."""
+        rows = self._db().execute(
+            "SELECT COUNT(*) FROM agent_users "
+            "WHERE kind = ? AND display_name != ? AND merged_into IS NULL",
+            (UserKind.GUEST.value, _ASSIST_GUEST_NAME),
+        ).fetchone()
+        count = int(rows[0]) if rows else 0
+        return f"Guest {count + 1}"
+
+    def list_voice_profiles(self) -> list[VoiceProfile]:
+        """Return voice profiles excluding the Assist fallback guest."""
+        rows = self._db().execute(
+            "SELECT vp.* FROM voice_profiles vp "
+            "JOIN agent_users au ON au.id = vp.agent_user_id "
+            "WHERE au.merged_into IS NULL AND au.display_name != ? "
+            "ORDER BY vp.updated_at DESC",
+            (_ASSIST_GUEST_NAME,),
+        ).fetchall()
+        return [_row_to_voice_profile(row) for row in rows]
+
+    def get_voice_profile_for_user(self, agent_user_id: str) -> VoiceProfile | None:
+        """Return the voice profile linked to one agent user."""
+        row = self._db().execute(
+            "SELECT * FROM voice_profiles WHERE agent_user_id = ?",
+            (agent_user_id,),
+        ).fetchone()
+        return _row_to_voice_profile(row) if row else None
+
+    def create_voice_profile(
+        self,
+        *,
+        profile_id: str,
+        agent_user_id: str,
+        backend: str,
+        model: str | None,
+        centroid: list[float],
+        match_confidence: float | None,
+    ) -> VoiceProfile:
+        """Create a voice profile with an initial centroid."""
+        now = time.time()
+        self._db().execute(
+            "INSERT INTO voice_profiles "
+            "(id, agent_user_id, backend, model, sample_count, avg_confidence, "
+            "centroid, created_at, updated_at, last_seen_at) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
+            (
+                profile_id,
+                agent_user_id,
+                backend,
+                model,
+                match_confidence,
+                pack_embedding(centroid),
+                now,
+                now,
+                now,
+            ),
+        )
+        self._db().commit()
+        profile = self.get_voice_profile_for_user(agent_user_id)
+        assert profile is not None
+        return profile
+
+    def update_voice_profile_centroid(
+        self,
+        profile_id: str,
+        *,
+        embedding: list[float],
+        match_confidence: float,
+        model: str | None = None,
+    ) -> None:
+        """Update a profile centroid with a new embedding sample."""
+        row = self._db().execute(
+            "SELECT * FROM voice_profiles WHERE id = ?",
+            (profile_id,),
+        ).fetchone()
+        if row is None:
+            return
+        profile = _row_to_voice_profile(row)
+        if profile.centroid is None:
+            updated = list(embedding)
+            sample_count = 1
+        else:
+            updated = update_centroid(
+                profile.centroid,
+                profile.sample_count,
+                embedding,
+            )
+            sample_count = profile.sample_count + 1
+        if profile.avg_confidence is None:
+            avg_confidence = match_confidence
+        else:
+            avg_confidence = (
+                (profile.avg_confidence * profile.sample_count) + match_confidence
+            ) / sample_count
+        now = time.time()
+        self._db().execute(
+            "UPDATE voice_profiles SET sample_count = ?, avg_confidence = ?, "
+            "centroid = ?, model = COALESCE(?, model), updated_at = ?, "
+            "last_seen_at = ? WHERE id = ?",
+            (
+                sample_count,
+                avg_confidence,
+                pack_embedding(updated),
+                model,
+                now,
+                now,
+                profile_id,
+            ),
         )
         self._db().commit()
 

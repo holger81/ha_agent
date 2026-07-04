@@ -29,6 +29,7 @@ from .embedded_tools import (
     safe_stream_display_text,
     strip_embedded_tool_markup,
 )
+from .identity.models import SpeakerMatch
 from .identity.resolver import apply_identity_to_trace, resolve_agent_user
 from .llm_client import (
     LlmClient,
@@ -1311,6 +1312,7 @@ async def run_agent(
     admin_override_user_id: str | None = None,
     override_by_ha_user_id: str | None = None,
     context_user_id: str | None = None,
+    speaker_match: SpeakerMatch | None = None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run the tool loop and yield assistant chat deltas."""
     history = conversation_history_for_turn(
@@ -1378,6 +1380,7 @@ async def run_agent(
         override_by_ha_user_id=override_by_ha_user_id,
         extra_system_prompt=extra_system_prompt,
         context_user_id=context_user_id,
+        speaker_match=speaker_match,
     )
     apply_identity_to_trace(trace, identity)
     identity_context = format_identity_context(identity)

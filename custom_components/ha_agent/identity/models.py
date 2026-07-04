@@ -41,6 +41,34 @@ class AgentUser:
 
 
 @dataclass(frozen=True, slots=True)
+class VoiceProfile:
+    """Stored speaker embedding centroid for one agent user."""
+
+    id: str
+    agent_user_id: str
+    backend: str
+    model: str | None
+    sample_count: int
+    avg_confidence: float | None
+    centroid: list[float] | None
+    created_at: float
+    updated_at: float
+    last_seen_at: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpeakerMatch:
+    """Speaker embedding payload from STT / voice cache."""
+
+    backend: str
+    embedding: list[float] | None
+    quality: str = "ok"
+    model: str | None = None
+    duration_ms: int | None = None
+    confidence: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedIdentity:
     """Resolved identity for one agent turn."""
 

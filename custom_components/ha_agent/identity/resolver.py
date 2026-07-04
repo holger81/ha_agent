@@ -6,7 +6,9 @@ from typing import Literal
 
 from homeassistant.core import HomeAssistant
 
-from .models import IdentitySource, ResolvedIdentity, UserKind
+from .clustering import resolve_speaker_embedding
+from .config import IDENTITY_VOICE_CONFIG, IdentityVoiceConfig
+from .models import IdentitySource, ResolvedIdentity, SpeakerMatch, UserKind
 from .runtime import get_identity_override
 from .store import IdentityStore, get_identity_store
 from .voicebm import parse_voice_identity
@@ -23,9 +25,12 @@ async def resolve_agent_user(
     override_by_ha_user_id: str | None = None,
     extra_system_prompt: str | None = None,
     context_user_id: str | None = None,
+    speaker_match: SpeakerMatch | None = None,
+    voice_config: IdentityVoiceConfig | None = None,
 ) -> ResolvedIdentity:
     """Resolve who is acting for this turn."""
     store = get_identity_store(hass, entry_id)
+    voice_cfg = voice_config or IDENTITY_VOICE_CONFIG
 
     def _resolve() -> ResolvedIdentity:
         if admin_override_user_id:
@@ -57,6 +62,15 @@ async def resolve_agent_user(
         voice_payload = parse_voice_identity(extra_system_prompt)
         if voice_payload:
             resolved = _resolve_voice_payload(store, voice_payload)
+            if resolved is not None:
+                return resolved
+
+        if channel == "assist" and speaker_match is not None:
+            resolved = resolve_speaker_embedding(
+                store,
+                speaker_match,
+                config=voice_cfg,
+            )
             if resolved is not None:
                 return resolved
 

@@ -35,6 +35,7 @@ from .const import (
     SUPPORTED_LANGUAGES,
 )
 from .context import user_text_from_input
+from .identity.voice_bridge import pop_speaker_match_for_text
 from .llm_client import LlmClient
 from .mcp_client import McpProxyClient
 
@@ -169,6 +170,11 @@ class HaAgentConversationEntity(
         skills_config = get_skills_config(self._entry)
         exposed = await collect_exposed_entities(self.hass)
 
+        speaker_match = pop_speaker_match_for_text(
+            self.hass,
+            user_text=user_text,
+        )
+
         produced_content = False
         entry_id = self._entry.entry_id
         conv_id = chat_log.conversation_id
@@ -198,6 +204,7 @@ class HaAgentConversationEntity(
                 extra_system_prompt=user_input.extra_system_prompt,
                 channel="assist",
                 context_user_id=context_user_id,
+                speaker_match=speaker_match,
             ):
                 if delta.tool and agent_config.show_reasoning_in_chat:
                     produced_content = True
