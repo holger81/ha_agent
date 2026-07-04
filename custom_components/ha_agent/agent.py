@@ -27,7 +27,13 @@ from .embedded_tools import (
     safe_stream_display_text,
     strip_embedded_tool_markup,
 )
-from .llm_client import LlmClient, StreamChatSession, ToolCall, stream_text_delta
+from .llm_client import (
+    LlmClient,
+    StreamChatSession,
+    ToolCall,
+    build_assistant_message,
+    stream_text_delta,
+)
 from .llm_telemetry import record_llm_call
 from .loop_policy import (
     INTERNAL_GUIDANCE_ROLE,
@@ -1706,21 +1712,11 @@ async def run_agent(
 
             raw_buffer = session.content
             if session.tool_calls:
-                assistant_message: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.name,
-                                "arguments": call.arguments,
-                            },
-                        }
-                        for call in session.tool_calls
-                    ],
-                }
+                assistant_message = build_assistant_message(
+                    content=None,
+                    tool_calls=session.tool_calls,
+                    reasoning_content=session.reasoning_content or None,
+                )
                 messages.append(assistant_message)
                 async for delta in _process_tool_calls(
                     agent_config,

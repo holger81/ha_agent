@@ -948,7 +948,11 @@ def analyze_search_tool_result(
         summary = "SEARCH RESULT: the query returned no items."
         if filtered:
             summary += " Active filters may still apply to follow-up calls."
-        _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)
+        _inject_next_tool_adherence(
+            loop_state,
+            lead_in=summary,
+            after_tool=tool_name,
+        )
         return
 
     summary = f"SEARCH RESULT: returned {len(entries)} item(s)."

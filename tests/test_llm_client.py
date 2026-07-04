@@ -355,3 +355,76 @@ def test_payload_omits_thinking_when_off() -> None:
 
     assert payload["reasoning_effort"] == "none"
     assert payload["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_payload_disables_parallel_tool_calls() -> None:
+    """Tool requests disable parallel tool calls for Gemma 4 stability."""
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test-model",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.2,
+        timeout=30,
+        thinking_level="off",
+    )
+    client = llm_client.LlmClient(MagicMock())
+    tools = [llm_client.MCP_CALL_TOOL_SCHEMA]
+    payload = client._payload(
+        [{"role": "user", "content": "Hi"}],
+        backend,
+        tools,
+        stream=True,
+    )
+
+    assert payload["parallel_tool_calls"] is False
+    assert payload["tool_choice"] == "auto"
+
+
+def test_build_assistant_message_preserves_reasoning() -> None:
+    """Assistant history keeps reasoning_content during tool loops."""
+    message = llm_client.build_assistant_message(
+        content=None,
+        tool_calls=[
+            llm_client.ToolCall(
+                id="call_1",
+                name="callTool",
+                arguments='{"toolName":"imap_search_messages"}',
+            )
+        ],
+        reasoning_content="  Will search INBOX for unread messages.  ",
+    )
+
+    assert message["role"] == "assistant"
+    assert message["content"] is None
+    assert message["reasoning_content"] == "Will search INBOX for unread messages."
+    assert len(message["tool_calls"]) == 1
+
+
+def test_parse_completion_preserves_reasoning_in_assistant_message() -> None:
+    """Non-streaming completions retain reasoning on assistant_message."""
+    data = {
+        "choices": [
+            {
+                "message": {
+                    "content": None,
+                    "reasoning_content": "Need weather tool.",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {
+                                "name": "callTool",
+                                "arguments": '{"toolName":"weather"}',
+                            },
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    client = llm_client.LlmClient(MagicMock())
+    result = client._parse_completion(data)
+
+    assert result.reasoning_content == "Need weather tool."
+    assert result.assistant_message["reasoning_content"] == "Need weather tool."
+    assert result.assistant_message["tool_calls"][0]["function"]["name"] == "callTool"

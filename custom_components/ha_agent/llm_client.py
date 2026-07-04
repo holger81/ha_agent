@@ -101,6 +101,32 @@ class StreamChatSession:
     )
 
 
+def build_assistant_message(
+    *,
+    content: str | None,
+    tool_calls: list[ToolCall] | None = None,
+    reasoning_content: str | None = None,
+) -> dict[str, Any]:
+    """Build an OpenAI assistant message, preserving reasoning for tool loops."""
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+    }
+    reasoning = (reasoning_content or "").strip()
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    if tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            }
+            for call in tool_calls
+        ]
+    return message
+
+
 class LlmClient:
     """Async OpenAI-compatible chat client."""
 
@@ -149,6 +175,9 @@ class LlmClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            # Gemma 4 / llama.cpp: parallel tool calls reduce reliability and
+            # can trigger infinite repeat loops during agent turns.
+            payload["parallel_tool_calls"] = False
         if response_format:
             payload["response_format"] = response_format
         apply_thinking_to_payload(payload, backend.thinking_level)
@@ -415,19 +444,11 @@ class LlmClient:
             if tool_calls:
                 content = strip_embedded_tool_markup(content) or None
 
-        assistant_message = {
-            "role": "assistant",
-            "content": content,
-        }
-        if tool_calls:
-            assistant_message["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
-                }
-                for call in tool_calls
-            ]
+        assistant_message = build_assistant_message(
+            content=content,
+            tool_calls=tool_calls or None,
+            reasoning_content=reasoning_content,
+        )
 
         return ChatResult(
             content=content,
