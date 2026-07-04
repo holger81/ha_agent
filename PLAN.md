@@ -287,7 +287,7 @@ override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-id
 - [x] Assist fallback guest + VoiceBM `HA_AGENT_IDENTITY` hook in extra_system_prompt
 - [x] Identity on turn traces / activity log
 
-#### 9b — Voice identification (in progress)
+#### 9b — Voice identification (shipped v1.15.0)
 
 Sherpa-ONNX embeddings on inference box (`.31`) + guest clustering in ha_agent.
 Full plan: [docs/agent-voice-inference-plan.md](docs/agent-voice-inference-plan.md).
@@ -296,19 +296,19 @@ STT bridge (ha_liquidai): [docs/voice-speaker-embed-plan.md](docs/voice-speaker-
 
 **Inference box** (`~/MeineDateien/Projekte/liquidai-audio`):
 
-- [x] Code: `POST /v1/speaker/embed` (Sherpa-ONNX, stateless) — shipped in liquidai-audio-docker
+- [x] Code: `POST /v1/speaker/embed` (Sherpa-ONNX, stateless) — liquidai-audio-docker
 - [ ] Deploy Sherpa model on `.31` + smoke test
 
 **ha_liquidai** (`~/Projects/ha_liquidai`):
 
-- [ ] Parallel ASR + embed, voice turn cache (Parts B–D)
+- [x] Parallel ASR + embed, voice turn cache (Parts B–D)
 
 **ha_agent** (`~/Projects/ha_agent`):
 
-- [ ] `identity/store.py` — `voice_profiles` schema + centroid CRUD
-- [ ] `identity/clustering.py` — cosine match, centroid update (new)
-- [ ] `identity/resolver.py` — embedding path in `resolve_agent_user()`
-- [ ] `conversation.py` — pop voice cache (primary path; keep `HA_AGENT_IDENTITY` override)
+- [x] `identity/store.py` — `voice_profiles` schema + centroid CRUD
+- [x] `identity/clustering.py` — cosine match, centroid update
+- [x] `identity/resolver.py` — embedding path in `resolve_agent_user()`
+- [x] `conversation.py` — pop voice cache via `voice_bridge.py`
 - [ ] Live test: same voice → same guest id without enrollment
 
 #### 9c — Guest lifecycle (planned)
