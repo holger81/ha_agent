@@ -274,9 +274,31 @@ this is the dominant latency + reliability cost.
 
 ---
 
-### Phase 9 — Persistent agent memory (planned)
+### Phase 9 — Agent identity
 
-**Prerequisite:** [Phase 9a identity](agent-identity-design.md) — user-bound memory
+**Scope:** Registered users (≥4), guest profiles, voice + text resolution, admin
+override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-identity-design.md).
+
+#### 9a — Registry + console (shipped v1.14.0)
+
+- [x] SQLite identity registry with 4 seeded registered users + Assist guest
+- [x] Console resolution from HA login + admin “Act as” override
+- [x] Assist fallback guest + VoiceBM `HA_AGENT_IDENTITY` hook in extra_system_prompt
+- [x] Identity on turn traces / activity log
+
+#### 9b — Voice identification (planned)
+
+- [ ] VoiceBM (or other backend) adapter + Assist identity injection
+
+#### 9c — Guest lifecycle (planned)
+
+- [ ] Guest promote / merge UI + APIs
+
+---
+
+### Phase 10 — Persistent agent memory (planned)
+
+**Prerequisite:** [Phase 9 identity](docs/agent-identity-design.md) — user-bound memory
 requires resolving *who* is on each turn (HA login for text, speaker ID for voice).
 
 **Scope:** Durable preferences and household facts, separate from conversation history
@@ -292,15 +314,3 @@ requires resolving *who* is on each turn (HA login for text, speaker ID for voic
 
 **Not in scope for skills:** parameter defaults and profile facts; route those to memory,
 not forced skill save.
-
-### Phase 9a — Agent identity (planned, before memory)
-
-**Scope:** Registered users (≥4), guest profiles, voice + text resolution, admin
-override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-identity-design.md).
-
-- [x] SQLite identity registry with 4 seeded registered users + Assist guest
-- [x] Console resolution from HA login + admin “Act as” override
-- [x] Assist fallback guest + VoiceBM `HA_AGENT_IDENTITY` hook in extra_system_prompt
-- [x] Identity on turn traces / activity log
-- [ ] VoiceBM integration (Phase 9b)
-- [ ] Guest promote / merge UI (Phase 9c)

@@ -3,7 +3,7 @@
 Captured from product discussion (2026-07). Use this when implementing persistent
 memory beyond today's per-`conversation_id` chat history (`memory.py`).
 
-**Prerequisite:** [agent-identity-design.md](agent-identity-design.md) — user-bound
+**Prerequisite:** [Phase 9 identity](agent-identity-design.md) — user-bound
 memory needs a resolved agent user on every turn (voice ID or HA login).
 
 ## Not the same as existing `memory.py`

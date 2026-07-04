@@ -1,6 +1,6 @@
 # Agent identity — design notes (future implementation)
 
-Captured from product discussion (2026-07). **Prerequisite for Phase 9 memory**
+Captured from product discussion (2026-07). **Prerequisite for Phase 10 memory**
 ([agent-memory-design.md](agent-memory-design.md)). Do not implement memory until
 agent turns can resolve *who* is speaking or typing.
 
@@ -284,7 +284,7 @@ async def resolve_agent_user(
 Phase 9a — Identity registry (SQLite) + text/console resolution + admin override
 Phase 9b — Voice backend adapter + Assist identity injection
 Phase 9c — Guest create / promote / merge UI + APIs
-Phase 9d — User-bound + system memory (depends on 9a–9c)
+Phase 10 — User-bound + system memory (depends on Phase 9)
 ```
 
 ## Open questions
