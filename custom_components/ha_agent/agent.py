@@ -1117,6 +1117,11 @@ async def _post_turn_skills(
                             entry_id,
                             _draft,
                             update_existing=_update,
+                            revision_reason=(
+                                "Override workflow merge"
+                                if _update is not None
+                                else "Override workflow child skill"
+                            ),
                         )
                         await _update_skill_status(hass, entry_id)
                     except Exception as err:

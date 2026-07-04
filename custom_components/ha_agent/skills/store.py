@@ -18,6 +18,34 @@ from .models import Skill, SkillIndexRow, SkillRevision, SkillSlot
 SKILLS_STORE_KEY = "skill_stores"
 _IMPROVEMENT_COOLDOWN_SECONDS = 3600
 
+
+def revision_snapshot_summary(snapshot_json: str) -> dict[str, Any]:
+    """Return display metadata parsed from a revision snapshot."""
+    try:
+        data = json.loads(snapshot_json)
+    except json.JSONDecodeError:
+        return {
+            "title": None,
+            "description": None,
+            "tool_step_count": 0,
+            "trigger_count": 0,
+        }
+    if not isinstance(data, dict):
+        return {
+            "title": None,
+            "description": None,
+            "tool_step_count": 0,
+            "trigger_count": 0,
+        }
+    tool_steps = data.get("tool_steps")
+    triggers = data.get("triggers")
+    return {
+        "title": data.get("title"),
+        "description": str(data.get("description") or "")[:160] or None,
+        "tool_step_count": len(tool_steps) if isinstance(tool_steps, list) else 0,
+        "trigger_count": len(triggers) if isinstance(triggers, list) else 0,
+    }
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS skills (
     id TEXT PRIMARY KEY,
@@ -573,6 +601,8 @@ class SkillStore:
         skill.parent_id = data.get("parent_id")
         skill.route_scope = data.get("route_scope")
         skill.score = float(data.get("score", skill.score))
+        if "enabled" in data:
+            skill.enabled = bool(data.get("enabled"))
         skill.version += 1
         skill.last_improved_at = time.time()
         return self.update_skill(skill)

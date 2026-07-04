@@ -19,12 +19,14 @@ async def save_skill_from_draft(
     draft: SkillDraft,
     *,
     update_existing: Skill | None = None,
+    revision_reason: str = "Skill learning update",
 ) -> Skill:
     """Persist a distilled skill, optionally updating a duplicate."""
     store = get_skill_store(hass, entry_id)
 
     def _save() -> Skill:
         if update_existing is not None:
+            store.save_revision(update_existing, reason=revision_reason)
             skill = update_existing
             skill.title = draft.title
             skill.description = draft.description

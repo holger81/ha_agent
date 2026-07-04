@@ -2969,8 +2969,12 @@ class HaAgentPanel extends HTMLElement {
         (rev) =>
           `<li><button type="button" data-action="skill-revision-restore" data-revision-id="${this._escape(rev.id)}">` +
           `Restore v${this._escape(String(rev.version))}</button> ` +
-          `${this._escape(rev.reason || "revision")} ` +
-          `<span class="hint">${this._escape(new Date(rev.created_at * 1000).toLocaleString())}</span></li>`
+          `<strong>${this._escape(rev.title || "Untitled skill")}</strong> ` +
+          `${this._escape(rev.reason || "revision")}` +
+          (rev.tool_step_count != null
+            ? ` · ${this._escape(String(rev.tool_step_count))} step(s)`
+            : "") +
+          ` <span class="hint">${this._escape(new Date(rev.created_at * 1000).toLocaleString())}</span></li>`
       )
       .join("");
     return `

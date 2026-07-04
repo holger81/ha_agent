@@ -55,6 +55,7 @@ def _load_store_module():
 
 store_mod = _load_store_module()
 SkillStore = store_mod.SkillStore
+revision_snapshot_summary = store_mod.revision_snapshot_summary
 _build_fts_query = store_mod._build_fts_query
 
 
@@ -189,3 +190,66 @@ def test_revision_save_list_restore(store: SkillStore) -> None:
     assert restored.description == "Original description."
     assert restored.body == "original body"
     assert restored.version > skill.version
+
+
+def test_revision_snapshot_summary(store: SkillStore) -> None:
+    """Revision summaries expose title and tool counts for the UI."""
+    skill = store.insert_skill(
+        title="Check inbox",
+        description="Unread mail workflow.",
+        triggers=["check inbox"],
+        body="Search unread.",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+    )
+    revision_id = store.save_revision(skill, reason="before edit")
+    revision = store.list_revisions(skill.id)[0]
+    summary = revision_snapshot_summary(revision.snapshot_json)
+
+    assert summary["title"] == "Check inbox"
+    assert summary["tool_step_count"] == 2
+    assert summary["trigger_count"] == 1
+    assert revision.id == revision_id
+
+
+def test_restore_revision_preserves_enabled(store: SkillStore) -> None:
+    """Restoring a revision also restores the enabled flag."""
+    skill = store.insert_skill(
+        title="Toggle skill",
+        description="",
+        triggers=["toggle"],
+        body="body",
+        tool_steps=[],
+        enabled=True,
+    )
+    revision_id = store.save_revision(skill, reason="enabled snapshot")
+    skill.enabled = False
+    skill.version += 1
+    store.update_skill(skill)
+
+    restored = store.restore_revision(revision_id)
+
+    assert restored is not None
+    assert restored.enabled is True
+
+
+def test_restore_saves_current_state_before_reverting(store: SkillStore) -> None:
+    """Restoring creates a safety revision of the current skill first."""
+    skill = store.insert_skill(
+        title="Safety restore",
+        description="old",
+        triggers=["restore"],
+        body="old body",
+        tool_steps=[],
+    )
+    first_revision = store.save_revision(skill, reason="good state")
+    skill.body = "broken body"
+    skill.version += 1
+    store.update_skill(skill)
+
+    store.restore_revision(first_revision)
+
+    revisions = store.list_revisions(skill.id)
+    assert any(rev.reason.startswith("Before restore to v") for rev in revisions)

@@ -165,21 +165,21 @@ async def evaluate_skill_use(
     if improvement is None:
         return
 
-    skill.title = improvement.get("title", skill.title)
-    skill.description = improvement.get("description", skill.description)
-    if (triggers := improvement.get("triggers")) and isinstance(triggers, list):
-        skill.triggers = [str(item) for item in triggers]
-    if body := improvement.get("body"):
-        skill.body = str(body)
-    if (tool_steps := improvement.get("tool_steps")) and isinstance(
-        tool_steps, list
-    ):
-        skill.tool_steps = [item for item in tool_steps if isinstance(item, dict)]
-    skill.version += 1
-    skill.last_improved_at = time.time()
-    skill.last_evaluation_at = time.time()
-
     def _save() -> Skill:
+        store.save_revision(skill, reason="Before LLM evaluation improvement")
+        skill.title = improvement.get("title", skill.title)
+        skill.description = improvement.get("description", skill.description)
+        if (triggers := improvement.get("triggers")) and isinstance(triggers, list):
+            skill.triggers = [str(item) for item in triggers]
+        if body := improvement.get("body"):
+            skill.body = str(body)
+        if (tool_steps := improvement.get("tool_steps")) and isinstance(
+            tool_steps, list
+        ):
+            skill.tool_steps = [item for item in tool_steps if isinstance(item, dict)]
+        skill.version += 1
+        skill.last_improved_at = time.time()
+        skill.last_evaluation_at = time.time()
         return store.update_skill(skill)
 
     saved = await hass.async_add_executor_job(_save)

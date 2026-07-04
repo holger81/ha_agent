@@ -32,7 +32,7 @@ from ..skills.markdown import (
 from ..skills.models import Skill, SkillDraft
 from ..skills.runtime import get_pending_draft as runtime_get_pending_draft
 from ..skills.runtime import pop_pending_draft
-from ..skills.store import get_skill_store
+from ..skills.store import get_skill_store, revision_snapshot_summary
 from .helpers import get_entry
 from .serialize import pending_draft_to_dict, skill_to_dict
 
@@ -231,6 +231,11 @@ async def update_skill(
         if skill.is_builtin:
             raise HomeAssistantError("Built-in route skills cannot be edited")
 
+        revision_reason = str(
+            payload.get("revision_reason") or "Manual update"
+        ).strip()[:512]
+        store.save_revision(skill, reason=revision_reason or "Manual update")
+
         old_slug = skill.slug
         if markdown := str(payload.get("markdown", "")).strip():
             draft, slug, explicit_tool_steps = draft_from_markdown(
@@ -400,6 +405,7 @@ async def list_skill_revisions(
             "version": rev.version,
             "reason": rev.reason,
             "created_at": rev.created_at,
+            **revision_snapshot_summary(rev.snapshot_json),
         }
         for rev in revisions
     ]
