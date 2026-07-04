@@ -64,6 +64,9 @@ class HaAgentPanel extends HTMLElement {
     this._headerNoticeTimer = null;
     this._hacsStatus = null;
     this._hacsBusy = false;
+    this._agentUsers = [];
+    this._identityOverrideUserId = "";
+    this._identityNotice = null;
   }
 
   _newConversationId() {
@@ -370,6 +373,7 @@ class HaAgentPanel extends HTMLElement {
         this._loadThreads(),
         this._loadSkills(),
         this._loadPendingDraft(),
+        this._loadIdentityUsers(),
       ]);
       if (this._threads.length > 0) {
         this._conversationId = this._threads[0].conversation_id;
@@ -574,6 +578,42 @@ class HaAgentPanel extends HTMLElement {
       this._skillsDirectory = "";
       this._skillTemplate = "";
     }
+  }
+
+  async _loadIdentityUsers() {
+    if (!this._entryId) return;
+    this._identityNotice = null;
+    try {
+      const data = await this._call("ha_agent/identity/list", {
+        entry_id: this._entryId,
+      });
+      this._agentUsers = data.users || [];
+      this._identityOverrideUserId = data.override_user_id || "";
+    } catch (err) {
+      this._agentUsers = [];
+      this._identityNotice = this._formatApiError(err, "ha_agent/identity/list");
+    }
+  }
+
+  async _setIdentityOverride(agentUserId) {
+    if (!this._entryId) return;
+    await this._call("ha_agent/identity/set_override", {
+      entry_id: this._entryId,
+      agent_user_id: agentUserId || undefined,
+    });
+    this._identityOverrideUserId = agentUserId || "";
+  }
+
+  _identityActAsOptions() {
+    const options = ['<option value="">Auto (login)</option>'];
+    for (const user of this._agentUsers) {
+      if (user.merged_into) continue;
+      const kind = user.kind === "guest" ? "guest" : "member";
+      options.push(
+        `<option value="${this._escape(user.id)}" ${user.id === this._identityOverrideUserId ? "selected" : ""}>${this._escape(user.display_name)} (${kind})</option>`,
+      );
+    }
+    return options.join("");
   }
 
   async _loadActivity() {
@@ -2099,6 +2139,7 @@ class HaAgentPanel extends HTMLElement {
         entry_id: this._entryId,
         conversation_id: turnId,
         text: text.trim(),
+        agent_user_id: this._identityOverrideUserId || undefined,
       });
       if (result?.history) {
         this._clearTurnTimeout();
@@ -2664,8 +2705,10 @@ class HaAgentPanel extends HTMLElement {
         white-space: pre-wrap;
         word-break: break-word;
       }
-      .composer { display: flex; gap: 8px; margin-top: 12px; flex-shrink: 0; }
-      .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
+      .composer { display: flex; gap: 8px; margin-top: 12px; flex-shrink: 0; flex-wrap: wrap; align-items: center; }
+      .composer input { flex: 1; min-width: 180px; padding: 10px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
+      .act-as-label { display: flex; gap: 6px; align-items: center; font-size: 0.9rem; }
+      .act-as-label select { min-width: 160px; padding: 8px; border-radius: 8px; border: 1px solid var(--divider-color, #ccc); }
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--divider-color, #ddd); vertical-align: top; }
       tr.active-skill-row { background: color-mix(in srgb, var(--primary-color) 12%, transparent); }
@@ -2951,6 +2994,11 @@ class HaAgentPanel extends HTMLElement {
           ${draft}
           <div class="messages">${messageListHtml}</div>
           <div class="composer">
+            <label class="act-as-label">Act as
+              <select id="identity-override" ${this._streaming ? "disabled" : ""}>
+                ${this._identityActAsOptions()}
+              </select>
+            </label>
             <input id="chat-input" placeholder="Message HA Agent..." ${this._streaming ? "disabled" : ""} />
             <button data-action="send" ${this._streaming ? "disabled" : ""}>Send</button>
             <button data-action="clear-history" ${this._streaming ? "disabled" : ""}>Clear</button>
@@ -3678,6 +3726,43 @@ class HaAgentPanel extends HTMLElement {
       </div>`;
   }
 
+  _renderUsers() {
+    const notice = this._identityNotice
+      ? `<p class="activity-hint">${this._escape(this._identityNotice)}</p>`
+      : "";
+    const rows = (this._agentUsers || [])
+      .map((user) => {
+        const kind = user.kind === "guest" ? "guest" : "registered";
+        const haUser = user.ha_user_id ? this._escape(user.ha_user_id) : "—";
+        const person = user.person_entity_id
+          ? this._escape(user.person_entity_id)
+          : "—";
+        const defaultBadge = user.is_default ? " · default" : "";
+        return `
+      <tr>
+        <td>${this._escape(user.display_name)}${defaultBadge}</td>
+        <td>${kind}</td>
+        <td>${haUser}</td>
+        <td>${person}</td>
+        <td>
+          <button type="button" data-action="identity-edit" data-user-id="${this._escape(user.id)}">Edit</button>
+        </td>
+      </tr>`;
+      })
+      .join("");
+    return `
+      ${notice}
+      <p class="hint">Map HA logins to household members for console chat. Voice Assist uses the Assist guest until VoiceBM is connected (Phase 9b).</p>
+      <table>
+        <thead><tr><th>Name</th><th>Kind</th><th>HA user id</th><th>Person</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5">No users loaded.</td></tr>'}</tbody>
+      </table>
+      <div class="actions" style="margin-top:12px">
+        <button type="button" data-action="identity-add-guest">Add guest profile</button>
+        <button type="button" data-action="identity-reload">Reload</button>
+      </div>`;
+  }
+
   _renderActivity() {
     const rows = this._activity
       .map((t) => {
@@ -3703,6 +3788,9 @@ class HaAgentPanel extends HTMLElement {
             ? `<button data-action="activity-promote" data-timestamp="${t.timestamp}">Promote</button>`
             : "—";
         const source = this._conversationSource(t.conversation_id);
+        const actor = t.agent_user_display_name
+          ? `${t.agent_user_display_name}${t.identity_source ? ` · ${t.identity_source}` : ""}`
+          : "—";
         const openChatBtn = t.conversation_id
           ? `<button data-action="activity-open-chat" data-conversation-id="${this._escape(t.conversation_id)}">Open</button>`
           : "—";
@@ -3711,6 +3799,7 @@ class HaAgentPanel extends HTMLElement {
         <td>${t.timestamp ? new Date(t.timestamp * 1000).toLocaleString() : "—"}</td>
         <td><span class="thread-source-badge ${source}">${this._threadSourceLabel(source)}</span></td>
         <td>${this._escape(t.route || "—")}</td>
+        <td>${this._escape(actor)}</td>
         <td>${this._escape(t.user_text || "")}</td>
         <td>${this._escape(t.outcome || "—")}</td>
         <td>${t.iterations || 0}</td>
@@ -3728,8 +3817,8 @@ class HaAgentPanel extends HTMLElement {
     return `
       ${notice}
       <table>
-        <thead><tr><th>Time</th><th>Source</th><th>Route</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>LLM</th><th>Errors</th><th>Chat</th><th>Eval</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="11">No activity yet.</td></tr>'}</tbody>
+        <thead><tr><th>Time</th><th>Source</th><th>Route</th><th>Actor</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>LLM</th><th>Errors</th><th>Chat</th><th>Eval</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="12">No activity yet.</td></tr>'}</tbody>
       </table>
       <p class="activity-hint">Open Assist or console chats from Activity. Assist conversations also appear in the Chats sidebar after each voice/text turn.</p>
       <p class="activity-hint">Promote successful turns to custom eval cases. They run with the built-in suite on the next eval (mock MCP, same scoring).</p>`;
@@ -4251,6 +4340,8 @@ class HaAgentPanel extends HTMLElement {
         return this._renderRecovery();
       case "settings":
         return this._renderSettings();
+      case "users":
+        return this._renderUsers();
       case "eval":
         return this._renderEval();
       case "activity":
@@ -4268,6 +4359,7 @@ class HaAgentPanel extends HTMLElement {
       "playbooks",
       "routes",
       "recovery",
+      "users",
       "settings",
       "eval",
       "activity",
@@ -4349,6 +4441,7 @@ class HaAgentPanel extends HTMLElement {
           if (this._tab === "playbooks") await this._loadPlaybooks();
           if (this._tab === "routes") await this._loadRouteKeywords();
           if (this._tab === "recovery") await this._loadRecoveryHints();
+          if (this._tab === "users") await this._loadIdentityUsers();
           if (this._tab === "eval") await this._loadEvalStatus();
         } catch (err) {
           const message = err?.message || String(err);
@@ -4383,6 +4476,17 @@ class HaAgentPanel extends HTMLElement {
 
     const sendBtn = this.shadowRoot.querySelector('[data-action="send"]');
     const input = this.shadowRoot.querySelector("#chat-input");
+    const identitySelect = this.shadowRoot.querySelector("#identity-override");
+    if (identitySelect) {
+      identitySelect.onchange = async () => {
+        try {
+          await this._setIdentityOverride(identitySelect.value || "");
+        } catch (err) {
+          this._identityNotice = `Could not set identity override: ${err?.message || err}`;
+          this._render();
+        }
+      };
+    }
     if (sendBtn && input) {
       const submit = () => {
         const value = input.value;
@@ -4803,6 +4907,69 @@ class HaAgentPanel extends HTMLElement {
     this._bindRecoveryEvents();
     this._bindEvalEvents();
     this._bindActivityEvents();
+
+    this.shadowRoot.querySelector('[data-action="identity-reload"]')?.addEventListener("click", async () => {
+      await this._loadIdentityUsers();
+      this._render();
+    });
+
+    this.shadowRoot.querySelector('[data-action="identity-add-guest"]')?.addEventListener("click", async () => {
+      const name = prompt("Guest display name:");
+      if (!name?.trim()) return;
+      try {
+        await this._call("ha_agent/identity/create_guest", {
+          entry_id: this._entryId,
+          user: { display_name: name.trim() },
+        });
+        await this._loadIdentityUsers();
+        this._identityNotice = `Added guest: ${name.trim()}`;
+        this._render();
+      } catch (err) {
+        this._identityNotice = `Could not add guest: ${err?.message || err}`;
+        this._render();
+      }
+    });
+
+    this.shadowRoot.querySelectorAll("[data-action='identity-edit']").forEach((el) => {
+      el.onclick = async () => {
+        const userId = el.getAttribute("data-user-id");
+        const user = (this._agentUsers || []).find((item) => item.id === userId);
+        if (!user) return;
+        const displayName = prompt("Display name:", user.display_name || "");
+        if (displayName === null) return;
+        const haUserId = prompt(
+          "Home Assistant user id (blank to clear):",
+          user.ha_user_id || "",
+        );
+        if (haUserId === null) return;
+        const personEntity = prompt(
+          "Person entity id (blank to clear):",
+          user.person_entity_id || "",
+        );
+        if (personEntity === null) return;
+        const makeDefault = user.kind === "registered"
+          ? confirm("Set as default console fallback user?")
+          : false;
+        try {
+          await this._call("ha_agent/identity/update", {
+            entry_id: this._entryId,
+            user_id: userId,
+            user: {
+              display_name: displayName.trim() || user.display_name,
+              ha_user_id: haUserId.trim(),
+              person_entity_id: personEntity.trim(),
+              is_default: makeDefault,
+            },
+          });
+          await this._loadIdentityUsers();
+          this._identityNotice = "User updated.";
+          this._render();
+        } catch (err) {
+          this._identityNotice = `Could not update user: ${err?.message || err}`;
+          this._render();
+        }
+      };
+    });
 
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {
       const updates = {};

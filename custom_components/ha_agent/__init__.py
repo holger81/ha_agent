@@ -59,6 +59,7 @@ from .const import (
     LEGACY_TOOL_INSTRUCTION_MARKERS,
 )
 from .eval.store import close_eval_store, get_eval_store
+from .identity.store import close_identity_store, get_identity_store
 from .memory import async_load_memory
 from .panel import async_register_panel
 from .playbooks import close_playbook_store, get_playbook_store
@@ -196,6 +197,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         model=entry.data.get(CONF_LLM_MODEL),
     )
     get_skill_store(hass, entry.entry_id)
+    get_identity_store(hass, entry.entry_id)
     await async_sync_skill_files(hass, entry.entry_id)
     get_playbook_store(hass, entry.entry_id)
     get_route_keyword_store(hass, entry.entry_id)
@@ -213,6 +215,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     close_skill_store(hass, entry.entry_id)
+    close_identity_store(hass, entry.entry_id)
     close_playbook_store(hass, entry.entry_id)
     close_route_keyword_store(hass, entry.entry_id)
     close_recovery_hint_store(hass, entry.entry_id)

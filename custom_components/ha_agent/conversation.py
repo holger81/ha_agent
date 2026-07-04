@@ -151,6 +151,9 @@ class HaAgentConversationEntity(
             return err.as_conversation_result()
 
         user_text = user_text_from_input(user_input)
+        context_user_id = None
+        if user_input.context and user_input.context.user_id:
+            context_user_id = user_input.context.user_id
         intent_response = intent.IntentResponse(language=user_input.language)
 
         if not user_text:
@@ -193,6 +196,8 @@ class HaAgentConversationEntity(
                 user_text=user_text,
                 exposed_entities=exposed,
                 extra_system_prompt=user_input.extra_system_prompt,
+                channel="assist",
+                context_user_id=context_user_id,
             ):
                 if delta.tool and agent_config.show_reasoning_in_chat:
                     produced_content = True

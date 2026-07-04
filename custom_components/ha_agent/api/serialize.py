@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..identity.models import AgentUser, ResolvedIdentity
 from ..playbooks import Playbook
 from ..recovery_hints import RecoveryHint
 from ..route_keywords import RouteKeywords
@@ -98,6 +99,36 @@ def skill_index_to_dict(row: SkillIndexRow) -> dict[str, Any]:
     }
 
 
+def agent_user_to_dict(user: AgentUser) -> dict[str, Any]:
+    """Serialize an agent user."""
+    return {
+        "id": user.id,
+        "kind": user.kind.value,
+        "display_name": user.display_name,
+        "ha_user_id": user.ha_user_id,
+        "person_entity_id": user.person_entity_id,
+        "is_default": user.is_default,
+        "merged_into": user.merged_into,
+        "notes": user.notes,
+        "created_at": user.created_at,
+        "updated_at": user.updated_at,
+        "last_seen_at": user.last_seen_at,
+    }
+
+
+def resolved_identity_to_dict(identity: ResolvedIdentity) -> dict[str, Any]:
+    """Serialize resolved identity metadata for turn_meta."""
+    return {
+        "agent_user_id": identity.user.id,
+        "agent_user_display_name": identity.user.display_name,
+        "agent_user_kind": identity.user.kind.value,
+        "identity_source": identity.source.value,
+        "identity_ha_user_id": identity.ha_user_id,
+        "identity_override_by_ha_user_id": identity.override_by_ha_user_id,
+        "identity_speaker_confidence": identity.speaker_confidence,
+    }
+
+
 def turn_trace_to_dict(
     trace: TurnTrace, *, timestamp: float | None = None
 ) -> dict[str, Any]:
@@ -128,6 +159,13 @@ def turn_trace_to_dict(
         "skill_plan_override": trace.skill_plan_override,
         "skill_plan_override_reason": trace.skill_plan_override_reason,
         "plan_progress": list(trace.plan_progress),
+        "agent_user_id": trace.agent_user_id,
+        "agent_user_display_name": trace.agent_user_display_name,
+        "agent_user_kind": trace.agent_user_kind,
+        "identity_source": trace.identity_source,
+        "identity_ha_user_id": trace.identity_ha_user_id,
+        "identity_override_by_ha_user_id": trace.identity_override_by_ha_user_id,
+        "identity_speaker_confidence": trace.identity_speaker_confidence,
     }
 
 

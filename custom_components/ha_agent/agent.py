@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from homeassistant.core import HomeAssistant
 
 from .activity import record_turn
+from .api.serialize import resolved_identity_to_dict
 from .chat_events import publish_chat_delta
 from .compaction import compact_messages_if_needed
 from .config_helpers import AgentConfig, LlmBackend, RouterConfig, SkillsConfig
@@ -19,6 +20,7 @@ from .context import (
     build_messages,
     build_system_message,
     build_tool_context,
+    format_identity_context,
     is_affirmative,
 )
 from .embedded_tools import (
@@ -27,6 +29,7 @@ from .embedded_tools import (
     safe_stream_display_text,
     strip_embedded_tool_markup,
 )
+from .identity.resolver import apply_identity_to_trace, resolve_agent_user
 from .llm_client import (
     LlmClient,
     StreamChatSession,
@@ -1303,6 +1306,11 @@ async def run_agent(
     user_text: str,
     exposed_entities: list[dict[str, Any]],
     extra_system_prompt: str | None = None,
+    channel: str = "console",
+    ha_user_id: str | None = None,
+    admin_override_user_id: str | None = None,
+    override_by_ha_user_id: str | None = None,
+    context_user_id: str | None = None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run the tool loop and yield assistant chat deltas."""
     history = conversation_history_for_turn(
@@ -1360,6 +1368,19 @@ async def run_agent(
         history_len=len(history),
         conversation_id=conversation_id,
     )
+    identity = await resolve_agent_user(
+        hass,
+        entry_id,
+        channel="assist" if channel == "assist" else "console",
+        ha_user_id=ha_user_id,
+        conversation_id=conversation_id,
+        admin_override_user_id=admin_override_user_id,
+        override_by_ha_user_id=override_by_ha_user_id,
+        extra_system_prompt=extra_system_prompt,
+        context_user_id=context_user_id,
+    )
+    apply_identity_to_trace(trace, identity)
+    identity_context = format_identity_context(identity)
 
     prepass_result = None
     skill_selection = None
@@ -1591,6 +1612,7 @@ async def run_agent(
         tool_context=tool_context,
         extra_system_prompt=extra_system_prompt,
         route_playbook=playbook_selection.body,
+        identity_context=identity_context,
     )
     messages = build_messages(
         system_message=system_message,
@@ -1672,6 +1694,7 @@ async def run_agent(
         "llm_calls": len(trace.llm_calls),
         "prepass": prepass_result.method if prepass_result else None,
     }
+    turn_meta.update(resolved_identity_to_dict(identity))
     if loop_state.skill_plan_override:
         turn_meta["skill_plan_override"] = True
         turn_meta["skill_plan_override_reason"] = loop_state.skill_plan_override_reason

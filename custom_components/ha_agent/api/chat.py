@@ -104,6 +104,8 @@ def start_chat(
     entry_id: str,
     conversation_id: str,
     text: str,
+    ha_user_id: str | None = None,
+    admin_override_user_id: str | None = None,
 ) -> asyncio.Task[None]:
     """Schedule a chat turn; deltas and completion are sent on the event bus."""
     entry = get_entry(hass, entry_id)
@@ -159,6 +161,10 @@ def start_chat(
                     conversation_id=conversation_id,
                     user_text=text,
                     exposed_entities=exposed,
+                    channel="console",
+                    ha_user_id=ha_user_id,
+                    admin_override_user_id=admin_override_user_id,
+                    override_by_ha_user_id=ha_user_id,
                 ):
                     if delta.meta:
                         turn_meta = merge_turn_meta(turn_meta, delta.meta)

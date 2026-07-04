@@ -514,6 +514,23 @@ def build_tool_context(
     return "\n\n".join(context_parts)
 
 
+def format_identity_context(identity: object) -> str:
+    """Format resolved identity for LLM context."""
+    from .identity.models import IdentitySource, ResolvedIdentity
+
+    if not isinstance(identity, ResolvedIdentity):
+        return ""
+    override_note = (
+        " Admin override is active for this turn."
+        if identity.source == IdentitySource.OVERRIDE
+        else ""
+    )
+    return (
+        f"ACTIVE USER: {identity.user.display_name} ({identity.user.kind})."
+        f"{override_note}"
+    )
+
+
 def build_system_message(
     agent_system_prompt: str,
     tool_instructions: str,
@@ -522,11 +539,14 @@ def build_system_message(
     tool_context: str = "",
     extra_system_prompt: str | None = None,
     route_playbook: str = "",
+    identity_context: str = "",
 ) -> str:
     """Assemble the system message for the LLM."""
     parts = [agent_system_prompt.strip(), tool_instructions.strip()]
     if route_playbook.strip():
         parts.append(route_playbook.strip())
+    if identity_context.strip():
+        parts.append(identity_context.strip())
     if mcp_session_prompt.strip():
         parts.append(mcp_session_prompt.strip())
     if tool_context.strip():

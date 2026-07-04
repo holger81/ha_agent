@@ -271,3 +271,29 @@ this is the dominant latency + reliability cost.
 - [ ] ruff CI passes; eval-set accuracy ≥ pre-redesign baseline
 
 **Start with:** 8a → 8b → 8c (highest impact for small hardware; 8a unblocks the rest).
+
+---
+
+### Phase 9 — Persistent agent memory (planned)
+
+**Prerequisite:** [Phase 9a identity](agent-identity-design.md) — user-bound memory
+requires resolving *who* is on each turn (HA login for text, speaker ID for voice).
+
+**Scope:** Durable preferences and household facts, separate from conversation history
+(`memory.py`) and workflow skills. See [docs/agent-memory-design.md](docs/agent-memory-design.md).
+
+**Minimum scopes:**
+
+- **User-bound** — per-person preferences (e.g. news style, default mailbox)
+- **System / household** — shared procedures and mappings (e.g. local news via
+  `news_curate`, dining room light entity id)
+
+**Precedence:** user memory overrides system memory overrides shipped defaults.
+
+**Not in scope for skills:** parameter defaults and profile facts; route those to memory,
+not forced skill save.
+
+### Phase 9a — Agent identity (planned, before memory)
+
+**Scope:** Registered users (≥4), guest profiles, voice + text resolution, admin
+override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-identity-design.md).

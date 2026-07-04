@@ -85,6 +85,13 @@ class TurnTrace:
     recovery_hints: list[str] = field(default_factory=list)
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
     plan_progress: list[dict[str, str]] = field(default_factory=list)
+    agent_user_id: str = ""
+    agent_user_display_name: str = ""
+    agent_user_kind: str = ""
+    identity_source: str = ""
+    identity_ha_user_id: str | None = None
+    identity_override_by_ha_user_id: str | None = None
+    identity_speaker_confidence: float | None = None
 
 
 @dataclass(slots=True)

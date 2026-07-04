@@ -14,6 +14,7 @@ from .api import config as config_api
 from .api import diagnostics as diagnostics_api
 from .api import eval as eval_api
 from .api import hacs as hacs_api
+from .api import identity as identity_api
 from .api import playbooks as playbooks_api
 from .api import recovery_hints as recovery_hints_api
 from .api import route_keywords as route_keywords_api
@@ -47,6 +48,11 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_chat_history_list)
     websocket_api.async_register_command(hass, ws_chat_turn_status)
     websocket_api.async_register_command(hass, ws_chat_history_clear)
+    websocket_api.async_register_command(hass, ws_identity_list)
+    websocket_api.async_register_command(hass, ws_identity_update)
+    websocket_api.async_register_command(hass, ws_identity_create_guest)
+    websocket_api.async_register_command(hass, ws_identity_set_override)
+    websocket_api.async_register_command(hass, ws_identity_get_override)
     websocket_api.async_register_command(hass, ws_skills_list)
     websocket_api.async_register_command(hass, ws_skills_search)
     websocket_api.async_register_command(hass, ws_skills_get)
@@ -176,6 +182,7 @@ async def ws_status(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Required("entry_id"): str,
         vol.Required("conversation_id"): str,
         vol.Required("text"): str,
+        vol.Optional("agent_user_id"): str,
     }
 )
 @websocket_api.async_response
@@ -189,6 +196,8 @@ async def ws_chat_send(hass: HomeAssistant, connection, msg: dict) -> None:
         entry_id=entry_id,
         conversation_id=conversation_id,
         text=msg["text"],
+        ha_user_id=connection.user.id,
+        admin_override_user_id=msg.get("agent_user_id"),
     )
     connection.send_message(
         websocket_api.result_message(msg["id"], {"started": True})
@@ -266,6 +275,118 @@ async def ws_chat_history_clear(hass: HomeAssistant, connection, msg: dict) -> N
     require_admin(connection)
     chat_api.clear_history(hass, msg["conversation_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"success": True}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/identity/list",
+        **_entry_id_schema(
+            {
+                vol.Optional("kind"): vol.In(["registered", "guest"]),
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_identity_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await identity_api.list_users(
+        hass,
+        msg["entry_id"],
+        kind=msg.get("kind"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/identity/update",
+        vol.Required("entry_id"): str,
+        vol.Required("user_id"): str,
+        vol.Required("user"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_identity_update(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    user = await identity_api.update_user(
+        hass,
+        msg["entry_id"],
+        msg["user_id"],
+        msg["user"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], {"user": user}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/identity/create_guest",
+        vol.Required("entry_id"): str,
+        vol.Required("user"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_identity_create_guest(
+    hass: HomeAssistant,
+    connection,
+    msg: dict,
+) -> None:
+    require_admin(connection)
+    user = await identity_api.create_guest(
+        hass,
+        msg["entry_id"],
+        msg["user"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], {"user": user}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/identity/set_override",
+        vol.Required("entry_id"): str,
+        vol.Optional("agent_user_id"): str,
+        vol.Optional("conversation_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_identity_set_override(
+    hass: HomeAssistant,
+    connection,
+    msg: dict,
+) -> None:
+    require_admin(connection)
+    result = await identity_api.set_override(
+        hass,
+        msg["entry_id"],
+        agent_user_id=msg.get("agent_user_id"),
+        conversation_id=msg.get("conversation_id"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/identity/get_override",
+        **_entry_id_schema(
+            {
+                vol.Optional("conversation_id"): str,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_identity_get_override(
+    hass: HomeAssistant,
+    connection,
+    msg: dict,
+) -> None:
+    require_admin(connection)
+    result = await identity_api.get_override(
+        hass,
+        msg["entry_id"],
+        conversation_id=msg.get("conversation_id"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
 
 
 @websocket_api.websocket_command(
