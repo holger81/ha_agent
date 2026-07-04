@@ -309,7 +309,7 @@ See [agent-voice-inference-plan.md](agent-voice-inference-plan.md) for 9b detail
 | `docs/agent-memory-design.md` | Memory scopes once identity exists |
 | `identity/voicebm.py` | `HA_AGENT_IDENTITY` parser (override/debug) |
 | `docs/agent-voice-inference-plan.md` | Phase 9b Sherpa + inference box plan |
-| `../ha_liquidai/docs/voice-speaker-embed-plan.md` | STT bridge + `/v1/speaker/embed` contract |
+| [docs/voice-speaker-embed-plan.md](voice-speaker-embed-plan.md) | STT bridge + `/v1/speaker/embed` contract (canonical: [ha_liquidai](https://github.com/holger81/ha_liquidai/blob/main/docs/voice-speaker-embed-plan.md)) |
 
 ## References
 

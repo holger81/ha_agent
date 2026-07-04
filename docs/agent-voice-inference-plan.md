@@ -254,7 +254,7 @@ required from inference box.
 | Step | Repo | Path | Deliverable | Status |
 |------|------|------|-------------|--------|
 | **1** | liquidai-audio-docker | `~/MeineDateien/Projekte/liquidai-audio` | `/v1/speaker/embed` + Sherpa model mount | ✅ code shipped; deploy `.31` pending |
-| **2** | ha_liquidai | `~/Projects/ha_liquidai` | Parallel embed + voice turn cache — [plan](../ha_liquidai/docs/voice-speaker-embed-plan.md) | pending |
+| **2** | ha_liquidai | `~/Projects/ha_liquidai` | Parallel embed + voice turn cache — [plan](voice-speaker-embed-plan.md) | pending |
 | **3** | ha_agent | `~/Projects/ha_agent` | `voice_profiles` schema + `identity/clustering.py` | pending |
 | **4** | ha_agent | `~/Projects/ha_agent` | `resolve_agent_user` embedding path + unit tests | pending |
 | **5** | ha_agent | `~/Projects/ha_agent` | `conversation.py` cache lookup wired | pending |

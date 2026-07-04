@@ -291,7 +291,8 @@ override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-id
 
 Sherpa-ONNX embeddings on inference box (`.31`) + guest clustering in ha_agent.
 Full plan: [docs/agent-voice-inference-plan.md](docs/agent-voice-inference-plan.md).
-STT bridge (ha_liquidai): [voice-speaker-embed-plan.md](../ha_liquidai/docs/voice-speaker-embed-plan.md).
+STT bridge (ha_liquidai): [docs/voice-speaker-embed-plan.md](docs/voice-speaker-embed-plan.md) (pointer) ·
+[canonical copy](https://github.com/holger81/ha_liquidai/blob/main/docs/voice-speaker-embed-plan.md).
 
 **Inference box** (`~/MeineDateien/Projekte/liquidai-audio`):
 
