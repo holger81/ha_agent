@@ -2,6 +2,7 @@
 
 Project root: `~/Projects/ha_agent`  
 Speech (STT/TTS): [`~/Projects/ha_liquidai`](../ha_liquidai)  
+Inference box (ASR/TTS/speaker embed): [`liquidai-audio-docker`](https://github.com/holger81/liquidai-audio-docker) (`~/MeineDateien/Projekte/liquidai-audio`)  
 Legacy stack: `~/Projects/ha_liquidai_n8n` (n8n + Webhook Conversation — **retired**; see [docs/migration-from-n8n.md](docs/migration-from-n8n.md))
 
 ## Goal
@@ -286,17 +287,27 @@ override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-id
 - [x] Assist fallback guest + VoiceBM `HA_AGENT_IDENTITY` hook in extra_system_prompt
 - [x] Identity on turn traces / activity log
 
-#### 9b — Voice identification (planned)
+#### 9b — Voice identification (in progress)
 
 Sherpa-ONNX embeddings on inference box (`.31`) + guest clustering in ha_agent.
 Full plan: [docs/agent-voice-inference-plan.md](docs/agent-voice-inference-plan.md).
-STT bridge (ha_liquidai):
-[voice-speaker-embed-plan.md](https://github.com/holger81/ha_liquidai/blob/main/docs/voice-speaker-embed-plan.md).
+STT bridge (ha_liquidai): [voice-speaker-embed-plan.md](../ha_liquidai/docs/voice-speaker-embed-plan.md).
 
-- [ ] Inference box: `POST /v1/speaker/embed` (Sherpa-ONNX, stateless)
-- [ ] ha_liquidai: parallel ASR + embed, voice turn cache
-- [ ] ha_agent: `voice_profiles` schema + embedding clustering in resolver
-- [ ] ha_agent: conversation cache lookup (primary path; keep `HA_AGENT_IDENTITY` override)
+**Inference box** (`~/MeineDateien/Projekte/liquidai-audio`):
+
+- [x] Code: `POST /v1/speaker/embed` (Sherpa-ONNX, stateless) — shipped in liquidai-audio-docker
+- [ ] Deploy Sherpa model on `.31` + smoke test
+
+**ha_liquidai** (`~/Projects/ha_liquidai`):
+
+- [ ] Parallel ASR + embed, voice turn cache (Parts B–D)
+
+**ha_agent** (`~/Projects/ha_agent`):
+
+- [ ] `identity/store.py` — `voice_profiles` schema + centroid CRUD
+- [ ] `identity/clustering.py` — cosine match, centroid update (new)
+- [ ] `identity/resolver.py` — embedding path in `resolve_agent_user()`
+- [ ] `conversation.py` — pop voice cache (primary path; keep `HA_AGENT_IDENTITY` override)
 - [ ] Live test: same voice → same guest id without enrollment
 
 #### 9c — Guest lifecycle (planned)

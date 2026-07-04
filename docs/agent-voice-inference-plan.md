@@ -9,6 +9,16 @@ and promotion come in Phase 9c.
 
 **Prerequisite:** [Phase 9a identity registry](agent-identity-design.md) (shipped v1.14.0).
 
+**Status (2026-07):** Step 1 (inference API) **shipped** in liquidai-audio-docker. Steps 2–5 **pending** in ha_liquidai / ha_agent.
+
+## Repository map (local)
+
+| Step | Repo | Path |
+|------|------|------|
+| 1 — `/v1/speaker/embed` | [liquidai-audio-docker](https://github.com/holger81/liquidai-audio-docker) | `~/MeineDateien/Projekte/liquidai-audio` |
+| 2 — STT bridge + cache | [ha_liquidai](https://github.com/holger81/ha_liquidai) | `~/Projects/ha_liquidai` |
+| 3–5 — clustering + conversation | [ha_agent](https://github.com/holger81/ha_agent) | `~/Projects/ha_agent` |
+
 ---
 
 ## Goal
@@ -33,13 +43,16 @@ Phase 10 user-bound memory.
 | `192.168.10.32` | Home Assistant | ha_liquidai STT/TTS, ha_agent conversation |
 | `192.168.10.31` | Inference box | LiquidAI `:8811`, llama.cpp `:9292`, MCP `:2222` |
 
-Assist pipeline today:
+Assist pipeline after Phase 4 (target):
 
 ```text
-Satellite → ha_liquidai STT → POST /v1/asr @ .31 → text only
-          → ha_agent conversation → LLM @ .31 + MCP @ .31
+Satellite → ha_liquidai STT → POST /v1/asr + /v1/speaker/embed @ .31 (parallel)
+          → voice turn cache (hass.data)
+          → ha_agent conversation → pop cache → cluster → LLM @ .31 + MCP @ .31
           → ha_liquidai TTS → POST /v1/tts @ .31
 ```
+
+Today (until ha_liquidai Parts B–D ship): STT still returns text only; embed API on `.31` is available but unused by Assist.
 
 ---
 
@@ -115,7 +128,11 @@ path (automation bridge, manual tests). Primary path is internal cache lookup.
 
 ---
 
-## Inference box — speaker embed service
+## Inference box — speaker embed service ✅ (shipped)
+
+**Repo:** `~/MeineDateien/Projekte/liquidai-audio` — `lfm2audio/speaker_embed.py`, `POST /v1/speaker/embed` on `:8811`.
+
+Deploy on `.31` still required: place Sherpa ONNX in `models/speaker/`, rebuild container, smoke curl.
 
 ### Endpoint
 
@@ -234,15 +251,15 @@ required from inference box.
 
 ## Implementation phases
 
-| Step | Repo | Deliverable |
-|------|------|-------------|
-| **1** | Inference box | `/v1/speaker/embed` + Sherpa model on `.31` |
-| **2** | ha_liquidai | Parallel embed + voice turn cache — [plan](https://github.com/holger81/ha_liquidai/blob/main/docs/voice-speaker-embed-plan.md) |
-| **3** | ha_agent | `voice_profiles` schema + clustering module |
-| **4** | ha_agent | `resolve_agent_user` embedding path + unit tests |
-| **5** | ha_agent | Conversation cache lookup wired |
-| **6** | ha_agent | Users tab: voice sample count, last seen, confidence |
-| **7** | ha_agent | 9c promote / merge UI + APIs |
+| Step | Repo | Path | Deliverable | Status |
+|------|------|------|-------------|--------|
+| **1** | liquidai-audio-docker | `~/MeineDateien/Projekte/liquidai-audio` | `/v1/speaker/embed` + Sherpa model mount | ✅ code shipped; deploy `.31` pending |
+| **2** | ha_liquidai | `~/Projects/ha_liquidai` | Parallel embed + voice turn cache — [plan](../ha_liquidai/docs/voice-speaker-embed-plan.md) | pending |
+| **3** | ha_agent | `~/Projects/ha_agent` | `voice_profiles` schema + `identity/clustering.py` | pending |
+| **4** | ha_agent | `~/Projects/ha_agent` | `resolve_agent_user` embedding path + unit tests | pending |
+| **5** | ha_agent | `~/Projects/ha_agent` | `conversation.py` cache lookup wired | pending |
+| **6** | ha_agent | `~/Projects/ha_agent` | Users tab: voice sample count, last seen, confidence | pending |
+| **7** | ha_agent | `~/Projects/ha_agent` | 9c promote / merge UI + APIs | pending |
 
 ### Exit criteria (9b)
 
@@ -283,7 +300,7 @@ unblocks [agent-memory-design.md](agent-memory-design.md).
 
 ## Open decisions
 
-1. Extend `:8811` vs sidecar `:8812` on inference box
+1. ~~Extend `:8811` vs sidecar `:8812` on inference box~~ — **decided:** extend `:8811` (implemented)
 2. MVP cache key: text+time bucket (single satellite) vs satellite-aware patch first
 3. Exact Sherpa checkpoint after latency/accuracy smoke test on `.31`
 
