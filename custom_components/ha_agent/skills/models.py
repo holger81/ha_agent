@@ -92,6 +92,9 @@ class TurnTrace:
     identity_ha_user_id: str | None = None
     identity_override_by_ha_user_id: str | None = None
     identity_speaker_confidence: float | None = None
+    identity_original_user_id: str = ""
+    identity_original_display_name: str = ""
+    identity_corrected_by_ha_user_id: str | None = None
 
 
 @dataclass(slots=True)

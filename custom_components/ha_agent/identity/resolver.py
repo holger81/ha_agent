@@ -6,10 +6,15 @@ from typing import Literal
 
 from homeassistant.core import HomeAssistant
 
-from .clustering import resolve_speaker_embedding
+from .clustering import enroll_speaker_embedding, resolve_speaker_embedding
 from .config import IDENTITY_VOICE_CONFIG, IdentityVoiceConfig
 from .models import IdentitySource, ResolvedIdentity, SpeakerMatch, UserKind
-from .runtime import get_identity_override
+from .runtime import (
+    clear_enrollment_target,
+    get_enrollment_session,
+    get_identity_override,
+    record_enrollment_sample,
+)
 from .store import IdentityStore, get_identity_store
 from .voicebm import parse_voice_identity
 
@@ -27,6 +32,7 @@ async def resolve_agent_user(
     context_user_id: str | None = None,
     speaker_match: SpeakerMatch | None = None,
     voice_config: IdentityVoiceConfig | None = None,
+    user_text: str | None = None,
 ) -> ResolvedIdentity:
     """Resolve who is acting for this turn."""
     store = get_identity_store(hass, entry_id)
@@ -66,10 +72,29 @@ async def resolve_agent_user(
                 return resolved
 
         if channel == "assist" and speaker_match is not None:
+            enrollment = get_enrollment_session(hass, entry_id)
+            if enrollment is not None:
+                enrolled = enroll_speaker_embedding(
+                    store,
+                    enrollment.agent_user_id,
+                    speaker_match,
+                    config=voice_cfg,
+                )
+                if enrolled is not None:
+                    session = record_enrollment_sample(hass, entry_id)
+                    if (
+                        session is not None
+                        and session.samples_collected
+                        >= voice_cfg.enrollment_samples_target
+                    ):
+                        clear_enrollment_target(hass, entry_id)
+                    return enrolled
+
             resolved = resolve_speaker_embedding(
                 store,
                 speaker_match,
                 config=voice_cfg,
+                user_text=user_text,
             )
             if resolved is not None:
                 return resolved

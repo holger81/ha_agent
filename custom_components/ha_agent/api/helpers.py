@@ -18,6 +18,12 @@ from ..const import (
     CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL,
     CONF_EVAL_DOWNLOAD_WEBHOOK_URL,
     CONF_EVAL_MODELS_DIR,
+    CONF_IDENTITY_AUTO_NAME_ENABLED,
+    CONF_IDENTITY_GUEST_CREATE_THRESHOLD,
+    CONF_IDENTITY_GUEST_MATCH_THRESHOLD,
+    CONF_IDENTITY_GUEST_TIE_MARGIN,
+    CONF_IDENTITY_MIN_UTTERANCE_MS,
+    CONF_IDENTITY_VOICE_ENABLED,
     DOMAIN,
 )
 from ..role_registry import ModelRole, build_role_registry
@@ -97,10 +103,20 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "eval_discover_require_trial_approval": bool(
             data.get(CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL, True)
         ),
-        "eval_discover_max_models": int(
-            data.get(CONF_EVAL_DISCOVER_MAX_MODELS, 3)
+        "eval_discover_max_models": int(data.get(CONF_EVAL_DISCOVER_MAX_MODELS, 3)),
+        "identity_voice_enabled": bool(data.get(CONF_IDENTITY_VOICE_ENABLED, True)),
+        "identity_guest_match_threshold": float(
+            data.get(CONF_IDENTITY_GUEST_MATCH_THRESHOLD, 0.75)
         ),
-        "role_models": {
-            role.value: role_registry.chip_for(role) for role in ModelRole
-        },
+        "identity_guest_create_threshold": float(
+            data.get(CONF_IDENTITY_GUEST_CREATE_THRESHOLD, 0.52)
+        ),
+        "identity_guest_tie_margin": float(
+            data.get(CONF_IDENTITY_GUEST_TIE_MARGIN, 0.05)
+        ),
+        "identity_min_utterance_ms": int(data.get(CONF_IDENTITY_MIN_UTTERANCE_MS, 800)),
+        "identity_auto_name_enabled": bool(
+            data.get(CONF_IDENTITY_AUTO_NAME_ENABLED, True)
+        ),
+        "role_models": {role.value: role_registry.chip_for(role) for role in ModelRole},
     }

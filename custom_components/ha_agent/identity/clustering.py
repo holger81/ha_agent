@@ -7,7 +7,14 @@ import uuid
 from ..const import LOGGER
 from .config import SKIP_EMBED_QUALITIES, IdentityVoiceConfig
 from .embeddings import cosine_similarity
-from .models import IdentitySource, ResolvedIdentity, SpeakerMatch, VoiceProfile
+from .models import (
+    IdentitySource,
+    ResolvedIdentity,
+    SpeakerMatch,
+    UserKind,
+    VoiceProfile,
+)
+from .naming import extract_self_intro_name, is_default_guest_name
 from .store import IdentityStore
 
 
@@ -44,11 +51,7 @@ def _pick_best_profile(
     if best_score - runner_up_score > tie_margin:
         return best_profile, best_score
 
-    close = [
-        item
-        for item in scored
-        if best_score - item[1] <= tie_margin
-    ]
+    close = [item for item in scored if best_score - item[1] <= tie_margin]
     close.sort(
         key=lambda item: (
             item[0].last_seen_at or 0.0,
@@ -60,11 +63,79 @@ def _pick_best_profile(
     return close[0][0], close[0][1]
 
 
+def _maybe_auto_name_guest(
+    store: IdentityStore,
+    guest_id: str,
+    *,
+    user_text: str | None,
+    config: IdentityVoiceConfig,
+) -> None:
+    if not config.auto_name_enabled or not user_text:
+        return
+    user = store.get_user(guest_id)
+    if user is None or not is_default_guest_name(user.display_name):
+        return
+    name = extract_self_intro_name(user_text)
+    if not name:
+        return
+    store.update_user(
+        guest_id,
+        display_name=name,
+        notes="Auto-named from STT self-introduction.",
+    )
+
+
+def enroll_speaker_embedding(
+    store: IdentityStore,
+    agent_user_id: str,
+    speaker_match: SpeakerMatch,
+    *,
+    config: IdentityVoiceConfig,
+) -> ResolvedIdentity | None:
+    """Add a voice sample to a registered member during enrollment."""
+    if not config.enabled:
+        return None
+
+    quality = speaker_match.quality or "ok"
+    if quality in SKIP_EMBED_QUALITIES:
+        return None
+
+    embedding = speaker_match.embedding
+    if not embedding:
+        return None
+
+    if (
+        speaker_match.duration_ms is not None
+        and speaker_match.duration_ms < config.min_utterance_ms
+    ):
+        return None
+
+    user = store.get_user(agent_user_id)
+    if user is None or user.merged_into or user.kind != UserKind.REGISTERED:
+        return None
+
+    store.enroll_voice_sample(
+        agent_user_id,
+        embedding=embedding,
+        backend=speaker_match.backend,
+        model=speaker_match.model,
+        match_confidence=1.0,
+    )
+    user = store.get_user(agent_user_id)
+    assert user is not None
+    return ResolvedIdentity(
+        user=user,
+        source=IdentitySource.VOICE,
+        speaker_confidence=1.0,
+    )
+
+
 def resolve_speaker_embedding(
     store: IdentityStore,
     speaker_match: SpeakerMatch,
     *,
     config: IdentityVoiceConfig,
+    user_text: str | None = None,
 ) -> ResolvedIdentity | None:
     """Match or create an agent user from a speaker embedding."""
     if not config.enabled:
@@ -94,12 +165,13 @@ def resolve_speaker_embedding(
     if best_profile is not None and best_score >= config.guest_create_threshold:
         user = store.get_user(best_profile.agent_user_id)
         if user and not user.merged_into:
-            store.update_voice_profile_centroid(
-                best_profile.id,
-                embedding=embedding,
-                match_confidence=best_score,
-                model=speaker_match.model,
-            )
+            if best_score >= config.guest_match_threshold:
+                store.update_voice_profile_centroid(
+                    best_profile.id,
+                    embedding=embedding,
+                    match_confidence=best_score,
+                    model=speaker_match.model,
+                )
             LOGGER.debug(
                 "Voice identity matched %s (score=%.3f, samples=%d)",
                 user.display_name,
@@ -121,6 +193,13 @@ def resolve_speaker_embedding(
         centroid=embedding,
         match_confidence=best_score if best_score >= 0 else None,
     )
+    _maybe_auto_name_guest(
+        store,
+        guest.id,
+        user_text=user_text,
+        config=config,
+    )
+    guest = store.get_user(guest.id) or guest
     LOGGER.debug(
         "Voice identity created %s (best_score=%.3f, profiles=%d)",
         guest.display_name,

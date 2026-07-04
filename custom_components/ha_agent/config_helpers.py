@@ -329,3 +329,10 @@ def get_agent_config(entry: ConfigEntry) -> AgentConfig:
             data.get(CONF_MAX_REPLANS, DEFAULT_MAX_REPLANS),
         ),
     )
+
+
+def get_identity_voice_config(entry: ConfigEntry):
+    """Return voice identity clustering settings for the config entry."""
+    from .identity.config import identity_voice_config_from_entry
+
+    return identity_voice_config_from_entry(entry)

@@ -65,6 +65,7 @@ class HaAgentPanel extends HTMLElement {
     this._hacsStatus = null;
     this._hacsBusy = false;
     this._agentUsers = [];
+    this._identityEnrollment = null;
     this._identityOverrideUserId = "";
     this._identityNotice = null;
     this._selectedGuestIds = new Set();
@@ -590,6 +591,7 @@ class HaAgentPanel extends HTMLElement {
       });
       this._agentUsers = data.users || [];
       this._identityOverrideUserId = data.override_user_id || "";
+      this._identityEnrollment = data.enrollment || null;
     } catch (err) {
       this._agentUsers = [];
       this._identityNotice = this._formatApiError(err, "ha_agent/identity/list");
@@ -603,6 +605,75 @@ class HaAgentPanel extends HTMLElement {
       agent_user_id: agentUserId || undefined,
     });
     this._identityOverrideUserId = agentUserId || "";
+  }
+
+  async _startVoiceEnrollment(userId) {
+    if (!this._entryId || !userId) return;
+    try {
+      await this._call("ha_agent/identity/enroll_start", {
+        entry_id: this._entryId,
+        agent_user_id: userId,
+      });
+      await this._loadIdentityUsers();
+      const user = (this._agentUsers || []).find((item) => item.id === userId);
+      this._identityNotice = user
+        ? `Voice enrollment started for ${user.display_name}. Speak 3 short phrases on any satellite.`
+        : "Voice enrollment started.";
+      this._render();
+    } catch (err) {
+      this._identityNotice = this._formatApiError(err, "ha_agent/identity/enroll_start");
+      this._render();
+    }
+  }
+
+  async _stopVoiceEnrollment() {
+    if (!this._entryId) return;
+    try {
+      await this._call("ha_agent/identity/enroll_stop", { entry_id: this._entryId });
+      await this._loadIdentityUsers();
+      this._identityNotice = "Voice enrollment stopped.";
+      this._render();
+    } catch (err) {
+      this._identityNotice = this._formatApiError(err, "ha_agent/identity/enroll_stop");
+      this._render();
+    }
+  }
+
+  async _reassignTurnIdentity(timestamp) {
+    if (!this._entryId || !timestamp) return;
+    const users = (this._agentUsers || []).filter((user) => !user.merged_into);
+    if (!users.length) {
+      this._activityNotice = "No agent users available for reassignment.";
+      this._render();
+      return;
+    }
+    const options = users
+      .map((user, index) => `${index + 1}. ${user.display_name} (${user.kind})`)
+      .join("\n");
+    const choice = window.prompt(
+      `Reassign this turn to which user?\n${options}\nEnter number:`,
+    );
+    if (!choice) return;
+    const index = Number.parseInt(choice, 10) - 1;
+    const target = users[index];
+    if (!target) {
+      this._activityNotice = "Invalid user selection.";
+      this._render();
+      return;
+    }
+    try {
+      await this._call("ha_agent/identity/reassign_turn", {
+        entry_id: this._entryId,
+        timestamp,
+        agent_user_id: target.id,
+      });
+      await this._loadActivity();
+      this._activityNotice = `Turn reassigned to ${target.display_name}.`;
+      this._render();
+    } catch (err) {
+      this._activityNotice = this._formatApiError(err, "ha_agent/identity/reassign_turn");
+      this._render();
+    }
   }
 
   _isPromotableGuest(user) {
@@ -3833,6 +3904,14 @@ class HaAgentPanel extends HTMLElement {
     const notice = this._identityNotice
       ? `<p class="activity-hint">${this._escape(this._identityNotice)}</p>`
       : "";
+    const c = this._config || {};
+    const enrollment = this._identityEnrollment;
+    const enrollmentHint = enrollment
+      ? `<p class="activity-hint">Enrolling <strong>${this._escape(
+          (this._agentUsers || []).find((user) => user.id === enrollment.agent_user_id)
+            ?.display_name || enrollment.agent_user_id,
+        )}</strong>: ${enrollment.samples_collected || 0}/3 samples collected.</p>`
+      : "";
     const rows = (this._agentUsers || [])
       .map((user) => {
         const kind = user.kind === "guest" ? "guest" : "registered";
@@ -3850,6 +3929,8 @@ class HaAgentPanel extends HTMLElement {
             }`
           : "—";
         const promotable = this._isPromotableGuest(user);
+        const enrolling =
+          enrollment && enrollment.agent_user_id === user.id ? " · enrolling" : "";
         const selectCell = promotable
           ? `<input type="checkbox" data-action="identity-select-guest" data-user-id="${this._escape(user.id)}" ${
               this._selectedGuestIds.has(user.id) ? "checked" : ""
@@ -3858,10 +3939,14 @@ class HaAgentPanel extends HTMLElement {
         const promoteBtn = promotable
           ? `<button type="button" data-action="identity-promote" data-user-id="${this._escape(user.id)}">Promote</button>`
           : "";
+        const enrollBtn =
+          user.kind === "registered" && !user.merged_into
+            ? `<button type="button" data-action="identity-enroll" data-user-id="${this._escape(user.id)}">Enroll voice</button>`
+            : "";
         return `
       <tr>
         <td>${selectCell}</td>
-        <td>${this._escape(user.display_name)}${defaultBadge}${mergedBadge}</td>
+        <td>${this._escape(user.display_name)}${defaultBadge}${mergedBadge}${enrolling}</td>
         <td>${kind}</td>
         <td>${this._escape(voice)}</td>
         <td>${haUser}</td>
@@ -3869,13 +3954,26 @@ class HaAgentPanel extends HTMLElement {
         <td>
           <button type="button" data-action="identity-edit" data-user-id="${this._escape(user.id)}">Edit</button>
           ${promoteBtn}
+          ${enrollBtn}
         </td>
       </tr>`;
       })
       .join("");
     return `
       ${notice}
-      <p class="hint">Registered members are for console login mapping. Voice guests are created automatically from speaker embeddings. Promote a guest to attach their voice to a member, or merge duplicate guests after mis-splits.</p>
+      ${enrollmentHint}
+      <div class="settings-grid" style="margin-bottom:16px">
+        <h3>Voice clustering</h3>
+        <label><input type="checkbox" data-config-bool="identity_voice_enabled" ${c.identity_voice_enabled !== false ? "checked" : ""}/> Enable voice identification</label>
+        <label><input type="checkbox" data-config-bool="identity_auto_name_enabled" ${c.identity_auto_name_enabled !== false ? "checked" : ""}/> Auto-name guests from self-introductions</label>
+        <label>Match threshold<input type="number" step="0.01" min="0" max="1" data-config="identity_guest_match_threshold" value="${c.identity_guest_match_threshold ?? 0.75}" /></label>
+        <label>Create threshold<input type="number" step="0.01" min="0" max="1" data-config="identity_guest_create_threshold" value="${c.identity_guest_create_threshold ?? 0.52}" /></label>
+        <label>Tie margin<input type="number" step="0.01" min="0" max="1" data-config="identity_guest_tie_margin" value="${c.identity_guest_tie_margin ?? 0.05}" /></label>
+        <label>Min utterance ms<input type="number" min="200" max="5000" data-config="identity_min_utterance_ms" value="${c.identity_min_utterance_ms ?? 800}" /></label>
+        <button data-action="save-identity-config">Save voice settings</button>
+        ${enrollment ? `<button type="button" data-action="identity-enroll-stop">Stop enrollment</button>` : ""}
+      </div>
+      <p class="hint">Registered members are for console login mapping. Voice guests are created automatically from speaker embeddings. Promote a guest to attach their voice to a member, merge duplicate guests after mis-splits, or enroll a member directly.</p>
       <table>
         <thead><tr><th></th><th>Name</th><th>Kind</th><th>Voice</th><th>HA user id</th><th>Person</th><th></th></tr></thead>
         <tbody>${rows || '<tr><td colspan="7">No users loaded.</td></tr>'}</tbody>
@@ -3911,6 +4009,10 @@ class HaAgentPanel extends HTMLElement {
           t.timestamp && promotable
             ? `<button data-action="activity-promote" data-timestamp="${t.timestamp}">Promote</button>`
             : "—";
+        const reassignBtn =
+          t.timestamp && t.agent_user_id
+            ? `<button data-action="activity-reassign" data-timestamp="${t.timestamp}">Not me</button>`
+            : "—";
         const source = this._conversationSource(t.conversation_id);
         const actor = t.agent_user_display_name
           ? `${t.agent_user_display_name}${t.identity_source ? ` · ${t.identity_source}` : ""}${
@@ -3936,6 +4038,7 @@ class HaAgentPanel extends HTMLElement {
         <td>${t.tool_errors || 0}</td>
         <td>${openChatBtn}</td>
         <td>${promoteBtn}</td>
+        <td>${reassignBtn}</td>
       </tr>`;
       })
       .join("");
@@ -3945,8 +4048,8 @@ class HaAgentPanel extends HTMLElement {
     return `
       ${notice}
       <table>
-        <thead><tr><th>Time</th><th>Source</th><th>Route</th><th>Actor</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>LLM</th><th>Errors</th><th>Chat</th><th>Eval</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="12">No activity yet.</td></tr>'}</tbody>
+        <thead><tr><th>Time</th><th>Source</th><th>Route</th><th>Actor</th><th>User</th><th>Outcome</th><th>Iter</th><th>Tools</th><th>LLM</th><th>Errors</th><th>Chat</th><th>Eval</th><th>Identity</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="13">No activity yet.</td></tr>'}</tbody>
       </table>
       <p class="activity-hint">Open Assist or console chats from Activity. Assist conversations also appear in the Chats sidebar after each voice/text turn.</p>
       <p class="activity-hint">Promote successful turns to custom eval cases. They run with the built-in suite on the next eval (mock MCP, same scoring).</p>`;
@@ -4163,6 +4266,13 @@ class HaAgentPanel extends HTMLElement {
         const conversationId = button.getAttribute("data-conversation-id");
         if (!conversationId) return;
         await this._openChatFromActivity(conversationId);
+      });
+    });
+    this.shadowRoot.querySelectorAll('[data-action="activity-reassign"]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        const raw = button.getAttribute("data-timestamp");
+        if (!raw) return;
+        await this._reassignTurnIdentity(Number(raw));
       });
     });
   }
@@ -5063,6 +5173,44 @@ class HaAgentPanel extends HTMLElement {
         await this._promoteGuestUser(userId);
       });
     });
+
+    this.shadowRoot.querySelectorAll("[data-action='identity-enroll']").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const userId = el.getAttribute("data-user-id");
+        if (!userId) return;
+        await this._startVoiceEnrollment(userId);
+      });
+    });
+
+    this.shadowRoot
+      .querySelector('[data-action="identity-enroll-stop"]')
+      ?.addEventListener("click", async () => {
+        await this._stopVoiceEnrollment();
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="save-identity-config"]')
+      ?.addEventListener("click", async () => {
+        const updates = {};
+        this.shadowRoot.querySelectorAll("[data-config]").forEach((el) => {
+          updates[el.getAttribute("data-config")] = el.value;
+        });
+        this.shadowRoot.querySelectorAll("[data-config-bool]").forEach((el) => {
+          updates[el.getAttribute("data-config-bool")] = el.checked;
+        });
+        try {
+          const data = await this._call("ha_agent/config/set", {
+            entry_id: this._entryId,
+            updates,
+          });
+          this._config = data.config;
+          this._identityNotice = "Voice settings saved.";
+          this._render();
+        } catch (err) {
+          this._identityNotice = this._formatApiError(err, "ha_agent/config/set");
+          this._render();
+        }
+      });
 
     this.shadowRoot.querySelector('[data-action="identity-add-guest"]')?.addEventListener("click", async () => {
       const name = prompt("Guest display name:");

@@ -166,9 +166,9 @@ Phase 5 adds **router options** (still UI-only):
 
 #### Exit criteria
 
-- [ ] End-to-end voice: mic → STT → agent (tools) → streaming TTS → speaker
-- [ ] No n8n container required for daily Assist use
-- [ ] HACS install documented
+- [x] End-to-end voice: mic → STT → agent (tools) → streaming TTS → speaker
+- [x] No n8n container required for daily Assist use
+- [x] HACS install documented
 
 ---
 
@@ -199,9 +199,9 @@ Phase 5 adds **router options** (still UI-only):
 
 ### Phase 5 (Router + MCP)
 
-- [ ] Action route (if enabled) uses action model for device commands only
-- [ ] MCP bearer auth failure shows friendly error
-- [ ] Malformed tool args caught before MCP call
+- [x] Action route (if enabled) uses action model for device commands only
+- [x] MCP bearer auth failure shows friendly error
+- [x] Malformed tool args caught before MCP call
 
 ### End-to-end (Phase 6)
 
@@ -266,10 +266,10 @@ this is the dominant latency + reliability cost.
 
 #### Exit criteria
 
-- [ ] Typical tool turn ≤ 3 LLM calls; per-iteration prompt tokens down ≥ 40%
-- [ ] Classifier JSON parse-failure rate ≈ 0
-- [ ] Time-to-final-token improved measurably on the target machine vs current `main`
-- [ ] ruff CI passes; eval-set accuracy ≥ pre-redesign baseline
+- [x] Typical tool turn ≤ 3 LLM calls; per-iteration prompt tokens down ≥ 40%
+- [x] Classifier JSON parse-failure rate ≈ 0
+- [x] Time-to-final-token improved measurably on the target machine vs current `main`
+- [x] ruff CI passes; eval-set accuracy ≥ pre-redesign baseline
 
 **Start with:** 8a → 8b → 8c (highest impact for small hardware; 8a unblocks the rest).
 
@@ -318,6 +318,15 @@ STT bridge (ha_liquidai): [docs/voice-speaker-embed-plan.md](docs/voice-speaker-
 - [x] Users tab: voice samples, promote, multi-select merge
 - [x] WebSocket APIs: `identity/promote_guest`, `identity/merge_guests`
 - [ ] Live test: merge Guest 2–4 into one profile after mis-split
+
+#### 9d — Identity polish (shipped v1.17.0)
+
+- [x] Configurable voice clustering thresholds in console (Users tab)
+- [x] Two-threshold match logic (`guest_match_threshold` + `guest_create_threshold`)
+- [x] Satellite-aware voice cache keys (ha_liquidai v0.4.1 + ha_agent bridge)
+- [x] Guest auto-naming from STT self-introductions
+- [x] Voice enrollment for registered members (3-sample Assist flow)
+- [x] Activity “Not me” turn reassignment with audit fields
 
 ---
 

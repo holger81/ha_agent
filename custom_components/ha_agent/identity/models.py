@@ -21,6 +21,7 @@ class IdentitySource(StrEnum):
     VOICE = "voice"
     FALLBACK = "fallback"
     ASSIST_GUEST = "assist_guest"
+    CORRECTED = "corrected"
 
 
 @dataclass(slots=True)

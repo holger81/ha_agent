@@ -179,6 +179,9 @@ def turn_trace_to_dict(
         "identity_ha_user_id": trace.identity_ha_user_id,
         "identity_override_by_ha_user_id": trace.identity_override_by_ha_user_id,
         "identity_speaker_confidence": trace.identity_speaker_confidence,
+        "identity_original_user_id": trace.identity_original_user_id,
+        "identity_original_display_name": trace.identity_original_display_name,
+        "identity_corrected_by_ha_user_id": trace.identity_corrected_by_ha_user_id,
     }
 
 

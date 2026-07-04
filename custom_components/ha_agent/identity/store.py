@@ -56,9 +56,7 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
 
 def is_assist_guest_user(user: AgentUser) -> bool:
     """Return True for the singleton Assist fallback guest."""
-    return (
-        user.kind == UserKind.GUEST and user.display_name == _ASSIST_GUEST_NAME
-    )
+    return user.kind == UserKind.GUEST and user.display_name == _ASSIST_GUEST_NAME
 
 
 def _row_to_voice_profile(row: sqlite3.Row) -> VoiceProfile:
@@ -187,53 +185,78 @@ class IdentityStore:
         if not include_merged:
             clauses.append("merged_into IS NULL")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._db().execute(
-            f"SELECT * FROM agent_users {where} "
-            "ORDER BY CASE kind WHEN 'registered' THEN 0 ELSE 1 END, "
-            "display_name COLLATE NOCASE",
-            params,
-        ).fetchall()
+        rows = (
+            self._db()
+            .execute(
+                f"SELECT * FROM agent_users {where} "
+                "ORDER BY CASE kind WHEN 'registered' THEN 0 ELSE 1 END, "
+                "display_name COLLATE NOCASE",
+                params,
+            )
+            .fetchall()
+        )
         return [_row_to_user(row) for row in rows]
 
     def get_user(self, user_id: str) -> AgentUser | None:
         """Return one user by id."""
-        row = self._db().execute(
-            "SELECT * FROM agent_users WHERE id = ?",
-            (user_id,),
-        ).fetchone()
+        row = (
+            self._db()
+            .execute(
+                "SELECT * FROM agent_users WHERE id = ?",
+                (user_id,),
+            )
+            .fetchone()
+        )
         return _row_to_user(row) if row else None
 
     def get_by_ha_user_id(self, ha_user_id: str) -> AgentUser | None:
         """Return a registered user linked to a Home Assistant login."""
-        row = self._db().execute(
-            "SELECT * FROM agent_users WHERE ha_user_id = ? AND merged_into IS NULL",
-            (ha_user_id,),
-        ).fetchone()
+        row = (
+            self._db()
+            .execute(
+                "SELECT * FROM agent_users WHERE ha_user_id = ? "
+                "AND merged_into IS NULL",
+                (ha_user_id,),
+            )
+            .fetchone()
+        )
         return _row_to_user(row) if row else None
 
     def get_default_registered(self) -> AgentUser | None:
         """Return the default registered user."""
-        row = self._db().execute(
-            "SELECT * FROM agent_users WHERE kind = ? AND is_default = 1 "
-            "AND merged_into IS NULL LIMIT 1",
-            (UserKind.REGISTERED.value,),
-        ).fetchone()
+        row = (
+            self._db()
+            .execute(
+                "SELECT * FROM agent_users WHERE kind = ? AND is_default = 1 "
+                "AND merged_into IS NULL LIMIT 1",
+                (UserKind.REGISTERED.value,),
+            )
+            .fetchone()
+        )
         if row:
             return _row_to_user(row)
-        row = self._db().execute(
-            "SELECT * FROM agent_users WHERE kind = ? AND merged_into IS NULL "
-            "ORDER BY display_name COLLATE NOCASE LIMIT 1",
-            (UserKind.REGISTERED.value,),
-        ).fetchone()
+        row = (
+            self._db()
+            .execute(
+                "SELECT * FROM agent_users WHERE kind = ? AND merged_into IS NULL "
+                "ORDER BY display_name COLLATE NOCASE LIMIT 1",
+                (UserKind.REGISTERED.value,),
+            )
+            .fetchone()
+        )
         return _row_to_user(row) if row else None
 
     def get_assist_guest(self) -> AgentUser:
         """Return the singleton Assist guest profile."""
-        row = self._db().execute(
-            "SELECT * FROM agent_users WHERE kind = ? AND display_name = ? "
-            "AND merged_into IS NULL LIMIT 1",
-            (UserKind.GUEST.value, _ASSIST_GUEST_NAME),
-        ).fetchone()
+        row = (
+            self._db()
+            .execute(
+                "SELECT * FROM agent_users WHERE kind = ? AND display_name = ? "
+                "AND merged_into IS NULL LIMIT 1",
+                (UserKind.GUEST.value, _ASSIST_GUEST_NAME),
+            )
+            .fetchone()
+        )
         if row:
             return _row_to_user(row)
         now = time.time()
@@ -334,31 +357,43 @@ class IdentityStore:
 
     def next_voice_guest_name(self) -> str:
         """Return the next display name for a voice-clustered guest."""
-        rows = self._db().execute(
-            "SELECT COUNT(*) FROM agent_users "
-            "WHERE kind = ? AND display_name != ? AND merged_into IS NULL",
-            (UserKind.GUEST.value, _ASSIST_GUEST_NAME),
-        ).fetchone()
+        rows = (
+            self._db()
+            .execute(
+                "SELECT COUNT(*) FROM agent_users "
+                "WHERE kind = ? AND display_name != ? AND merged_into IS NULL",
+                (UserKind.GUEST.value, _ASSIST_GUEST_NAME),
+            )
+            .fetchone()
+        )
         count = int(rows[0]) if rows else 0
         return f"Guest {count + 1}"
 
     def list_voice_profiles(self) -> list[VoiceProfile]:
         """Return voice profiles excluding the Assist fallback guest."""
-        rows = self._db().execute(
-            "SELECT vp.* FROM voice_profiles vp "
-            "JOIN agent_users au ON au.id = vp.agent_user_id "
-            "WHERE au.merged_into IS NULL AND au.display_name != ? "
-            "ORDER BY vp.updated_at DESC",
-            (_ASSIST_GUEST_NAME,),
-        ).fetchall()
+        rows = (
+            self._db()
+            .execute(
+                "SELECT vp.* FROM voice_profiles vp "
+                "JOIN agent_users au ON au.id = vp.agent_user_id "
+                "WHERE au.merged_into IS NULL AND au.display_name != ? "
+                "ORDER BY vp.updated_at DESC",
+                (_ASSIST_GUEST_NAME,),
+            )
+            .fetchall()
+        )
         return [_row_to_voice_profile(row) for row in rows]
 
     def get_voice_profile_for_user(self, agent_user_id: str) -> VoiceProfile | None:
         """Return the voice profile linked to one agent user."""
-        row = self._db().execute(
-            "SELECT * FROM voice_profiles WHERE agent_user_id = ?",
-            (agent_user_id,),
-        ).fetchone()
+        row = (
+            self._db()
+            .execute(
+                "SELECT * FROM voice_profiles WHERE agent_user_id = ?",
+                (agent_user_id,),
+            )
+            .fetchone()
+        )
         return _row_to_voice_profile(row) if row else None
 
     def create_voice_profile(
@@ -395,6 +430,36 @@ class IdentityStore:
         assert profile is not None
         return profile
 
+    def enroll_voice_sample(
+        self,
+        agent_user_id: str,
+        *,
+        embedding: list[float],
+        backend: str,
+        model: str | None,
+        match_confidence: float,
+    ) -> VoiceProfile:
+        """Add or update a registered member voice profile from enrollment."""
+        profile = self.get_voice_profile_for_user(agent_user_id)
+        if profile is None:
+            return self.create_voice_profile(
+                profile_id=str(uuid.uuid4()),
+                agent_user_id=agent_user_id,
+                backend=backend,
+                model=model,
+                centroid=embedding,
+                match_confidence=match_confidence,
+            )
+        self.update_voice_profile_centroid(
+            profile.id,
+            embedding=embedding,
+            match_confidence=match_confidence,
+            model=model,
+        )
+        updated = self.get_voice_profile_for_user(agent_user_id)
+        assert updated is not None
+        return updated
+
     def update_voice_profile_centroid(
         self,
         profile_id: str,
@@ -404,10 +469,14 @@ class IdentityStore:
         model: str | None = None,
     ) -> None:
         """Update a profile centroid with a new embedding sample."""
-        row = self._db().execute(
-            "SELECT * FROM voice_profiles WHERE id = ?",
-            (profile_id,),
-        ).fetchone()
+        row = (
+            self._db()
+            .execute(
+                "SELECT * FROM voice_profiles WHERE id = ?",
+                (profile_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return
         profile = _row_to_voice_profile(row)

@@ -81,6 +81,50 @@ def get_turn(
 
 
 @callback
+def update_turn_identity(
+    hass: HomeAssistant,
+    entry_id: str,
+    timestamp: float,
+    *,
+    agent_user_id: str,
+    agent_user_display_name: str,
+    agent_user_kind: str,
+    corrected_by_ha_user_id: str | None,
+    original_user_id: str,
+    original_display_name: str,
+) -> dict[str, Any] | None:
+    """Patch identity fields on one activity turn."""
+    store = _activity_store(hass)
+    buffer = store.get(entry_id)
+    if not buffer:
+        return None
+
+    target = float(timestamp)
+    for turn in buffer:
+        raw = turn.get("timestamp")
+        if raw is None or abs(float(raw) - target) >= 0.001:
+            continue
+        if not turn.get("identity_original_user_id"):
+            turn["identity_original_user_id"] = original_user_id
+            turn["identity_original_display_name"] = original_display_name
+        turn["agent_user_id"] = agent_user_id
+        turn["agent_user_display_name"] = agent_user_display_name
+        turn["agent_user_kind"] = agent_user_kind
+        turn["identity_source"] = "corrected"
+        turn["identity_corrected_by_ha_user_id"] = corrected_by_ha_user_id
+        hass.bus.async_fire(
+            "ha_agent_turn_updated",
+            {
+                "entry_id": entry_id,
+                "timestamp": turn.get("timestamp"),
+                "turn": dict(turn),
+            },
+        )
+        return turn
+    return None
+
+
+@callback
 def list_turns(
     hass: HomeAssistant,
     entry_id: str,

@@ -62,6 +62,13 @@ CONF_EVAL_DISCOVER_REQUIRE_DOWNLOAD_APPROVAL = "eval_discover_require_download_a
 CONF_EVAL_DISCOVER_REQUIRE_TRIAL_APPROVAL = "eval_discover_require_trial_approval"
 CONF_EVAL_DISCOVER_MAX_MODELS = "eval_discover_max_models"
 
+CONF_IDENTITY_VOICE_ENABLED = "identity_voice_enabled"
+CONF_IDENTITY_GUEST_MATCH_THRESHOLD = "identity_guest_match_threshold"
+CONF_IDENTITY_GUEST_CREATE_THRESHOLD = "identity_guest_create_threshold"
+CONF_IDENTITY_GUEST_TIE_MARGIN = "identity_guest_tie_margin"
+CONF_IDENTITY_MIN_UTTERANCE_MS = "identity_min_utterance_ms"
+CONF_IDENTITY_AUTO_NAME_ENABLED = "identity_auto_name_enabled"
+
 DEFAULT_EVAL_DISCOVER_MAX_MODELS = 3
 
 DEFAULT_LLM_BASE_URL = "http://192.168.10.31:9292/v1"

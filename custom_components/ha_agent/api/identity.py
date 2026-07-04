@@ -7,10 +7,14 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
+from ..activity import get_turn, update_turn_identity
 from ..identity.models import UserKind
 from ..identity.runtime import (
     GLOBAL_OVERRIDE_KEY,
+    clear_enrollment_target,
+    get_enrollment_session,
     get_identity_override,
+    set_enrollment_target,
     set_identity_override,
 )
 from ..identity.store import get_identity_store
@@ -41,9 +45,17 @@ async def list_users(
 
     users = await hass.async_add_executor_job(_load)
     override_id = get_identity_override(hass, entry_id)
+    session = get_enrollment_session(hass, entry_id)
+    enrollment = None
+    if session is not None:
+        enrollment = {
+            "agent_user_id": session.agent_user_id,
+            "samples_collected": session.samples_collected,
+        }
     return {
         "users": users,
         "override_user_id": override_id,
+        "enrollment": enrollment,
     }
 
 
@@ -193,6 +205,124 @@ async def get_override(
         conversation_id=conversation_id,
     )
     return {"agent_user_id": override_id}
+
+
+async def start_voice_enrollment(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    agent_user_id: str,
+) -> dict[str, Any]:
+    """Begin collecting voice samples for a registered member."""
+    store = get_identity_store(hass, entry_id)
+
+    def _validate():
+        user = store.get_user(agent_user_id)
+        if user is None or user.merged_into:
+            raise ValueError("User not found")
+        if user.kind != UserKind.REGISTERED:
+            raise ValueError("Voice enrollment applies to registered members only")
+        return user
+
+    try:
+        user = await hass.async_add_executor_job(_validate)
+    except ValueError as err:
+        raise HomeAssistantError(str(err)) from err
+
+    session = set_enrollment_target(hass, entry_id, agent_user_id)
+    profile = await hass.async_add_executor_job(
+        store.get_voice_profile_for_user,
+        agent_user_id,
+    )
+    return {
+        "agent_user_id": agent_user_id,
+        "display_name": user.display_name,
+        "samples_collected": session.samples_collected if session else 0,
+        "voice_profile": (
+            voice_profile_to_dict(profile) if profile is not None else None
+        ),
+    }
+
+
+async def stop_voice_enrollment(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> dict[str, Any]:
+    """Cancel an active voice enrollment session."""
+    session = get_enrollment_session(hass, entry_id)
+    clear_enrollment_target(hass, entry_id)
+    return {
+        "cancelled": session is not None,
+        "agent_user_id": session.agent_user_id if session else None,
+        "samples_collected": session.samples_collected if session else 0,
+    }
+
+
+async def get_voice_enrollment(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> dict[str, Any]:
+    """Return the active enrollment session, if any."""
+    session = get_enrollment_session(hass, entry_id)
+    if session is None:
+        return {"active": False}
+    store = get_identity_store(hass, entry_id)
+    user = await hass.async_add_executor_job(store.get_user, session.agent_user_id)
+    profile = await hass.async_add_executor_job(
+        store.get_voice_profile_for_user,
+        session.agent_user_id,
+    )
+    return {
+        "active": True,
+        "agent_user_id": session.agent_user_id,
+        "display_name": user.display_name if user else session.agent_user_id,
+        "samples_collected": session.samples_collected,
+        "voice_profile": (
+            voice_profile_to_dict(profile) if profile is not None else None
+        ),
+    }
+
+
+async def reassign_turn_identity(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    timestamp: float,
+    agent_user_id: str,
+    corrected_by_ha_user_id: str | None,
+) -> dict[str, Any]:
+    """Reassign a past activity turn to another agent user."""
+    turn = get_turn(hass, entry_id, timestamp=timestamp)
+    if turn is None:
+        raise HomeAssistantError("Activity turn not found")
+
+    store = get_identity_store(hass, entry_id)
+
+    def _load_user():
+        user = store.get_user(agent_user_id)
+        if user is None or user.merged_into:
+            raise ValueError("User not found")
+        return user
+
+    try:
+        user = await hass.async_add_executor_job(_load_user)
+    except ValueError as err:
+        raise HomeAssistantError(str(err)) from err
+
+    updated = update_turn_identity(
+        hass,
+        entry_id,
+        timestamp,
+        agent_user_id=user.id,
+        agent_user_display_name=user.display_name,
+        agent_user_kind=user.kind.value,
+        corrected_by_ha_user_id=corrected_by_ha_user_id,
+        original_user_id=str(turn.get("agent_user_id") or ""),
+        original_display_name=str(turn.get("agent_user_display_name") or ""),
+    )
+    if updated is None:
+        raise HomeAssistantError("Could not update activity turn")
+    return {"turn": updated}
 
 
 _UNSET = object()

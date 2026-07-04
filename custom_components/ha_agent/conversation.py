@@ -22,6 +22,7 @@ from .agent import run_agent, thinking_from_tool_event
 from .chat_events import begin_chat_turn, finish_chat_turn, publish_chat_delta
 from .config_helpers import (
     get_agent_config,
+    get_identity_voice_config,
     get_llm_backend,
     get_mcp_config,
     get_router_config,
@@ -153,8 +154,12 @@ class HaAgentConversationEntity(
 
         user_text = user_text_from_input(user_input)
         context_user_id = None
-        if user_input.context and user_input.context.user_id:
-            context_user_id = user_input.context.user_id
+        satellite_id = None
+        if user_input.context:
+            if user_input.context.user_id:
+                context_user_id = user_input.context.user_id
+            satellite_id = getattr(user_input.context, "satellite_id", None)
+
         intent_response = intent.IntentResponse(language=user_input.language)
 
         if not user_text:
@@ -173,7 +178,9 @@ class HaAgentConversationEntity(
         speaker_match = pop_speaker_match_for_text(
             self.hass,
             user_text=user_text,
+            satellite_id=satellite_id,
         )
+        voice_config = get_identity_voice_config(self._entry)
 
         produced_content = False
         entry_id = self._entry.entry_id
@@ -205,6 +212,7 @@ class HaAgentConversationEntity(
                 channel="assist",
                 context_user_id=context_user_id,
                 speaker_match=speaker_match,
+                voice_config=voice_config,
             ):
                 if delta.tool and agent_config.show_reasoning_in_chat:
                     produced_content = True
@@ -265,9 +273,7 @@ class HaAgentConversationEntity(
             )
 
         try:
-            result = conversation.async_get_result_from_chat_log(
-                user_input, chat_log
-            )
+            result = conversation.async_get_result_from_chat_log(user_input, chat_log)
             finish_chat_turn(self.hass, entry_id, conv_id, done_payload={})
             return result
         except Exception as err:

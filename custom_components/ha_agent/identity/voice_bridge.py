@@ -15,6 +15,7 @@ def pop_speaker_match_for_text(
     hass: HomeAssistant,
     *,
     user_text: str,
+    satellite_id: str | None = None,
 ) -> SpeakerMatch | None:
     """Return a speaker match from ha_liquidai when that integration is loaded."""
     if "ha_liquidai_custom" not in getattr(hass.config, "components", set()):
@@ -26,7 +27,11 @@ def pop_speaker_match_for_text(
     except ImportError:
         return None
 
-    payload = pop_matching_voice_turn(hass, user_text=user_text)
+    payload = pop_matching_voice_turn(
+        hass,
+        user_text=user_text,
+        satellite_id=satellite_id,
+    )
     if payload is None:
         return None
 

@@ -14,7 +14,13 @@ from .activity import record_turn
 from .api.serialize import resolved_identity_to_dict
 from .chat_events import publish_chat_delta
 from .compaction import compact_messages_if_needed
-from .config_helpers import AgentConfig, LlmBackend, RouterConfig, SkillsConfig
+from .config_helpers import (
+    AgentConfig,
+    LlmBackend,
+    RouterConfig,
+    SkillsConfig,
+    get_identity_voice_config,
+)
 from .const import LOGGER
 from .context import (
     build_messages,
@@ -558,8 +564,10 @@ async def _process_tool_calls(
     maybe_suspend_skill_plan_from_reasoning(loop_state, reasoning)
     maybe_omit_plan_steps_from_reasoning(loop_state, reasoning)
     blocked_ids: set[str] = set()
-    if calls and reasoning.strip() and should_block_reasoning_execution_mismatch(
-        loop_state
+    if (
+        calls
+        and reasoning.strip()
+        and should_block_reasoning_execution_mismatch(loop_state)
     ):
         execution_names = [_tool_call_payload(call)[0] for call in calls]
         if mismatch := reasoning_execution_mismatch(reasoning, execution_names):
@@ -659,9 +667,7 @@ async def _process_tool_calls(
                 stuck_msg,
             )
             yield AgentDelta(tool=_tool_event(call, "error", detail=stuck_msg[:200]))
-            messages.append(
-                tool_result_message(call, f"Tool error: {stuck_msg}")
-            )
+            messages.append(tool_result_message(call, f"Tool error: {stuck_msg}"))
             if trace is not None:
                 _record_tool_call(trace, call, f"Tool error: {stuck_msg}")
             continue
@@ -856,10 +862,7 @@ async def _run_orchestrated_turn(
                     "tool_errors": worker_result.tool_errors,
                 }
             )
-            if (
-                worker_result.tool_errors > 0
-                and replans < agent_config.max_replans
-            ):
+            if worker_result.tool_errors > 0 and replans < agent_config.max_replans:
                 replans += 1
                 completed = [
                     {
@@ -884,9 +887,7 @@ async def _run_orchestrated_turn(
         index += 1
 
     synth_backend = registry.backend_for(ModelRole.WORKER_CHAT)
-    synth_body = "\n".join(
-        f"- {r.subgoal}: {r.assistant_text}" for r in worker_results
-    )
+    synth_body = "\n".join(f"- {r.subgoal}: {r.assistant_text}" for r in worker_results)
     synth_messages = build_messages(
         system_message=build_system_message(
             agent_config.system_prompt,
@@ -1085,27 +1086,19 @@ async def _post_turn_skills(
                 history=history,
             )
             if not (
-                override_obs
-                and override_obs.learn
-                and override_obs.draft is not None
+                override_obs and override_obs.learn and override_obs.draft is not None
             ):
                 override_obs = build_deterministic_override_result(
                     primary_learned,
                     trace,
                 )
-            if (
-                override_obs
-                and override_obs.learn
-                and override_obs.draft is not None
-            ):
+            if override_obs and override_obs.learn and override_obs.draft is not None:
                 override_obs = resolve_override_observer_result(
                     primary_learned,
                     trace,
                     override_obs,
                 )
-                update_target = (
-                    primary_learned if override_obs.update_parent else None
-                )
+                update_target = primary_learned if override_obs.update_parent else None
                 draft = override_obs.draft
                 action = "update" if update_target else "create"
 
@@ -1313,6 +1306,7 @@ async def run_agent(
     override_by_ha_user_id: str | None = None,
     context_user_id: str | None = None,
     speaker_match: SpeakerMatch | None = None,
+    voice_config=None,
 ) -> AsyncGenerator[AgentDelta, None]:
     """Run the tool loop and yield assistant chat deltas."""
     history = conversation_history_for_turn(
@@ -1370,6 +1364,11 @@ async def run_agent(
         history_len=len(history),
         conversation_id=conversation_id,
     )
+    voice_cfg = voice_config
+    if voice_cfg is None:
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is not None:
+            voice_cfg = get_identity_voice_config(entry)
     identity = await resolve_agent_user(
         hass,
         entry_id,
@@ -1381,6 +1380,8 @@ async def run_agent(
         extra_system_prompt=extra_system_prompt,
         context_user_id=context_user_id,
         speaker_match=speaker_match,
+        voice_config=voice_cfg,
+        user_text=user_text,
     )
     apply_identity_to_trace(trace, identity)
     identity_context = format_identity_context(identity)
@@ -1656,9 +1657,7 @@ async def run_agent(
     ):
         suspend_skill_plan(loop_state, conflict_reason)
     if matched_skills and slot_bindings:
-        primary_learned = next(
-            (s for s in matched_skills if not s.is_builtin), None
-        )
+        primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
         if primary_learned:
             missing_slots = missing_required_bindings(primary_learned, slot_bindings)
             if missing_slots:
@@ -1965,9 +1964,7 @@ async def run_agent(
             yield AgentDelta(content=assistant_text)
 
         reconcile_plan_before_answer(loop_state)
-        primary_learned = next(
-            (s for s in matched_skills if not s.is_builtin), None
-        )
+        primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
         if primary_learned is not None or trace.tool_errors > 0:
             v_result = await verify_turn(
                 llm,
@@ -2016,8 +2013,7 @@ async def run_agent(
         trace.controlled_entity_ids = list(controlled_entity_ids)
         trace.verification_notes = list(loop_state.verification_notes)
         failed_verification = any(
-            note.startswith("VERIFICATION FAILED")
-            for note in trace.verification_notes
+            note.startswith("VERIFICATION FAILED") for note in trace.verification_notes
         )
         if failed_verification or trace.verifier_verdict == "fail":
             trace.outcome = TurnOutcome.PARTIAL
