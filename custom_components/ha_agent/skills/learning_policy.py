@@ -334,3 +334,50 @@ def resolve_override_observer_result(
         draft=draft,
         update_parent=True,
     )
+
+
+def build_deterministic_override_result(
+    parent: Skill,
+    trace: TurnTrace,
+) -> Any | None:
+    """Build a child/update skill from trace tools when the LLM observer fails."""
+    from .observer import SkillObserverResult
+
+    steps = tool_steps_from_trace(trace)
+    if not steps:
+        return None
+
+    goal = trace.user_text.strip()
+    title = (goal[:64] or f"Workflow for {parent.title}").strip()
+    description = (
+        "Workflow distilled from a successful override turn when the active "
+        f"skill did not cover: {goal[:240]}"
+    )
+    triggers = [goal] if goal else [title]
+    body_lines = [
+        f"When the user asks: {goal}",
+        "",
+        "Use this tool sequence (omit discovery unless tools are unknown):",
+    ]
+    for index, step in enumerate(steps, start=1):
+        name = str(step.get("toolName") or "")
+        body_lines.append(
+            f"{index}. Call `{name}` with arguments from earlier tool results."
+        )
+    draft = SkillDraft(
+        title=title,
+        description=description[:512],
+        triggers=triggers,
+        body="\n".join(body_lines),
+        tool_steps=steps,
+        slots=list(parent.slots),
+        parent_id=parent.id,
+        route_scope=parent.route_scope,
+    )
+    observed = SkillObserverResult(
+        learn=True,
+        reason="Deterministic override distillation from successful tools.",
+        draft=draft,
+        update_parent=False,
+    )
+    return resolve_override_observer_result(parent, trace, observed)

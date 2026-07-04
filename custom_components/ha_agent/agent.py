@@ -104,7 +104,10 @@ from .skills.commands import (
 from .skills.creator import save_skill_from_draft
 from .skills.discovery import build_skill_hints
 from .skills.evaluator import evaluate_skill_use
-from .skills.learning_policy import resolve_override_observer_result
+from .skills.learning_policy import (
+    build_deterministic_override_result,
+    resolve_override_observer_result,
+)
 from .skills.models import TurnTrace
 from .skills.observer import (
     is_discovery_tool,
@@ -1077,6 +1080,15 @@ async def _post_turn_skills(
                 trace=trace,
                 history=history,
             )
+            if not (
+                override_obs
+                and override_obs.learn
+                and override_obs.draft is not None
+            ):
+                override_obs = build_deterministic_override_result(
+                    primary_learned,
+                    trace,
+                )
             if (
                 override_obs
                 and override_obs.learn

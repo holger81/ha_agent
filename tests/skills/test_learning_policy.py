@@ -243,3 +243,36 @@ def test_draft_would_regress_parent_when_steps_wiped() -> None:
     )
 
     assert policy.draft_would_regress_parent(parent, draft) is True
+
+
+def test_build_deterministic_override_result_forks_child() -> None:
+    """Deterministic fallback creates a child skill with trace tool_steps."""
+    parent = _email_check_skill()
+    trace = TurnTrace(
+        user_text="mark all unread emails in INBOX as read",
+        history_len=0,
+        tool_calls=[
+            {
+                "toolName": "mail_mcp__imap_search_messages",
+                "succeeded": True,
+                "arguments": {"mailbox": "INBOX", "unread_only": True},
+            },
+            {
+                "toolName": "mail_mcp__imap_bulk_update_flags",
+                "succeeded": True,
+                "arguments": {"add_flags": ["\\Seen"]},
+            },
+        ],
+        outcome="success",
+        skill_plan_override=True,
+    )
+
+    result = policy.build_deterministic_override_result(parent, trace)
+
+    assert result is not None
+    assert result.update_parent is False
+    assert result.draft.parent_id == parent.id
+    assert any(
+        step["toolName"] == "mail_mcp__imap_bulk_update_flags"
+        for step in result.draft.tool_steps
+    )
