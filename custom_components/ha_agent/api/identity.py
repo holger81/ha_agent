@@ -14,7 +14,7 @@ from ..identity.runtime import (
     set_identity_override,
 )
 from ..identity.store import get_identity_store
-from .serialize import agent_user_to_dict
+from .serialize import agent_user_to_dict, voice_profile_to_dict
 
 
 async def list_users(
@@ -27,13 +27,22 @@ async def list_users(
     store = get_identity_store(hass, entry_id)
     parsed_kind = UserKind(kind) if kind else None
 
-    def _load() -> list:
-        return store.list_users(kind=parsed_kind)
+    def _load() -> list[dict[str, Any]]:
+        users = store.list_users(kind=parsed_kind)
+        serialized = []
+        for user in users:
+            payload = agent_user_to_dict(user)
+            profile = store.get_voice_profile_for_user(user.id)
+            payload["voice_profile"] = (
+                voice_profile_to_dict(profile) if profile is not None else None
+            )
+            serialized.append(payload)
+        return serialized
 
     users = await hass.async_add_executor_job(_load)
     override_id = get_identity_override(hass, entry_id)
     return {
-        "users": [agent_user_to_dict(user) for user in users],
+        "users": users,
         "override_user_id": override_id,
     }
 
@@ -83,6 +92,63 @@ async def create_guest(
 
     user = await hass.async_add_executor_job(_create)
     return agent_user_to_dict(user)
+
+
+async def promote_guest(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    guest_id: str,
+    registered_id: str,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    """Promote a guest voice profile onto a registered member."""
+    store = get_identity_store(hass, entry_id)
+
+    def _promote():
+        try:
+            user = store.promote_guest(
+                guest_id,
+                registered_id,
+                display_name=display_name,
+            )
+            profile = store.get_voice_profile_for_user(user.id)
+            return user, profile
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    user, profile = await hass.async_add_executor_job(_promote)
+    payload = agent_user_to_dict(user)
+    payload["voice_profile"] = (
+        voice_profile_to_dict(profile) if profile is not None else None
+    )
+    return {"user": payload, "guest_id": guest_id}
+
+
+async def merge_guests(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    guest_ids: list[str],
+    survivor_id: str | None = None,
+) -> dict[str, Any]:
+    """Merge multiple guest profiles into one survivor guest."""
+    store = get_identity_store(hass, entry_id)
+
+    def _merge():
+        try:
+            user = store.merge_guests(guest_ids, survivor_id=survivor_id)
+            profile = store.get_voice_profile_for_user(user.id)
+            return user, profile
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    user, profile = await hass.async_add_executor_job(_merge)
+    payload = agent_user_to_dict(user)
+    payload["voice_profile"] = (
+        voice_profile_to_dict(profile) if profile is not None else None
+    )
+    return {"user": payload, "merged_guest_ids": guest_ids}
 
 
 async def set_override(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..identity.models import AgentUser, ResolvedIdentity
+from ..identity.models import AgentUser, ResolvedIdentity, VoiceProfile
 from ..playbooks import Playbook
 from ..recovery_hints import RecoveryHint
 from ..route_keywords import RouteKeywords
@@ -113,6 +113,19 @@ def agent_user_to_dict(user: AgentUser) -> dict[str, Any]:
         "created_at": user.created_at,
         "updated_at": user.updated_at,
         "last_seen_at": user.last_seen_at,
+    }
+
+
+def voice_profile_to_dict(profile: VoiceProfile) -> dict[str, Any]:
+    """Serialize a voice profile summary."""
+    return {
+        "id": profile.id,
+        "agent_user_id": profile.agent_user_id,
+        "backend": profile.backend,
+        "model": profile.model,
+        "sample_count": profile.sample_count,
+        "avg_confidence": profile.avg_confidence,
+        "last_seen_at": profile.last_seen_at,
     }
 
 

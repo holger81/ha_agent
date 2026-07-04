@@ -11,7 +11,12 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from ..const import DATA_KEY
-from .embeddings import pack_embedding, unpack_embedding, update_centroid
+from .embeddings import (
+    merge_centroids,
+    pack_embedding,
+    unpack_embedding,
+    update_centroid,
+)
 from .models import AgentUser, UserKind, VoiceProfile
 
 IDENTITY_STORE_KEY = "identity_stores"
@@ -438,6 +443,177 @@ class IdentityStore:
             ),
         )
         self._db().commit()
+
+    def _validate_promotable_guest(self, user_id: str) -> AgentUser:
+        user = self.get_user(user_id)
+        if user is None or user.merged_into:
+            msg = "Guest not found"
+            raise ValueError(msg)
+        if user.kind != UserKind.GUEST or is_assist_guest_user(user):
+            msg = "User is not a promotable guest"
+            raise ValueError(msg)
+        return user
+
+    def _merge_voice_profiles_into(
+        self,
+        target: VoiceProfile,
+        source: VoiceProfile,
+    ) -> None:
+        if source.centroid is None:
+            return
+        if target.centroid is None:
+            updated = list(source.centroid)
+            sample_count = max(source.sample_count, 1)
+            avg_confidence = source.avg_confidence
+        else:
+            sample_count = target.sample_count + source.sample_count
+            updated = merge_centroids(
+                target.centroid,
+                target.sample_count,
+                source.centroid,
+                source.sample_count,
+            )
+            if target.avg_confidence is not None and source.avg_confidence is not None:
+                avg_confidence = (
+                    (target.avg_confidence * target.sample_count)
+                    + (source.avg_confidence * source.sample_count)
+                ) / sample_count
+            else:
+                avg_confidence = target.avg_confidence or source.avg_confidence
+        now = time.time()
+        self._db().execute(
+            "UPDATE voice_profiles SET sample_count = ?, avg_confidence = ?, "
+            "centroid = ?, model = COALESCE(?, model), updated_at = ?, "
+            "last_seen_at = ? WHERE id = ?",
+            (
+                sample_count,
+                avg_confidence,
+                pack_embedding(updated),
+                source.model or target.model,
+                now,
+                now,
+                target.id,
+            ),
+        )
+
+    def promote_guest(
+        self,
+        guest_id: str,
+        registered_id: str,
+        *,
+        display_name: str | None = None,
+    ) -> AgentUser:
+        """Attach a guest voice profile to a registered member."""
+        self._validate_promotable_guest(guest_id)
+        registered = self.get_user(registered_id)
+        if (
+            registered is None
+            or registered.merged_into
+            or registered.kind != UserKind.REGISTERED
+        ):
+            msg = "Registered user not found"
+            raise ValueError(msg)
+
+        guest_profile = self.get_voice_profile_for_user(guest_id)
+        reg_profile = self.get_voice_profile_for_user(registered_id)
+        if guest_profile is not None:
+            if reg_profile is not None:
+                self._merge_voice_profiles_into(reg_profile, guest_profile)
+                self._db().execute(
+                    "DELETE FROM voice_profiles WHERE id = ?",
+                    (guest_profile.id,),
+                )
+            else:
+                self._db().execute(
+                    "UPDATE voice_profiles SET agent_user_id = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (registered_id, time.time(), guest_profile.id),
+                )
+
+        if display_name:
+            self.update_user(registered_id, display_name=display_name.strip())
+
+        now = time.time()
+        self._db().execute(
+            "UPDATE agent_users SET merged_into = ?, updated_at = ?, notes = ? "
+            "WHERE id = ?",
+            (
+                registered_id,
+                now,
+                f"Promoted into {registered.display_name}",
+                guest_id,
+            ),
+        )
+        self._db().commit()
+        updated = self.get_user(registered_id)
+        assert updated is not None
+        return updated
+
+    def merge_guests(
+        self,
+        guest_ids: list[str],
+        *,
+        survivor_id: str | None = None,
+    ) -> AgentUser:
+        """Merge multiple guest profiles into one survivor guest."""
+        unique_ids = list(dict.fromkeys(guest_ids))
+        if len(unique_ids) < 2:
+            msg = "At least two guests are required"
+            raise ValueError(msg)
+
+        users = [self._validate_promotable_guest(guest_id) for guest_id in unique_ids]
+        if survivor_id is None:
+            survivor = min(users, key=lambda user: user.created_at)
+            survivor_id = survivor.id
+        elif survivor_id not in unique_ids:
+            msg = "Survivor must be included in guest_ids"
+            raise ValueError(msg)
+        else:
+            survivor = self.get_user(survivor_id)
+            if survivor is None:
+                msg = "Survivor guest not found"
+                raise ValueError(msg)
+
+        survivor_profile = self.get_voice_profile_for_user(survivor_id)
+        for guest_id in unique_ids:
+            if guest_id == survivor_id:
+                continue
+            source_profile = self.get_voice_profile_for_user(guest_id)
+            if source_profile is None:
+                continue
+            if survivor_profile is None:
+                self._db().execute(
+                    "UPDATE voice_profiles SET agent_user_id = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (survivor_id, time.time(), source_profile.id),
+                )
+                survivor_profile = self.get_voice_profile_for_user(survivor_id)
+                continue
+            self._merge_voice_profiles_into(survivor_profile, source_profile)
+            self._db().execute(
+                "DELETE FROM voice_profiles WHERE id = ?",
+                (source_profile.id,),
+            )
+            survivor_profile = self.get_voice_profile_for_user(survivor_id)
+
+        now = time.time()
+        for guest_id in unique_ids:
+            if guest_id == survivor_id:
+                continue
+            self._db().execute(
+                "UPDATE agent_users SET merged_into = ?, updated_at = ?, notes = ? "
+                "WHERE id = ?",
+                (
+                    survivor_id,
+                    now,
+                    f"Merged into {survivor.display_name}",
+                    guest_id,
+                ),
+            )
+        self._db().commit()
+        merged = self.get_user(survivor_id)
+        assert merged is not None
+        return merged
 
 
 def get_identity_store(hass: HomeAssistant, entry_id: str) -> IdentityStore:

@@ -67,6 +67,7 @@ class HaAgentPanel extends HTMLElement {
     this._agentUsers = [];
     this._identityOverrideUserId = "";
     this._identityNotice = null;
+    this._selectedGuestIds = new Set();
   }
 
   _newConversationId() {
@@ -602,6 +603,108 @@ class HaAgentPanel extends HTMLElement {
       agent_user_id: agentUserId || undefined,
     });
     this._identityOverrideUserId = agentUserId || "";
+  }
+
+  _isPromotableGuest(user) {
+    return (
+      user &&
+      user.kind === "guest" &&
+      user.display_name !== "Voice (unidentified)" &&
+      !user.merged_into
+    );
+  }
+
+  _registeredUsers() {
+    return (this._agentUsers || []).filter(
+      (user) => user.kind === "registered" && !user.merged_into,
+    );
+  }
+
+  async _promoteGuestUser(guestId) {
+    const guest = (this._agentUsers || []).find((user) => user.id === guestId);
+    if (!guest || !this._isPromotableGuest(guest)) return;
+    const registered = this._registeredUsers();
+    if (!registered.length) {
+      this._identityNotice = "No registered members available for promotion.";
+      this._render();
+      return;
+    }
+    const options = registered
+      .map((user, index) => `${index + 1}. ${user.display_name}`)
+      .join("\n");
+    const choice = prompt(
+      `Promote ${guest.display_name} to which member?\n${options}\n\nEnter number:`,
+    );
+    if (!choice) return;
+    const index = Number.parseInt(choice.trim(), 10) - 1;
+    if (!Number.isFinite(index) || index < 0 || index >= registered.length) {
+      this._identityNotice = "Promotion cancelled: invalid member selection.";
+      this._render();
+      return;
+    }
+    const target = registered[index];
+    const rename = prompt(
+      `Optional display name for ${target.display_name} (leave blank to keep):`,
+      target.display_name,
+    );
+    try {
+      await this._call("ha_agent/identity/promote_guest", {
+        entry_id: this._entryId,
+        guest_id: guestId,
+        registered_id: target.id,
+        display_name: rename && rename.trim() ? rename.trim() : undefined,
+      });
+      this._selectedGuestIds.delete(guestId);
+      await this._loadIdentityUsers();
+      this._identityNotice = `Promoted ${guest.display_name} into ${target.display_name}.`;
+    } catch (err) {
+      this._identityNotice = this._formatApiError(err, "ha_agent/identity/promote_guest");
+    }
+    this._render();
+  }
+
+  async _mergeSelectedGuests() {
+    const selected = [...this._selectedGuestIds];
+    if (selected.length < 2) {
+      this._identityNotice = "Select at least two guests to merge.";
+      this._render();
+      return;
+    }
+    const guests = selected
+      .map((id) => (this._agentUsers || []).find((user) => user.id === id))
+      .filter((user) => this._isPromotableGuest(user));
+    if (guests.length < 2) {
+      this._identityNotice = "Select at least two valid guest profiles to merge.";
+      this._render();
+      return;
+    }
+    const options = guests
+      .map((user, index) => `${index + 1}. ${user.display_name}`)
+      .join("\n");
+    const choice = prompt(
+      `Which guest profile should be kept?\n${options}\n\nEnter number:`,
+    );
+    if (!choice) return;
+    const index = Number.parseInt(choice.trim(), 10) - 1;
+    if (!Number.isFinite(index) || index < 0 || index >= guests.length) {
+      this._identityNotice = "Merge cancelled: invalid survivor selection.";
+      this._render();
+      return;
+    }
+    const survivor = guests[index];
+    try {
+      await this._call("ha_agent/identity/merge_guests", {
+        entry_id: this._entryId,
+        guest_ids: guests.map((user) => user.id),
+        survivor_id: survivor.id,
+      });
+      this._selectedGuestIds.clear();
+      await this._loadIdentityUsers();
+      this._identityNotice = `Merged ${guests.length} guests into ${survivor.display_name}.`;
+    } catch (err) {
+      this._identityNotice = this._formatApiError(err, "ha_agent/identity/merge_guests");
+    }
+    this._render();
   }
 
   _identityActAsOptions() {
@@ -3738,26 +3841,47 @@ class HaAgentPanel extends HTMLElement {
           ? this._escape(user.person_entity_id)
           : "—";
         const defaultBadge = user.is_default ? " · default" : "";
+        const mergedBadge = user.merged_into ? " · merged" : "";
+        const voice = user.voice_profile
+          ? `${user.voice_profile.sample_count || 0} samples${
+              user.voice_profile.avg_confidence != null
+                ? ` · ${Math.round(user.voice_profile.avg_confidence * 100)}%`
+                : ""
+            }`
+          : "—";
+        const promotable = this._isPromotableGuest(user);
+        const selectCell = promotable
+          ? `<input type="checkbox" data-action="identity-select-guest" data-user-id="${this._escape(user.id)}" ${
+              this._selectedGuestIds.has(user.id) ? "checked" : ""
+            } />`
+          : "";
+        const promoteBtn = promotable
+          ? `<button type="button" data-action="identity-promote" data-user-id="${this._escape(user.id)}">Promote</button>`
+          : "";
         return `
       <tr>
-        <td>${this._escape(user.display_name)}${defaultBadge}</td>
+        <td>${selectCell}</td>
+        <td>${this._escape(user.display_name)}${defaultBadge}${mergedBadge}</td>
         <td>${kind}</td>
+        <td>${this._escape(voice)}</td>
         <td>${haUser}</td>
         <td>${person}</td>
         <td>
           <button type="button" data-action="identity-edit" data-user-id="${this._escape(user.id)}">Edit</button>
+          ${promoteBtn}
         </td>
       </tr>`;
       })
       .join("");
     return `
       ${notice}
-      <p class="hint">Map HA logins to household members for console chat. Voice Assist uses the Assist guest until VoiceBM is connected (Phase 9b).</p>
+      <p class="hint">Registered members are for console login mapping. Voice guests are created automatically from speaker embeddings. Promote a guest to attach their voice to a member, or merge duplicate guests after mis-splits.</p>
       <table>
-        <thead><tr><th>Name</th><th>Kind</th><th>HA user id</th><th>Person</th><th></th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="5">No users loaded.</td></tr>'}</tbody>
+        <thead><tr><th></th><th>Name</th><th>Kind</th><th>Voice</th><th>HA user id</th><th>Person</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="7">No users loaded.</td></tr>'}</tbody>
       </table>
       <div class="actions" style="margin-top:12px">
+        <button type="button" data-action="identity-merge-selected">Merge selected guests</button>
         <button type="button" data-action="identity-add-guest">Add guest profile</button>
         <button type="button" data-action="identity-reload">Reload</button>
       </div>`;
@@ -4915,6 +5039,29 @@ class HaAgentPanel extends HTMLElement {
     this.shadowRoot.querySelector('[data-action="identity-reload"]')?.addEventListener("click", async () => {
       await this._loadIdentityUsers();
       this._render();
+    });
+
+    this.shadowRoot
+      .querySelector('[data-action="identity-merge-selected"]')
+      ?.addEventListener("click", async () => {
+        await this._mergeSelectedGuests();
+      });
+
+    this.shadowRoot.querySelectorAll("[data-action='identity-select-guest']").forEach((el) => {
+      el.addEventListener("change", () => {
+        const userId = el.getAttribute("data-user-id");
+        if (!userId) return;
+        if (el.checked) this._selectedGuestIds.add(userId);
+        else this._selectedGuestIds.delete(userId);
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("[data-action='identity-promote']").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const userId = el.getAttribute("data-user-id");
+        if (!userId) return;
+        await this._promoteGuestUser(userId);
+      });
     });
 
     this.shadowRoot.querySelector('[data-action="identity-add-guest"]')?.addEventListener("click", async () => {

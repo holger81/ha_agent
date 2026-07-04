@@ -33,6 +33,22 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
+def merge_centroids(
+    left: list[float],
+    left_count: int,
+    right: list[float],
+    right_count: int,
+) -> list[float]:
+    """Merge two centroids using sample-weighted averaging."""
+    total = left_count + right_count
+    if total <= 0:
+        return list(left)
+    return [
+        ((left[index] * left_count) + (right[index] * right_count)) / total
+        for index in range(len(left))
+    ]
+
+
 def update_centroid(
     current: list[float] | None,
     sample_count: int,

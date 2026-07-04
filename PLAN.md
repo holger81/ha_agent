@@ -311,9 +311,13 @@ STT bridge (ha_liquidai): [docs/voice-speaker-embed-plan.md](docs/voice-speaker-
 - [x] `conversation.py` — pop voice cache via `voice_bridge.py`
 - [ ] Live test: same voice → same guest id without enrollment
 
-#### 9c — Guest lifecycle (planned)
+#### 9c — Guest lifecycle (shipped v1.16.0)
 
-- [ ] Guest promote / merge UI + APIs
+- [x] Promote guest → registered member (voice profile transfer/merge)
+- [x] Merge duplicate guests (centroid union, archive sources)
+- [x] Users tab: voice samples, promote, multi-select merge
+- [x] WebSocket APIs: `identity/promote_guest`, `identity/merge_guests`
+- [ ] Live test: merge Guest 2–4 into one profile after mis-split
 
 ---
 

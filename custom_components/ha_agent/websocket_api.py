@@ -53,6 +53,8 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_identity_create_guest)
     websocket_api.async_register_command(hass, ws_identity_set_override)
     websocket_api.async_register_command(hass, ws_identity_get_override)
+    websocket_api.async_register_command(hass, ws_identity_promote_guest)
+    websocket_api.async_register_command(hass, ws_identity_merge_guests)
     websocket_api.async_register_command(hass, ws_skills_list)
     websocket_api.async_register_command(hass, ws_skills_search)
     websocket_api.async_register_command(hass, ws_skills_get)
@@ -385,6 +387,56 @@ async def ws_identity_get_override(
         hass,
         msg["entry_id"],
         conversation_id=msg.get("conversation_id"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/identity/promote_guest",
+        vol.Required("entry_id"): str,
+        vol.Required("guest_id"): str,
+        vol.Required("registered_id"): str,
+        vol.Optional("display_name"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_identity_promote_guest(
+    hass: HomeAssistant,
+    connection,
+    msg: dict,
+) -> None:
+    require_admin(connection)
+    result = await identity_api.promote_guest(
+        hass,
+        msg["entry_id"],
+        guest_id=msg["guest_id"],
+        registered_id=msg["registered_id"],
+        display_name=msg.get("display_name"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/identity/merge_guests",
+        vol.Required("entry_id"): str,
+        vol.Required("guest_ids"): [str],
+        vol.Optional("survivor_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_identity_merge_guests(
+    hass: HomeAssistant,
+    connection,
+    msg: dict,
+) -> None:
+    require_admin(connection)
+    result = await identity_api.merge_guests(
+        hass,
+        msg["entry_id"],
+        guest_ids=msg["guest_ids"],
+        survivor_id=msg.get("survivor_id"),
     )
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
