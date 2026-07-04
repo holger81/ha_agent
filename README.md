@@ -211,7 +211,7 @@ python3 scripts/smoke_test_phase4.py
 
 In Assist, try a device command, a news question, and a follow-up in the same conversation. Enable streaming in agent settings and check that replies appear progressively.
 
-More detail: **[Assist pipeline setup](docs/assist-setup.md)** · **[HA Agent Console](docs/agent-console.md)** · **[Migration from n8n](docs/migration-from-n8n.md)** · **[LiquidAI STT/TTS](https://github.com/holger81/ha_liquidai/blob/main/docs/assist-setup.md)**
+More detail: **[Assist pipeline setup](docs/assist-setup.md)** · **[Agent Console](docs/agent-console.md)** · **[Voice identity plan](docs/agent-voice-inference-plan.md)** · **[Migration from n8n](docs/migration-from-n8n.md)** · **[LiquidAI STT/TTS](https://github.com/holger81/ha_liquidai/blob/main/docs/assist-setup.md)**
 
 ---
 

@@ -197,9 +197,9 @@ Audio already flows through LiquidAI STT on the inference host (`192.168.10.31`)
 | Can pass identity alongside text to pipeline | New ML dep on inference box |
 | Matches existing stack | HA STT entity API may not expose metadata |
 
-**Fit:** Best long-term for your stack if we add a small embedding service next to
-STT and publish `speaker_id` via pipeline metadata or `extra_system_prompt`
-(structured JSON block — interim hack).
+**Fit:** **Chosen path** — see [agent-voice-inference-plan.md](agent-voice-inference-plan.md).
+Sherpa-ONNX embed on inference box; ha_liquidai voice turn cache; ha_agent guest
+clustering. `HA_AGENT_IDENTITY` in `extra_system_prompt` kept as override/debug.
 
 ### Option E — Wait for HA core / Wyoming speaker ID
 
@@ -209,9 +209,9 @@ Not viable as sole plan; monitor [architecture discussion](https://github.com/ho
 
 | Phase | Approach |
 |-------|----------|
-| **Identity 1** (text) | HA login user + admin override; no voice yet |
-| **Identity 2** (voice MVP) | Evaluate **hass-speaker-recognition** addon OR **VoiceBM** on HA box; ha_agent reads identity via agreed contract (REST poll, MQTT sensor, or `extra_system_prompt` JSON from automation) |
-| **Identity 3** (voice native) | **ha_liquidai** runs speaker ID on PCM before/as STT; passes `speaker_id` + confidence into conversation stage via pipeline extension |
+| **Identity 1** (text) | HA login user + admin override; no voice yet — **shipped 9a** |
+| **Identity 2** (voice MVP) | **Sherpa-ONNX** on inference box + **ha_liquidai** STT bridge + **ha_agent** guest clustering — [plan](agent-voice-inference-plan.md) |
+| **Identity 3** (voice polish) | Satellite-aware cache keys, promote/merge UI (9c), optional combined `/v1/assist/transcribe` |
 | **Optional** | Voice Match upstream for wake-word false-trigger reduction |
 
 **Guest clustering** should live in **ha_agent** regardless of backend — backends
@@ -281,11 +281,13 @@ async def resolve_agent_user(
 ## Implementation phases
 
 ```text
-Phase 9a — Identity registry (SQLite) + text/console resolution + admin override
-Phase 9b — Voice backend adapter + Assist identity injection
-Phase 9c — Guest create / promote / merge UI + APIs
+Phase 9a — Identity registry (SQLite) + text/console resolution + admin override  [shipped]
+Phase 9b — Sherpa-ONNX embed on .31 + ha_liquidai cache + ha_agent clustering  [planned]
+Phase 9c — Guest promote / merge UI + APIs
 Phase 10 — User-bound + system memory (depends on Phase 9)
 ```
+
+See [agent-voice-inference-plan.md](agent-voice-inference-plan.md) for 9b detail.
 
 ## Open questions
 
@@ -305,12 +307,15 @@ Phase 10 — User-bound + system memory (depends on Phase 9)
 | `memory.py` | Conversation history — separate from identity store |
 | `activity.py`, `skills/models.py` | Add identity fields to traces |
 | `docs/agent-memory-design.md` | Memory scopes once identity exists |
-| `../ha_liquidai/.../stt.py` | Future voice ID hook |
+| `identity/voicebm.py` | `HA_AGENT_IDENTITY` parser (override/debug) |
+| `docs/agent-voice-inference-plan.md` | Phase 9b Sherpa + inference box plan |
+| `../ha_liquidai/docs/voice-speaker-embed-plan.md` | STT bridge + `/v1/speaker/embed` contract |
 
 ## References
 
 - [HA Assist pipelines](https://developers.home-assistant.io/docs/voice/pipelines/)
 - [ConversationInput device_id / satellite_id PR](https://github.com/home-assistant/core/pull/164414)
 - [hass-speaker-recognition](https://pypi.org/project/hass-speaker-recognition/)
-- [VoiceBM](https://github.com/cybericebyte/VoiceBM)
+- [Sherpa-ONNX speaker ID](https://github.com/k2-fsa/sherpa-onnx#speaker-identification-speaker-id)
+- [agent-voice-inference-plan.md](agent-voice-inference-plan.md)
 - [HA community: no voice user in context](https://community.home-assistant.io/t/getting-the-frontend-user-id/919279)

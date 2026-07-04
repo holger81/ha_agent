@@ -25,7 +25,7 @@ flowchart TB
   end
 
   subgraph Backends
-    LAI["LiquidAI :8811"]
+    LAI["LiquidAI :8811\nASR + speaker/embed"]
     LLM["llama.cpp :9292"]
     MCP["MCP Proxy :2222"]
   end
@@ -288,7 +288,16 @@ override, guest promote/merge. See [docs/agent-identity-design.md](docs/agent-id
 
 #### 9b — Voice identification (planned)
 
-- [ ] VoiceBM (or other backend) adapter + Assist identity injection
+Sherpa-ONNX embeddings on inference box (`.31`) + guest clustering in ha_agent.
+Full plan: [docs/agent-voice-inference-plan.md](docs/agent-voice-inference-plan.md).
+STT bridge (ha_liquidai):
+[voice-speaker-embed-plan.md](https://github.com/holger81/ha_liquidai/blob/main/docs/voice-speaker-embed-plan.md).
+
+- [ ] Inference box: `POST /v1/speaker/embed` (Sherpa-ONNX, stateless)
+- [ ] ha_liquidai: parallel ASR + embed, voice turn cache
+- [ ] ha_agent: `voice_profiles` schema + embedding clustering in resolver
+- [ ] ha_agent: conversation cache lookup (primary path; keep `HA_AGENT_IDENTITY` override)
+- [ ] Live test: same voice → same guest id without enrollment
 
 #### 9c — Guest lifecycle (planned)
 
