@@ -154,6 +154,65 @@ def test_cluster_reuses_same_guest_for_similar_voice(
     assert profile.sample_count == 2
 
 
+def test_cluster_prefers_recent_profile_on_close_scores(
+    identity_store: IdentityStore,
+) -> None:
+    config = IdentityVoiceConfig(
+        guest_create_threshold=0.50,
+        guest_tie_margin=0.05,
+    )
+    first = resolve_speaker_embedding(
+        identity_store,
+        SpeakerMatch(
+            backend="sherpa-onnx",
+            embedding=VECTOR_A,
+            quality="ok",
+            duration_ms=1200,
+        ),
+        config=config,
+    )
+    second = resolve_speaker_embedding(
+        identity_store,
+        SpeakerMatch(
+            backend="sherpa-onnx",
+            embedding=VECTOR_C,
+            quality="ok",
+            duration_ms=1200,
+        ),
+        config=config,
+    )
+    assert first is not None and second is not None
+    assert first.user.id != second.user.id
+
+    profile_first = identity_store.get_voice_profile_for_user(first.user.id)
+    profile_second = identity_store.get_voice_profile_for_user(second.user.id)
+    assert profile_first is not None and profile_second is not None
+    identity_store.update_voice_profile_centroid(
+        profile_first.id,
+        embedding=VECTOR_A,
+        match_confidence=0.99,
+    )
+    identity_store.update_voice_profile_centroid(
+        profile_second.id,
+        embedding=VECTOR_C,
+        match_confidence=0.99,
+    )
+
+    blended = [0.70710678, 0.70710678, 0.0]
+    resolved = resolve_speaker_embedding(
+        identity_store,
+        SpeakerMatch(
+            backend="sherpa-onnx",
+            embedding=blended,
+            quality="ok",
+            duration_ms=1200,
+        ),
+        config=config,
+    )
+    assert resolved is not None
+    assert resolved.user.id == second.user.id
+
+
 def test_cluster_creates_second_guest_for_different_voice(
     identity_store: IdentityStore,
 ) -> None:

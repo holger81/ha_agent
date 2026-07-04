@@ -3789,7 +3789,11 @@ class HaAgentPanel extends HTMLElement {
             : "—";
         const source = this._conversationSource(t.conversation_id);
         const actor = t.agent_user_display_name
-          ? `${t.agent_user_display_name}${t.identity_source ? ` · ${t.identity_source}` : ""}`
+          ? `${t.agent_user_display_name}${t.identity_source ? ` · ${t.identity_source}` : ""}${
+              t.identity_speaker_confidence != null
+                ? ` (${Math.round(t.identity_speaker_confidence * 100)}%)`
+                : ""
+            }`
           : "—";
         const openChatBtn = t.conversation_id
           ? `<button data-action="activity-open-chat" data-conversation-id="${this._escape(t.conversation_id)}">Open</button>`

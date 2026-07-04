@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 DEFAULT_VOICE_EMBED_ENABLED = True
 DEFAULT_GUEST_MATCH_THRESHOLD = 0.75
-DEFAULT_GUEST_CREATE_THRESHOLD = 0.65
+DEFAULT_GUEST_CREATE_THRESHOLD = 0.52
+DEFAULT_GUEST_TIE_MARGIN = 0.05
 DEFAULT_MIN_UTTERANCE_MS = 800
 DEFAULT_VOICE_BACKEND = "sherpa-onnx"
 
@@ -20,6 +21,7 @@ class IdentityVoiceConfig:
     enabled: bool = DEFAULT_VOICE_EMBED_ENABLED
     guest_match_threshold: float = DEFAULT_GUEST_MATCH_THRESHOLD
     guest_create_threshold: float = DEFAULT_GUEST_CREATE_THRESHOLD
+    guest_tie_margin: float = DEFAULT_GUEST_TIE_MARGIN
     min_utterance_ms: int = DEFAULT_MIN_UTTERANCE_MS
 
 
