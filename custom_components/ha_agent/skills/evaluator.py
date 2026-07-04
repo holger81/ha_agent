@@ -112,6 +112,8 @@ async def evaluate_skill_use(
     """Record usage and optionally improve a skill (hourly cooldown)."""
     if skill.is_builtin:
         return
+    if trace.skill_plan_override:
+        return
     store = get_skill_store(hass, entry_id)
     run_result = build_run_result(skill.id, trace, skill)
 

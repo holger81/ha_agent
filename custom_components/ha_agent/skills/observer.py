@@ -11,6 +11,7 @@ from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..llm_client import LlmClient
 from .body import normalize_skill_draft
+from .learning_policy import analyze_workflow_delta
 from .models import SkillDraft, SkillSlot, TurnTrace
 
 _DISCOVERY_TOOL = re.compile(
@@ -229,13 +230,12 @@ _OVERRIDE_PROMPT = (
     "OVERRIDE MODE: An active skill was suspended because it did not fit the "
     "user's goal. The assistant completed the request with a different "
     "workflow (often after MCP discovery).\n"
-    "When learn=true:\n"
-    "- Set update_parent=true to extend/replace the parent skill so one skill "
-    "covers the new procedure (merge triggers/body/tool_steps when closely "
-    "related, e.g. add mark-as-read to an email skill).\n"
-    "- Set update_parent=false and parent_id to the parent skill id when the "
-    "new workflow is a distinct procedure that should remain a separate child "
-    "skill (e.g. mark-as-read vs check-unread).\n"
+    "The payload includes workflow_analysis comparing parent_tools vs "
+    "executed_tools. Prefer its recommendation:\n"
+    "- recommendation=update: extend the parent skill (union triggers, append "
+    "new tool_steps/body sections; keep the parent title).\n"
+    "- recommendation=fork: create a child skill (update_parent=false, "
+    "parent_id set) with triggers for the new goal only.\n"
     "- Include concrete tool_steps for MCP tools used successfully; omit "
     "discovery/searchToolsForDomain unless essential.\n"
     "- Triggers should match how the user asked for this new goal.\n"
@@ -266,6 +266,17 @@ async def observe_skill_override(
         "triggers": parent_skill.triggers[:12],
     }
     payload["override_reason"] = trace.skill_plan_override_reason
+    delta = analyze_workflow_delta(parent_skill, trace)
+    payload["workflow_analysis"] = {
+        "parent_tools": list(delta.parent_tools),
+        "executed_tools": list(delta.executed_tools),
+        "new_tools": list(delta.new_tools),
+        "parent_effects": sorted(delta.parent_effects),
+        "executed_effects": sorted(delta.executed_effects),
+        "added_effects": sorted(delta.added_effects),
+        "recommendation": delta.recommendation,
+        "reason": delta.reason,
+    }
     messages = [
         {"role": "system", "content": _OVERRIDE_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
