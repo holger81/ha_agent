@@ -213,7 +213,8 @@ Phase 5 adds **router options** (still UI-only):
 
 ## Next action
 
-**Phase 6 complete.** Stack is native: **ha_liquidai** (STT/TTS) + **ha_agent** (conversation). Use [docs/migration-from-n8n.md](docs/migration-from-n8n.md) to decommission n8n.
+**Phase 10 complete.** Durable user/household memory is live alongside skills.
+Remaining Phase 9 ops items: Sherpa deploy on `.31` and live voice guest merge tests.
 
 ---
 
@@ -330,13 +331,31 @@ STT bridge (ha_liquidai): [docs/voice-speaker-embed-plan.md](docs/voice-speaker-
 
 ---
 
-### Phase 10 — Persistent agent memory (planned)
+### Phase 10 — Persistent agent memory (shipped)
 
 **Prerequisite:** [Phase 9 identity](docs/agent-identity-design.md) — user-bound memory
 requires resolving *who* is on each turn (HA login for text, speaker ID for voice).
 
 **Scope:** Durable preferences and household facts, separate from conversation history
 (`memory.py`) and workflow skills. See [docs/agent-memory-design.md](docs/agent-memory-design.md).
+
+#### Status
+
+- [x] SQLite `system_memory` + `user_memory` (`persistent_memory/`)
+- [x] Remember / prefer / forget intent + deterministic extractors
+- [x] Route-scoped inject into system prompt (user > household)
+- [x] Guest / low-confidence voice: system memory only
+- [x] Console WS APIs + Settings/Users memory CRUD
+- [x] Skill hygiene: preferences skip observer; slot defaults → user memory
+- [x] Answer-first gated verifier; sticky action backend; slim loop guidance
+- [x] Worker prune/compact parity
+
+#### Exit criteria
+
+- [x] Preference/alias survives new Assist conversation for same resolved user (unit)
+- [x] Typical tool turn streams answer before critic LLM call
+- [x] HA_ACTION stays on action model for full tool plan when enabled
+- [x] ruff CI green; unit tests for memory / loop / skill selection
 
 **Minimum scopes:**
 

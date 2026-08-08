@@ -50,6 +50,7 @@ class LoopState:
     empty_responses: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
     include_full_tool_catalog: bool = False
+    preferred_tool_names: list[str] = field(default_factory=list)
     pagination_pending: dict[str, Any] = field(default_factory=dict)
     preserve_stream_ui: bool = False
     last_draft_answer: str = ""
@@ -69,6 +70,7 @@ INTERNAL_GUIDANCE_ROLE = "system"
 _MAX_REASONING_CHARS = 8000
 _MAX_EMPTY_RESPONSES = 2
 _MAX_MCP_GUIDANCE_CHARS = 600
+_MAX_LOOP_GUIDANCE_CHARS = 500
 # Route → MCP discovery domain when no skill/playbook tool_steps are seeded.
 _ROUTE_DISCOVERY_DOMAINS: dict[str, str] = {
     "email": "email",
@@ -1177,25 +1179,49 @@ def inject_loop_context(
     messages: list[dict[str, Any]],
     loop_state: LoopState,
 ) -> None:
-    """Insert plan progress, MCP guidance, and failures before a loop step."""
+    """Insert a compact next-step hint before a loop iteration.
+
+    Prefer one next-action line plus the latest failure over stacked MCP/plan
+    dumps so small models can follow a single instruction.
+    """
     parts: list[str] = []
-    plan = build_plan_progress_summary(loop_state)
-    if plan:
-        parts.append(plan)
-    if loop_state.mcp_guidance:
-        guidance = "\n".join(f"- {hint}" for hint in loop_state.mcp_guidance)
-        parts.append(
-            "MCP SERVER GUIDANCE (from tool discovery — follow it):\n" + guidance
-        )
-        loop_state.mcp_guidance = []
+    next_step = ""
+    if loop_state.plan_steps and loop_state.plan_step_statuses:
+        for index, status in enumerate(loop_state.plan_step_statuses):
+            if status not in {"pending", "needs_work", "active"}:
+                continue
+            step = loop_state.plan_steps[index]
+            title = str(step.get("toolName") or step.get("title") or "").strip()
+            if title:
+                next_step = f"NEXT: {title}"
+                break
+    if not next_step:
+        plan = build_plan_progress_summary(loop_state)
+        if plan:
+            # Keep only the first line of the plan summary.
+            next_step = plan.strip().splitlines()[0][:200]
+    if next_step:
+        parts.append(next_step)
+
     if loop_state.pending_failure_summary:
-        parts.append(loop_state.pending_failure_summary)
+        parts.append(loop_state.pending_failure_summary.strip()[:300])
         loop_state.pending_failure_summary = None
+    elif loop_state.mcp_guidance:
+        # One highest-priority MCP hint only.
+        hint = loop_state.mcp_guidance[0].strip()
+        if hint:
+            parts.append(f"MCP: {hint[:240]}")
+    # Always clear queued MCP hints so they do not stack across iterations.
+    loop_state.mcp_guidance = []
+
     if not parts:
         return
+    content = "\n".join(parts)
+    if len(content) > _MAX_LOOP_GUIDANCE_CHARS:
+        content = content[: _MAX_LOOP_GUIDANCE_CHARS - 3] + "..."
     entry = {
         "role": INTERNAL_GUIDANCE_ROLE,
-        "content": "\n\n".join(parts),
+        "content": content,
     }
     if messages and messages[-1].get("role") == "user":
         messages.insert(len(messages) - 1, entry)

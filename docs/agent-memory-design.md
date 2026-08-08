@@ -1,7 +1,9 @@
-# Agent memory — design notes (future implementation)
+# Agent memory — design notes
 
-Captured from product discussion (2026-07). Use this when implementing persistent
-memory beyond today's per-`conversation_id` chat history (`memory.py`).
+Durable preferences and household facts, separate from conversation history
+(`memory.py`) and workflow skills.
+
+**Status:** implemented (Phase 10) in `custom_components/ha_agent/persistent_memory/`.
 
 **Prerequisite:** [Phase 9 identity](agent-identity-design.md) — user-bound
 memory needs a resolved agent user on every turn (voice ID or HA login).
@@ -23,33 +25,24 @@ Do **not** force skill save for preference-like requests. Route those to memory.
 Manual skill save remains for genuine procedures (optionally with relaxed observer on
 explicit user request).
 
-## Two memory scopes (minimum)
+## Two memory scopes
 
 ### 1. User-bound memory
 
-Per-user preferences and overrides. Different household members can have different
-values for the same key.
+Per-user preferences and overrides (`user_memory` table, keyed by `agent_user_id`).
 
 Examples:
 
-- Preferred news style (local vs national briefing)
-- Default email mailbox
-- Personal phrasing or habits
+- Preferred news style (`news.digest_scope`)
+- Default email mailbox (`email.default_mailbox`)
+- Personal entity aliases (`entity.alias.*`)
 
-Requires a stable **user identity** at turn time (Assist user id, HA person entity,
-console profile, etc. — TBD at implementation).
+Guests and low-confidence voice matches receive **system memory only**.
 
 ### 2. System / household memory
 
-Shared facts and procedures that apply to everyone unless a user-bound entry
-explicitly overrides them.
-
-Examples:
-
-- **Procedures:** “Local news” always means `mcp_news__news_curate` with
-  `local: true` / `digest_scope: local` (same workflow for all users)
-- **Entity mappings:** “Dining room light” → `light.dining_room_lights_ceiling`
-- **Location context:** Home is in the Bay Area (for disambiguation)
+Shared facts (`system_memory` table) that apply to everyone unless a user-bound entry
+overrides them.
 
 ## Precedence
 
@@ -57,39 +50,28 @@ Examples:
 user-bound memory  >  system memory  >  shipped defaults (context.py, playbooks)
 ```
 
-User overrides are explicit (“for me, use …”) or set via a profile UI. System
-memory holds the household baseline.
+## Injection
 
-## Injection (sketch)
+On each turn after identity + route resolve, merge applicable keys into a compact
+`DURABLE MEMORY` block on the system message (`persistent_memory/inject.py`).
+Keys are filtered by route prefixes (`news.`, `email.`, `entity.alias.`, …).
 
-On each turn, merge applicable memory into LLM context (system or tool context),
-scoped by route/tool when possible:
+Slot defaults from memory fill empty skill bindings (`apply_memory_defaults_to_slots`).
 
-- News route → apply news-related system + user memory
-- Action route → entity aliases / area mappings
-- Email route → mailbox defaults (user first, then system)
+## Intent routing
 
-Keep injection compact; prefer structured keys over long prose.
+Rules-first in `persistent_memory/intent.py`:
 
-## Intent routing (sketch)
+1. “save … as a skill” → existing skill path
+2. remember / prefer / always / forget → memory write/delete short-circuit
+3. Ambiguous workflow+remember → clarify question
 
-When the user says “remember …”, “I prefer …”, “always use …”, “save this”:
+Deterministic extractors cover local/national news, mailbox, and entity aliases.
+Console CRUD: `ha_agent/memory/list|set|delete` (Settings = household, Users = per member).
 
-1. **Workflow** (multi-tool procedure) → skill path (existing learning)
-2. **Default / fact / single-arg preference** → memory (user or system — ask or infer scope)
-3. Ambiguous → clarify: “Save as a reusable workflow, or remember as a default?”
+## Related code
 
-## Open questions (for implementation)
-
-- User identity source in Assist vs console vs automations
-- Storage: SQLite table(s) per config entry; separate `user_memory` and `system_memory`
-- UI: profile editor, “forget”, export, admin vs self-service
-- Structured vs free-text entries (prefer structured for tool args and entity ids)
-- How memory interacts with skill `slots` and route playbooks
-
-## Related code today
-
-- `memory.py` — conversation history only
-- `context.py` — hardcoded route hints (e.g. `news_curate`)
-- `skills/` — workflow learning; observer rejects news summaries as non-workflows
-- `playbooks.py` — editable route baselines (closest to system memory for procedures)
+- `persistent_memory/store.py` — SQLite CRUD
+- `persistent_memory/runtime.py` — turn short-circuit + slot→memory writes
+- `agent.py` — load/inject after identity; skip skill observer for preference turns
+- `skills/selection.py` — stronger FTS bar so weak matches do not pin plans

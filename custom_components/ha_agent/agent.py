@@ -92,6 +92,14 @@ from .orchestrator import (
     replan_after_failure,
     triage_complexity,
 )
+from .persistent_memory import (
+    apply_memory_defaults_to_slots,
+    async_handle_memory_intent,
+    async_load_memory_context,
+    detect_memory_intent,
+    is_preference_shaped_turn,
+)
+from .persistent_memory.intent import MemoryIntentKind
 from .playbooks import async_select_playbook
 from .prepass import run_turn_prepass
 from .recovery_hints import async_recovery_hints
@@ -151,13 +159,12 @@ from .tools import (
     parse_tool_arguments,
     tool_result_message,
 )
-from .verifier import build_verifier_retry_guidance, verify_turn
+from .verifier import verify_turn
 
 if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
 
 FALLBACK_MESSAGE = "Sorry, I couldn't complete that request."
-_MAX_VERIFIER_RETRIES = 1
 
 
 @dataclass(slots=True, frozen=True)
@@ -197,6 +204,14 @@ def _agent_model_role(route: TaskRoute, *, use_chat_backend: bool) -> str:
     if route == TaskRoute.HA_ACTION and not use_chat_backend:
         return "action"
     return "chat"
+
+
+def _stick_action_or_chat(route: TaskRoute) -> bool:
+    """Return True when the loop should switch to the chat backend.
+
+    HA_ACTION stays on the action backend for the full turn when enabled.
+    """
+    return route != TaskRoute.HA_ACTION
 
 
 def _tool_call_payload(call: ToolCall) -> tuple[str, dict[str, Any]]:
@@ -903,28 +918,11 @@ async def _run_orchestrated_turn(
     assistant_text = (synth.content or "").strip() or FALLBACK_MESSAGE
     yield AgentDelta(content=assistant_text)
 
-    v_result = await verify_turn(
-        llm,
-        registry.backend_for(ModelRole.VERIFIER),
-        user_text=user_text,
-        assistant_text=assistant_text,
-        tool_calls=trace.tool_calls,
-        tool_errors=sum(r.tool_errors for r in worker_results),
-        structured_output_enabled=structured,
-        trace=trace,
-    )
-    trace.verifier_verdict = "pass" if v_result.passed else "fail"
-    trace.verifier_detail = v_result.reason
-    trace.skill_followed = v_result.skill_followed
-    yield AgentDelta(
-        meta={
-            "verifier_verdict": trace.verifier_verdict,
-            "verifier_detail": trace.verifier_detail,
-        }
-    )
-
+    total_tool_errors = sum(r.tool_errors for r in worker_results)
     trace.assistant_text = assistant_text
-    trace.outcome = TurnOutcome.SUCCESS if v_result.passed else TurnOutcome.PARTIAL
+    trace.outcome = (
+        TurnOutcome.PARTIAL if total_tool_errors > 0 else TurnOutcome.SUCCESS
+    )
     append_turn(
         hass,
         conversation_id,
@@ -934,9 +932,37 @@ async def _run_orchestrated_turn(
         entry_id=entry_id,
         turn_meta={
             "complexity": orch_plan.complexity.value,
-            "verifier_verdict": trace.verifier_verdict,
             "subtask_count": len(worker_results),
         },
+    )
+
+    should_verify = total_tool_errors > 0 or bool(subtask_learned)
+    if should_verify:
+        v_result = await verify_turn(
+            llm,
+            registry.backend_for(ModelRole.VERIFIER),
+            user_text=user_text,
+            assistant_text=assistant_text,
+            tool_calls=trace.tool_calls,
+            tool_errors=total_tool_errors,
+            structured_output_enabled=structured,
+            trace=trace,
+        )
+    else:
+        from .verifier import VerifierResult
+
+        v_result = VerifierResult(passed=True, reason="verifier skipped")
+    trace.verifier_verdict = "pass" if v_result.passed else "fail"
+    trace.verifier_detail = v_result.reason
+    trace.skill_followed = v_result.skill_followed
+    if not v_result.passed and trace.outcome == TurnOutcome.SUCCESS:
+        trace.outcome = TurnOutcome.PARTIAL
+    yield AgentDelta(
+        meta={
+            "verifier_verdict": trace.verifier_verdict,
+            "verifier_detail": trace.verifier_detail,
+            "verifier_soft_fail": not v_result.passed,
+        }
     )
     _schedule_post_turn_skills(
         hass,
@@ -1175,6 +1201,41 @@ async def _post_turn_skills(
             and bindings_diverge_from_defaults(primary_learned, trace.slot_bindings)
             and skills_config.learning_enabled
         ):
+            # Stable personal defaults (mailbox, digest scope) go to user memory
+            # instead of forking another skill variant.
+            memory_keys = {
+                "mailbox": ("email.default_mailbox", "email"),
+                "digest_scope": ("news.digest_scope", "news"),
+            }
+            remembered: list[str] = []
+            agent_user_id = getattr(trace, "agent_user_id", None)
+            if agent_user_id:
+                from .persistent_memory import get_persistent_memory_store
+
+                store = get_persistent_memory_store(hass, entry_id)
+
+                def _write_defaults() -> list[str]:
+                    written: list[str] = []
+                    for slot_name, (mem_key, route_scope) in memory_keys.items():
+                        value = str(trace.slot_bindings.get(slot_name, "")).strip()
+                        if not value:
+                            continue
+                        store.set_user(
+                            agent_user_id,
+                            mem_key,
+                            value,
+                            route_scope=route_scope,
+                            notes=f"Learned from skill slot {slot_name}",
+                        )
+                        written.append(f"{mem_key}={value}")
+                    return written
+
+                remembered = await hass.async_add_executor_job(_write_defaults)
+            if remembered:
+                return (
+                    " I'll remember " + ", ".join(remembered) + " as your default.",
+                    meta_patch,
+                )
             forked = await observe_skill_fork(
                 llm,
                 observer_backend,
@@ -1218,6 +1279,9 @@ async def _post_turn_skills(
                 )
 
     manual_save = bool(_MANUAL_SAVE.search(trace.user_text))
+    if not manual_save and is_preference_shaped_turn(trace.user_text):
+        # Preferences belong in durable memory, not skills.
+        return suffix, meta_patch
     if manual_save:
         if not should_offer_skill_creation(
             trace,
@@ -1385,10 +1449,39 @@ async def run_agent(
     apply_identity_to_trace(trace, identity)
     identity_context = format_identity_context(identity)
 
+    memory_intent = detect_memory_intent(user_text)
+    if memory_intent.kind != MemoryIntentKind.NONE and not memory_intent.is_workflow:
+        memory_reply = await async_handle_memory_intent(
+            hass,
+            entry_id,
+            user_text=user_text,
+            identity=identity,
+        )
+        if memory_reply:
+            append_turn(
+                hass,
+                conversation_id,
+                user_text,
+                memory_reply,
+                max_turns=agent_config.history_turns,
+                entry_id=entry_id,
+                turn_meta={
+                    "memory_intent": memory_intent.kind.value,
+                    "identity": resolved_identity_to_dict(identity),
+                },
+            )
+            yield AgentDelta(
+                content=memory_reply,
+                meta={"memory_intent": memory_intent.kind.value},
+            )
+            return
+
     prepass_result = None
     skill_selection = None
     matched_skills: list = []
     slot_bindings: dict[str, str] = {}
+    memory_context = ""
+    merged_memory_values: dict[str, Any] = {}
     if agent_config.prepass_enabled:
         prepass_result = await run_turn_prepass(
             hass,
@@ -1434,6 +1527,13 @@ async def run_agent(
             trace=trace,
         )
     record_route(hass, entry_id, route)
+    merged_memory, memory_context = await async_load_memory_context(
+        hass,
+        entry_id,
+        identity=identity,
+        route=route.value,
+    )
+    merged_memory_values = dict(merged_memory.values)
     if orch_plan.complexity == Complexity.COMPLEX:
         orch_plan = await plan_subtasks(
             llm,
@@ -1504,6 +1604,10 @@ async def run_agent(
                 slot_bindings,
                 primary_learned,
                 route=route.value,
+            )
+            slot_bindings = apply_memory_defaults_to_slots(
+                slot_bindings,
+                merged_memory_values,
             )
         skill_hints = build_skill_hints(
             matched_skills,
@@ -1616,6 +1720,7 @@ async def run_agent(
         extra_system_prompt=extra_system_prompt,
         route_playbook=playbook_selection.body,
         identity_context=identity_context,
+        memory_context=memory_context,
     )
     messages = build_messages(
         system_message=system_message,
@@ -1696,7 +1801,6 @@ async def run_agent(
     _attach_plan_progress(turn_meta, loop_state, trace)
     yield AgentDelta(meta=turn_meta)
 
-    verifier_retries = 0
     for iteration in range(agent_config.max_iterations):
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
@@ -1795,7 +1899,7 @@ async def run_agent(
                     return
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = True
+                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             embedded_ran = False
@@ -1836,7 +1940,7 @@ async def run_agent(
             if embedded_ran:
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = True
+                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             assistant_text = strip_embedded_tool_markup(raw_buffer)
@@ -1886,7 +1990,7 @@ async def run_agent(
                     return
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = True
+                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             embedded_ran = False
@@ -1927,7 +2031,7 @@ async def run_agent(
             if embedded_ran:
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = True
+                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             assistant_text = (result.content or "").strip()
@@ -1949,7 +2053,7 @@ async def run_agent(
             )
             _prepare_next_loop_iteration(loop_state)
             mark_iteration_preserve_stream(loop_state)
-            use_chat_backend = True
+            use_chat_backend = _stick_action_or_chat(route)
             continue
 
         if not assistant_text:
@@ -1957,8 +2061,42 @@ async def run_agent(
             yield AgentDelta(content=assistant_text)
 
         reconcile_plan_before_answer(loop_state)
+        # Answer is already streamed above. Persist history first, then run a
+        # gated verifier that only soft-flags failures (no blocking retry).
+        failed_ha_verify = any(
+            note.startswith("VERIFICATION FAILED")
+            for note in loop_state.verification_notes
+        )
         primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
-        if primary_learned is not None or trace.tool_errors > 0:
+        should_verify = (
+            primary_learned is not None or trace.tool_errors > 0 or failed_ha_verify
+        )
+
+        trace.assistant_text = assistant_text
+        trace.controlled_entity_ids = list(controlled_entity_ids)
+        trace.verification_notes = list(loop_state.verification_notes)
+        trace.recovery_hints = list(loop_state.mcp_guidance)
+        trace.skill_plan_override = loop_state.skill_plan_override
+        trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
+        # Tentative outcome; verifier may soft-downgrade to PARTIAL.
+        if failed_ha_verify:
+            trace.outcome = TurnOutcome.PARTIAL
+        elif trace.tool_errors and not assistant_text:
+            trace.outcome = TurnOutcome.FAILED
+        else:
+            trace.outcome = TurnOutcome.SUCCESS
+        _attach_plan_progress(turn_meta, loop_state, trace)
+        append_turn(
+            hass,
+            conversation_id,
+            user_text,
+            memory_assistant_text(assistant_text, controlled_entity_ids),
+            max_turns=agent_config.history_turns,
+            entry_id=entry_id,
+            turn_meta=turn_meta,
+        )
+
+        if should_verify:
             v_result = await verify_turn(
                 llm,
                 role_registry.backend_for(ModelRole.VERIFIER),
@@ -1974,69 +2112,24 @@ async def run_agent(
         else:
             from .verifier import VerifierResult
 
-            v_result = VerifierResult(passed=True, reason="no skill workflow")
+            v_result = VerifierResult(passed=True, reason="verifier skipped")
         trace.verifier_verdict = "pass" if v_result.passed else "fail"
         trace.verifier_detail = v_result.reason
         trace.skill_followed = v_result.skill_followed
-        yield AgentDelta(
-            meta={
-                "verifier_verdict": trace.verifier_verdict,
-                "verifier_detail": trace.verifier_detail,
-            }
-        )
-        if not v_result.passed and verifier_retries < _MAX_VERIFIER_RETRIES:
-            verifier_retries += 1
-            if assistant_text.strip():
-                messages.append({"role": "assistant", "content": assistant_text})
-            messages.append(
-                {
-                    "role": INTERNAL_GUIDANCE_ROLE,
-                    "content": build_verifier_retry_guidance(v_result),
-                }
-            )
-            _prepare_next_loop_iteration(loop_state)
-            mark_iteration_preserve_stream(
-                loop_state,
-                draft_answer=assistant_text,
-            )
-            use_chat_backend = True
-            continue
-
-        trace.assistant_text = assistant_text
-        trace.controlled_entity_ids = list(controlled_entity_ids)
-        trace.verification_notes = list(loop_state.verification_notes)
-        failed_verification = any(
-            note.startswith("VERIFICATION FAILED") for note in trace.verification_notes
-        )
-        if failed_verification or trace.verifier_verdict == "fail":
+        if not v_result.passed and trace.outcome == TurnOutcome.SUCCESS:
             trace.outcome = TurnOutcome.PARTIAL
-        elif trace.tool_errors and not assistant_text:
-            trace.outcome = TurnOutcome.FAILED
-        else:
-            trace.outcome = TurnOutcome.SUCCESS
-        trace.recovery_hints = list(loop_state.mcp_guidance)
-        trace.skill_plan_override = loop_state.skill_plan_override
-        trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
-        _attach_plan_progress(turn_meta, loop_state, trace)
         turn_meta.update(
             {
                 "verifier_verdict": trace.verifier_verdict,
                 "verifier_detail": trace.verifier_detail,
+                "verifier_soft_fail": not v_result.passed,
                 "llm_calls": trace.llm_calls,
                 "skill_plan_override": trace.skill_plan_override,
                 "skill_plan_override_reason": trace.skill_plan_override_reason,
             }
         )
         yield AgentDelta(meta=dict(turn_meta))
-        append_turn(
-            hass,
-            conversation_id,
-            user_text,
-            memory_assistant_text(assistant_text, controlled_entity_ids),
-            max_turns=agent_config.history_turns,
-            entry_id=entry_id,
-            turn_meta=turn_meta,
-        )
+        record_turn(hass, entry_id, trace)
         _schedule_post_turn_skills(
             hass,
             entry_id=entry_id,
@@ -2049,8 +2142,6 @@ async def run_agent(
             history=history,
             matched_skills=matched_skills,
         )
-
-        record_turn(hass, entry_id, trace)
         return
 
     trace.fallback = True

@@ -69,6 +69,38 @@ _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
 }
 
 _CATALOG_LIMIT = 30
+# Minimum Jaccard overlap between user tokens and skill triggers/title before
+# FTS alone may pin a skill as an active plan (without LLM confirmation).
+_MIN_FTS_TRIGGER_SCORE = 0.22
+
+
+def _tokenize(text: str) -> set[str]:
+    return {tok for tok in re.findall(r"[a-z0-9]{3,}", text.lower()) if tok}
+
+
+def trigger_overlap_score(user_text: str, skill: Skill) -> float:
+    """Jaccard-ish overlap of user tokens vs skill triggers/title/description."""
+    user_tokens = _tokenize(user_text)
+    if not user_tokens:
+        return 0.0
+    skill_tokens = _tokenize(
+        " ".join(
+            [
+                skill.title,
+                skill.description,
+                *[str(trigger) for trigger in skill.triggers],
+            ]
+        )
+    )
+    if not skill_tokens:
+        return 0.0
+    overlap = user_tokens & skill_tokens
+    return len(overlap) / max(len(user_tokens), 1)
+
+
+def _strong_fts_match(user_text: str, skill: Skill) -> bool:
+    """Return True when FTS match is strong enough to pin without LLM."""
+    return trigger_overlap_score(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,8 +426,9 @@ async def resolve_skills_for_turn(
             detail="No enabled skills matched this query on the active route.",
         )
 
-    # FTS already pinned a single route-relevant skill — skip the extra LLM call.
-    if len(fts_matches) == 1:
+    # FTS already pinned a single route-relevant skill — skip the extra LLM call
+    # only when trigger overlap is strong enough for small models.
+    if len(fts_matches) == 1 and _strong_fts_match(user_text, fts_matches[0]):
         skill = fts_matches[0]
         return SkillSelectionResult(
             skills=fts_matches[:max_inject],
@@ -440,15 +473,19 @@ async def resolve_skills_for_turn(
             classifier_raw=raw_preview,
         )
 
-    if fts_matches:
-        skill = fts_matches[0]
+    # Weak FTS matches must not pin an active skill plan after LLM said none.
+    strong_fts = [
+        skill for skill in fts_matches if _strong_fts_match(user_text, skill)
+    ]
+    if strong_fts:
+        skill = strong_fts[0]
         return SkillSelectionResult(
-            skills=fts_matches[:max_inject],
+            skills=strong_fts[:max_inject],
             method="fts_fallback",
             summary=f"LLM none, FTS → {skill.slug}",
             detail=(
                 f"Classifier returned no skill from {len(catalog)} candidate(s); "
-                f"using FTS match {skill.title!r} ({skill.slug})."
+                f"using strong FTS match {skill.title!r} ({skill.slug})."
             ),
             candidate_count=len(catalog),
             classifier_raw=raw_preview,
@@ -458,9 +495,7 @@ async def resolve_skills_for_turn(
         skills=[],
         method="llm_empty",
         summary="LLM → none",
-        detail=(
-            f"Classifier returned no skill from {len(catalog)} candidate(s)."
-        ),
+        detail=(f"Classifier returned no skill from {len(catalog)} candidate(s)."),
         candidate_count=len(catalog),
         classifier_raw=raw_preview,
     )

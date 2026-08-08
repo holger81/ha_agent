@@ -175,8 +175,10 @@ class LlmClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-            # Gemma 4 / llama.cpp: parallel tool calls reduce reliability and
-            # can trigger infinite repeat loops during agent turns.
+            # Gemma 4 / llama.cpp: request parallel tool calls=false for
+            # reliability. If a model still emits multiple calls, the agent
+            # may execute them concurrently via asyncio.gather — that is
+            # intentional for independent tools, not a contradiction.
             payload["parallel_tool_calls"] = False
         if response_format:
             payload["response_format"] = response_format

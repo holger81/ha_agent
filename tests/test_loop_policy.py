@@ -415,8 +415,8 @@ def test_inject_loop_context_includes_plan_on_first_step() -> None:
 
     assert len(messages) == 3
     assert messages[-1]["content"] == "check inbox"
-    assert "AGENT PLAN PROGRESS" in messages[-2]["content"]
-    assert "Execute step 1" in messages[-2]["content"]
+    assert "NEXT: mail_mcp__imap_mailbox_status" in messages[-2]["content"]
+    assert len(messages[-2]["content"]) <= policy._MAX_LOOP_GUIDANCE_CHARS
 
 
 def test_should_retry_empty_response_caps_attempts() -> None:
@@ -480,9 +480,10 @@ def test_record_and_inject_mcp_guidance() -> None:
     messages: list[dict[str, str]] = []
     policy.inject_loop_context(messages, state)
 
-    assert "MCP SERVER GUIDANCE" in messages[0]["content"]
+    assert "MCP:" in messages[0]["content"]
     assert "Use domain smart-home." in messages[0]["content"]
     assert state.mcp_guidance == []
+    assert len(messages[0]["content"]) <= policy._MAX_LOOP_GUIDANCE_CHARS
 
 
 def test_extract_pagination_meta_has_more_offset() -> None:

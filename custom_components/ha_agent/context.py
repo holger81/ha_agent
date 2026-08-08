@@ -239,9 +239,7 @@ def entity_matches_query(entity: dict[str, Any], query: str) -> bool:
         parts.extend(str(alias).lower() for alias in aliases)
 
     tokens = [token for token in query.lower().split() if len(token) > 2]
-    return any(
-        token in part for token in tokens for part in parts if part
-    )
+    return any(token in part for token in tokens for part in parts if part)
 
 
 def _service_hint_for_query(query: str) -> str:
@@ -448,8 +446,7 @@ def _follow_up_device_hint(
     history_text = " ".join(message.get("content", "") for message in history[-6:])
     if entity_ids := _entity_ids_from_text(history_text):
         lines.append(
-            "Recent entity_id values from this conversation: "
-            + ", ".join(entity_ids)
+            "Recent entity_id values from this conversation: " + ", ".join(entity_ids)
         )
     return "\n".join(lines)
 
@@ -495,8 +492,10 @@ def build_tool_context(
             "with searchToolsForDomain, then callTool. Do not search HA entities."
         )
 
-    if route == "news" or is_news_query(query) or (
-        is_affirmative(query) and _recent_news_context(prior_turns)
+    if (
+        route == "news"
+        or is_news_query(query)
+        or (is_affirmative(query) and _recent_news_context(prior_turns))
     ):
         context_parts.append(
             "NEWS: call callTool with toolName mcp_news__news_curate. "
@@ -540,6 +539,7 @@ def build_system_message(
     extra_system_prompt: str | None = None,
     route_playbook: str = "",
     identity_context: str = "",
+    memory_context: str = "",
 ) -> str:
     """Assemble the system message for the LLM."""
     parts = [agent_system_prompt.strip(), tool_instructions.strip()]
@@ -547,6 +547,8 @@ def build_system_message(
         parts.append(route_playbook.strip())
     if identity_context.strip():
         parts.append(identity_context.strip())
+    if memory_context.strip():
+        parts.append(memory_context.strip())
     if mcp_session_prompt.strip():
         parts.append(mcp_session_prompt.strip())
     if tool_context.strip():

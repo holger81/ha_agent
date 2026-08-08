@@ -15,6 +15,7 @@ from .api import diagnostics as diagnostics_api
 from .api import eval as eval_api
 from .api import hacs as hacs_api
 from .api import identity as identity_api
+from .api import persistent_memory as persistent_memory_api
 from .api import playbooks as playbooks_api
 from .api import recovery_hints as recovery_hints_api
 from .api import route_keywords as route_keywords_api
@@ -59,6 +60,9 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_identity_enroll_stop)
     websocket_api.async_register_command(hass, ws_identity_enroll_get)
     websocket_api.async_register_command(hass, ws_identity_reassign_turn)
+    websocket_api.async_register_command(hass, ws_memory_list)
+    websocket_api.async_register_command(hass, ws_memory_set)
+    websocket_api.async_register_command(hass, ws_memory_delete)
     websocket_api.async_register_command(hass, ws_skills_list)
     websocket_api.async_register_command(hass, ws_skills_search)
     websocket_api.async_register_command(hass, ws_skills_get)
@@ -522,6 +526,71 @@ async def ws_identity_reassign_turn(
         corrected_by_ha_user_id=connection.user.id,
     )
     connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/memory/list",
+        **_entry_id_schema(
+            {
+                vol.Optional("scope", default="system"): vol.In(["system", "user"]),
+                vol.Optional("agent_user_id"): str,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_memory_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    result = await persistent_memory_api.list_memory(
+        hass,
+        msg["entry_id"],
+        scope=msg.get("scope", "system"),
+        agent_user_id=msg.get("agent_user_id"),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/memory/set",
+        vol.Required("entry_id"): str,
+        vol.Required("entry"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_memory_set(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    entry = await persistent_memory_api.set_memory(
+        hass,
+        msg["entry_id"],
+        msg["entry"],
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], {"entry": entry}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/memory/delete",
+        vol.Required("entry_id"): str,
+        vol.Required("scope"): vol.In(["system", "user"]),
+        vol.Required("key"): str,
+        vol.Optional("agent_user_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_memory_delete(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    deleted = await persistent_memory_api.delete_memory(
+        hass,
+        msg["entry_id"],
+        scope=msg["scope"],
+        key=msg["key"],
+        agent_user_id=msg.get("agent_user_id"),
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"deleted": deleted})
+    )
 
 
 @websocket_api.websocket_command(

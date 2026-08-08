@@ -8,11 +8,13 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 
+from .compaction import compact_messages_if_needed
 from .config_helpers import AgentConfig
 from .context import build_messages, build_system_message, build_tool_context
 from .llm_client import LlmClient
 from .loop_policy import (
     LoopState,
+    cache_mcp_tools_from_schemas,
     initialize_loop_plan,
     inject_loop_context,
     reset_iteration_flags,
@@ -23,6 +25,7 @@ from .skills.discovery import build_skill_hints
 from .skills.models import Skill, TurnTrace
 from .skills.params import bind_tool_steps, infer_slot_bindings
 from .skills.selection import filter_tool_steps_for_route
+from .tool_pruning import prune_loop_tools
 
 if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
@@ -115,9 +118,7 @@ async def run_worker(
     loop_state = LoopState()
     skill_steps = None
     if primary_skill:
-        raw_steps = filter_tool_steps_for_route(
-            primary_skill.tool_steps, route_value
-        )
+        raw_steps = filter_tool_steps_for_route(primary_skill.tool_steps, route_value)
         if raw_steps:
             skill_steps = bind_tool_steps(raw_steps, slot_bindings)
     initialize_loop_plan(
@@ -128,6 +129,15 @@ async def run_worker(
         skill_title=primary_skill.title if primary_skill else "",
         slot_bindings=slot_bindings or None,
     )
+    cache_mcp_tools_from_schemas(loop_state, tools)
+
+    preferred_tool_names: list[str] = []
+    if skill_steps:
+        preferred_tool_names = [
+            str(step.get("tool") or step.get("name") or "").strip()
+            for step in skill_steps
+            if str(step.get("tool") or step.get("name") or "").strip()
+        ]
 
     trace = TurnTrace(user_text=subgoal, history_len=0, route=route_value)
     max_iter = min(agent_config.max_iterations, _MAX_WORKER_ITERATIONS)
@@ -137,8 +147,19 @@ async def run_worker(
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
         inject_loop_context(messages, loop_state)
+        if agent_config.turn_token_budget > 0:
+            compact_messages_if_needed(
+                messages,
+                token_budget=agent_config.turn_token_budget,
+            )
+        loop_tools = prune_loop_tools(
+            tools,
+            preferred_names=preferred_tool_names,
+            max_tools=agent_config.max_loop_tools,
+            include_full_catalog=loop_state.include_full_tool_catalog,
+        )
 
-        result = await llm.chat(messages, backend, tools=tools)
+        result = await llm.chat(messages, backend, tools=loop_tools)
         if result.tool_calls:
             messages.append(result.assistant_message)
             async for delta in _process_tool_calls(

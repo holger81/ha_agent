@@ -5,10 +5,25 @@ from __future__ import annotations
 from typing import Any
 
 from ..identity.models import AgentUser, ResolvedIdentity, VoiceProfile
+from ..persistent_memory.models import MemoryEntry
 from ..playbooks import Playbook
 from ..recovery_hints import RecoveryHint
 from ..route_keywords import RouteKeywords
 from ..skills.models import PendingSkillDraft, Skill, SkillIndexRow, TurnTrace
+
+
+def memory_entry_to_dict(entry: MemoryEntry) -> dict[str, Any]:
+    """Serialize a durable memory entry."""
+    return {
+        "key": entry.key,
+        "value": entry.value,
+        "scope": entry.scope.value,
+        "agent_user_id": entry.agent_user_id,
+        "route_scope": entry.route_scope,
+        "notes": entry.notes,
+        "created_at": entry.created_at,
+        "updated_at": entry.updated_at,
+    }
 
 
 def playbook_to_dict(playbook: Playbook) -> dict[str, Any]:
