@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .markdown import apply_draft_to_skill, draft_from_markdown
+from .markdown import apply_draft_to_skill, draft_from_markdown, skill_to_markdown
 from .models import Skill
 from .tool_names import (
     IMAP_GET_MESSAGE,
@@ -14,12 +14,18 @@ from .tool_names import (
     canonicalize_tool_name,
 )
 
-# Learned skills that should match the bundled email workflow.
+# Learned skills that should match a bundled workflow template.
 BUNDLED_SKILL_FILES: dict[str, str] = {
     "check-and-read-unread-emails": "check-and-read-unread-emails.md",
     "check-unread-emails": "check-and-read-unread-emails.md",
     "email-management": "check-and-read-unread-emails.md",
+    "news-briefing": "news-briefing.md",
 }
+
+_PRIMARY_BUNDLED: tuple[tuple[str, str], ...] = (
+    ("check-and-read-unread-emails", "email"),
+    ("news-briefing", "news"),
+)
 
 _STALE_EMAIL_MARKERS = (
     "imap_fetch_message",
@@ -58,6 +64,8 @@ def email_skill_needs_refresh(skill: Skill) -> bool:
     route = (skill.route_scope or "").lower()
     slug = skill.slug.lower()
     if route != "email" and slug not in BUNDLED_SKILL_FILES:
+        return False
+    if BUNDLED_SKILL_FILES.get(slug) == "news-briefing.md":
         return False
 
     blob = f"{skill.body}\n{skill.tool_steps}".lower()
@@ -113,18 +121,12 @@ def apply_bundled_skill(skill: Skill) -> bool:
     return True
 
 
-def seed_missing_bundled_skills(store, directory: Path) -> int:
-    """Insert the primary bundled email skill when no matching slug exists."""
-    primary = "check-and-read-unread-emails"
+def _insert_bundled_primary(store, directory: Path, primary: str) -> bool:
     if store.get_skill_by_slug(primary) is not None:
-        return 0
-    for slug in BUNDLED_SKILL_FILES:
-        if store.get_skill_by_slug(slug) is not None:
-            return 0
-
+        return False
     path = bundled_skill_path(primary)
     if path is None:
-        return 0
+        return False
 
     draft, slug_override, _explicit = draft_from_markdown(
         path.read_text(encoding="utf-8"),
@@ -140,17 +142,71 @@ def seed_missing_bundled_skills(store, directory: Path) -> int:
         preconditions=draft.preconditions,
         parent_id=draft.parent_id,
         route_scope=draft.route_scope,
+        llm_model=draft.llm_model,
+        llm_base_url=draft.llm_base_url,
         slug=slug_override or primary,
     )
     from .body import normalize_skill
-    from .markdown import skill_to_markdown
 
     normalize_skill(skill)
     store.update_skill(skill)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{skill.slug}.md"
-    path.write_text(skill_to_markdown(skill), encoding="utf-8")
-    return 1
+    (directory / f"{skill.slug}.md").write_text(
+        skill_to_markdown(skill), encoding="utf-8"
+    )
+    return True
+
+
+def seed_missing_bundled_skills(store, directory: Path) -> int:
+    """Insert primary bundled email/news skills when missing."""
+    inserted = 0
+    for primary, _scope in _PRIMARY_BUNDLED:
+        # Skip email aliases that already exist under another slug.
+        if primary == "check-and-read-unread-emails" and any(
+            store.get_skill_by_slug(slug) is not None
+            for slug in (
+                "check-and-read-unread-emails",
+                "check-unread-emails",
+                "email-management",
+            )
+        ):
+            continue
+        if _insert_bundled_primary(store, directory, primary):
+            inserted += 1
+    return inserted
+
+
+def apply_legacy_route_models_to_bundled(
+    store,
+    directory: Path,
+    *,
+    email_model: str | None = None,
+    email_base_url: str | None = None,
+    news_model: str | None = None,
+    news_base_url: str | None = None,
+) -> int:
+    """Copy legacy entry email/news models onto bundled skills lacking llm_model."""
+    updated = 0
+    mapping: list[tuple[str, str | None, str | None]] = [
+        ("check-and-read-unread-emails", email_model, email_base_url),
+        ("news-briefing", news_model, news_base_url),
+    ]
+    for slug, model, base_url in mapping:
+        model_clean = (model or "").strip()
+        if not model_clean:
+            continue
+        skill = store.get_skill_by_slug(slug)
+        if skill is None or (skill.llm_model or "").strip():
+            continue
+        skill.llm_model = model_clean
+        base_clean = (base_url or "").strip().rstrip("/")
+        skill.llm_base_url = base_clean or None
+        store.update_skill(skill)
+        write_path = directory / f"{skill.slug}.md"
+        directory.mkdir(parents=True, exist_ok=True)
+        write_path.write_text(skill_to_markdown(skill), encoding="utf-8")
+        updated += 1
+    return updated
 
 
 def list_bundled_slugs() -> tuple[str, ...]:

@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load(name: str):
@@ -56,8 +54,6 @@ def test_collapse_identical_roles() -> None:
             role_registry.ModelRole.OBSERVER: backend,
             role_registry.ModelRole.WORKER_CHAT: backend,
             role_registry.ModelRole.WORKER_ACTION: backend,
-            role_registry.ModelRole.WORKER_EMAIL: backend,
-            role_registry.ModelRole.WORKER_NEWS: backend,
         },
     )
     collapsed = role_registry.collapse_identical_roles(registry)
@@ -76,7 +72,6 @@ def test_friendly_role_labels() -> None:
     assert (
         role_registry.friendly_role_label(role_registry.ModelRole.PLANNER) == "planner"
     )
-    assert role_registry.friendly_role_label("worker_email") == "email"
     chip = role_registry.RoleRegistry(
         chat_backend=config_helpers.LlmBackend(
             base_url="http://example/v1",
@@ -88,6 +83,38 @@ def test_friendly_role_labels() -> None:
             thinking_level="off",
         ),
         roles={},
-    ).chip_for(role_registry.ModelRole.WORKER_NEWS)
-    assert chip["label"] == "news"
-    assert chip["role"] == "worker_news"
+    ).chip_for(role_registry.ModelRole.WORKER_CHAT)
+    assert chip["label"] == "chat"
+    assert chip["role"] == "worker_chat"
+
+
+def test_worker_for_route_action_or_chat() -> None:
+    chat = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="chat",
+        api_key=None,
+        max_tokens=64,
+        temperature=0.0,
+        timeout=10,
+        thinking_level="off",
+    )
+    action = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="action",
+        api_key=None,
+        max_tokens=64,
+        temperature=0.0,
+        timeout=10,
+        thinking_level="off",
+    )
+    registry = role_registry.RoleRegistry(
+        chat_backend=chat,
+        roles={
+            role_registry.ModelRole.WORKER_CHAT: chat,
+            role_registry.ModelRole.WORKER_ACTION: action,
+        },
+        action_enabled=True,
+    )
+    assert registry.worker_for_route("action").model == "action"
+    assert registry.worker_for_route("chat").model == "chat"
+    assert registry.worker_for_route("email").model == "chat"

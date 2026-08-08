@@ -47,7 +47,7 @@ overrides them.
 ## Precedence
 
 ```text
-user-bound memory  >  system memory  >  shipped defaults (context.py, playbooks)
+user-bound memory  >  system memory  >  shipped defaults (context.py)
 ```
 
 ## Injection

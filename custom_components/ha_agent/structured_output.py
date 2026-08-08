@@ -9,7 +9,7 @@ ROUTE_SCHEMA: dict[str, Any] = {
     "properties": {
         "route": {
             "type": "string",
-            "enum": ["chat", "email", "news", "action"],
+            "enum": ["chat", "action"],
         },
     },
     "required": ["route"],
@@ -38,7 +38,7 @@ PREPASS_SCHEMA: dict[str, Any] = {
     "properties": {
         "route": {
             "type": "string",
-            "enum": ["chat", "email", "news", "action"],
+            "enum": ["chat", "action"],
         },
         "complexity": {
             "type": "string",
@@ -49,6 +49,10 @@ PREPASS_SCHEMA: dict[str, Any] = {
         "slot_bindings": {
             "type": "object",
             "additionalProperties": {"type": "string"},
+        },
+        "domain_hint": {
+            "type": "string",
+            "enum": ["email", "news", ""],
         },
     },
     "required": ["route", "complexity"],
@@ -103,7 +107,7 @@ PLAN_SUBTASKS_SCHEMA: dict[str, Any] = {
                     "subgoal": {"type": "string"},
                     "route": {
                         "type": "string",
-                        "enum": ["chat", "email", "news", "action"],
+                        "enum": ["chat", "action"],
                     },
                     "depends_on": {
                         "type": "array",

@@ -87,8 +87,14 @@ def pop_eval_pending(hass: HomeAssistant, conversation_id: str | None) -> dict |
 
 def _is_content_extraction_turn(trace: TurnTrace) -> bool:
     """Return True when an email/news turn is mostly content, not a workflow."""
-    route = (trace.route or "").lower()
-    if route not in {"news", "email"}:
+    text = f"{trace.user_text or ''} {trace.assistant_text or ''}".lower()
+    looks_domain = bool(
+        re.search(
+            r"\b(email|inbox|unread|mail|headline|headlines|briefing|news)\b",
+            text,
+        )
+    )
+    if not looks_domain:
         return False
     non_discovery = [
         call
@@ -159,7 +165,7 @@ def should_offer_skill_creation(
         return False
 
     route = (trace.route or "").lower()
-    if route in {"news", "email"} and _is_content_extraction_turn(trace):
+    if _is_content_extraction_turn(trace):
         return False
     if route == "action" and not (
         _had_successful_control_tool(trace.tool_calls) or trace.controlled_entity_ids

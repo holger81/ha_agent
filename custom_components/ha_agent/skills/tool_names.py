@@ -1,4 +1,4 @@
-"""Canonical MCP tool names and alias normalization for skills and playbooks."""
+"""Canonical MCP tool names and alias normalization for skills."""
 
 from __future__ import annotations
 
@@ -165,6 +165,8 @@ def canonicalize_skill_draft(draft: SkillDraft) -> tuple[SkillDraft, bool]:
         preconditions=draft.preconditions,
         parent_id=draft.parent_id,
         route_scope=draft.route_scope,
+        llm_model=draft.llm_model,
+        llm_base_url=draft.llm_base_url,
     )
     temp = Skill(
         id="draft",
@@ -175,6 +177,8 @@ def canonicalize_skill_draft(draft: SkillDraft) -> tuple[SkillDraft, bool]:
         body=working.body,
         tool_steps=list(working.tool_steps),
         route_scope=working.route_scope,
+        llm_model=working.llm_model,
+        llm_base_url=working.llm_base_url,
     )
     if ensure_imap_tool_step_arguments(temp):
         working.tool_steps = temp.tool_steps

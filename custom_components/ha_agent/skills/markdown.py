@@ -142,6 +142,12 @@ def draft_from_markdown(
         route_scope=(
             str(meta["route_scope"]).strip() if meta.get("route_scope") else None
         ),
+        llm_model=(str(meta["llm_model"]).strip() if meta.get("llm_model") else None),
+        llm_base_url=(
+            str(meta["llm_base_url"]).strip().rstrip("/")
+            if meta.get("llm_base_url")
+            else None
+        ),
     )
     draft = normalize_skill_draft(draft, explicit_tool_steps=explicit_tool_steps)
     slug = str(meta.get("slug") or filename_slug or "").strip() or None
@@ -160,6 +166,10 @@ def skill_to_markdown(skill: Skill, *, include_tool_steps: bool = False) -> str:
         meta["slug"] = skill.slug
     if skill.route_scope:
         meta["route_scope"] = skill.route_scope
+    if skill.llm_model:
+        meta["llm_model"] = skill.llm_model
+    if skill.llm_base_url:
+        meta["llm_base_url"] = skill.llm_base_url
     if skill.preconditions:
         meta["preconditions"] = skill.preconditions
     if skill.parent_id:
@@ -190,3 +200,5 @@ def apply_draft_to_skill(skill: Skill, draft: SkillDraft) -> None:
     skill.preconditions = draft.preconditions
     skill.parent_id = draft.parent_id
     skill.route_scope = draft.route_scope
+    skill.llm_model = draft.llm_model
+    skill.llm_base_url = draft.llm_base_url

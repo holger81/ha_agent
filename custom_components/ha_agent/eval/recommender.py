@@ -19,14 +19,15 @@ from .server_apply import server_apply_mode
 _SETTINGS_PROMPT = (
     "You analyze llama.cpp server capabilities and recommend optimal server "
     "settings for a Home Assistant voice agent.\n\n"
-    "The agent runs these task routes, each may use a different model:\n"
-    "- chat: general assistant Q&A\n"
+    "The agent uses these model lanes:\n"
+    "- chat: general assistant Q&A (email/news skills inherit unless overridden)\n"
     "- action: device control (lights, covers, locks)\n"
-    "- email: unread mail queries via MCP\n"
-    "- news: headline briefing via MCP\n"
-    "- classifier: route/playbook selection (small, fast model)\n"
+    "- classifier: route selection (small, fast model)\n"
     "- planner: multi-domain request decomposition\n"
     "- verifier: goal/skill adherence critic (small, fast model)\n\n"
+    "Eval task labels email/news score domain skills on the chat route; assign "
+    "models to chat/action (and optional skill models), not separate email/news "
+    "routes.\n\n"
     "Server capabilities:\n"
     "{capabilities_json}\n\n"
     "Host/runtime context:\n"
@@ -35,7 +36,7 @@ _SETTINGS_PROMPT = (
     "{benchmark_json}\n\n"
     "Recommend llama.cpp server settings (parallel slots, ctx-size, batch-size, "
     "threads, n-gpu-layers, cache-reuse, etc.) for this hardware and workload.\n"
-    "Also recommend which loaded model to assign to each task.\n\n"
+    "Also recommend which loaded model to assign to each lane.\n\n"
     "Return ONLY JSON:\n"
     "{{\n"
     '  "summary": "short overview",\n'
@@ -46,8 +47,6 @@ _SETTINGS_PROMPT = (
     '  "model_assignments": {{\n'
     '    "chat": {{"model": "...", "reason": "..."}},\n'
     '    "action": {{"model": "...", "reason": "..."}},\n'
-    '    "email": {{"model": "...", "reason": "..."}},\n'
-    '    "news": {{"model": "...", "reason": "..."}},\n'
     '    "classifier": {{"model": "...", "reason": "..."}},\n'
     '    "planner": {{"model": "...", "reason": "..."}},\n'
     '    "verifier": {{"model": "...", "reason": "..."}}\n'

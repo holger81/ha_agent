@@ -146,7 +146,7 @@ def _resolve_task(trace: TurnTrace, *, task_override: str | None = None) -> str:
             )
         return task
     route = (trace.route or "").strip().lower()
-    if route in EVAL_TASKS and route != "classifier":
+    if route in EVAL_TASKS:
         return route
     raise HomeAssistantError(
         "Turn has no route metadata. Re-run the request after upgrading, "

@@ -66,7 +66,6 @@ from .persistent_memory import (
     close_persistent_memory_store,
     get_persistent_memory_store,
 )
-from .playbooks import close_playbook_store, get_playbook_store
 from .recovery_hints import close_recovery_hint_store, get_recovery_hint_store
 from .route_keywords import close_route_keyword_store, get_route_keyword_store
 from .skills.commands import async_setup_services
@@ -210,7 +209,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     get_identity_store(hass, entry.entry_id)
     get_persistent_memory_store(hass, entry.entry_id)
     await async_sync_skill_files(hass, entry.entry_id)
-    get_playbook_store(hass, entry.entry_id)
     get_route_keyword_store(hass, entry.entry_id)
     get_recovery_hint_store(hass, entry.entry_id)
     get_eval_store(hass, entry.entry_id)
@@ -228,7 +226,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     close_skill_store(hass, entry.entry_id)
     close_identity_store(hass, entry.entry_id)
     close_persistent_memory_store(hass, entry.entry_id)
-    close_playbook_store(hass, entry.entry_id)
     close_route_keyword_store(hass, entry.entry_id)
     close_recovery_hint_store(hass, entry.entry_id)
     close_eval_store(hass, entry.entry_id)

@@ -19,8 +19,6 @@ class ModelRole(StrEnum):
     OBSERVER = "observer"
     WORKER_CHAT = "worker_chat"
     WORKER_ACTION = "worker_action"
-    WORKER_EMAIL = "worker_email"
-    WORKER_NEWS = "worker_news"
 
 
 _FRIENDLY_ROLE_LABELS: dict[ModelRole, str] = {
@@ -30,8 +28,6 @@ _FRIENDLY_ROLE_LABELS: dict[ModelRole, str] = {
     ModelRole.OBSERVER: "observer",
     ModelRole.WORKER_CHAT: "chat",
     ModelRole.WORKER_ACTION: "action",
-    ModelRole.WORKER_EMAIL: "email",
-    ModelRole.WORKER_NEWS: "news",
 }
 
 
@@ -52,8 +48,6 @@ ROLE_CAPABILITIES: dict[ModelRole, frozenset[str]] = {
     ModelRole.OBSERVER: frozenset({"fast", "distillation"}),
     ModelRole.WORKER_CHAT: frozenset({"tool_use", "chat"}),
     ModelRole.WORKER_ACTION: frozenset({"tool_use", "action"}),
-    ModelRole.WORKER_EMAIL: frozenset({"tool_use", "email"}),
-    ModelRole.WORKER_NEWS: frozenset({"tool_use", "news"}),
 }
 
 
@@ -71,13 +65,9 @@ class RoleRegistry:
 
     def worker_for_route(self, route_value: str) -> LlmBackend:
         """Return the worker backend for a router route value."""
-        mapping = {
-            "chat": ModelRole.WORKER_CHAT,
-            "action": ModelRole.WORKER_ACTION,
-            "email": ModelRole.WORKER_EMAIL,
-            "news": ModelRole.WORKER_NEWS,
-        }
-        return self.backend_for(mapping.get(route_value, ModelRole.WORKER_CHAT))
+        if route_value == "action":
+            return self.backend_for(ModelRole.WORKER_ACTION)
+        return self.backend_for(ModelRole.WORKER_CHAT)
 
     def capabilities(self, role: ModelRole) -> frozenset[str]:
         """Return capability tags for a role."""
@@ -117,7 +107,7 @@ def build_role_registry(
     chat_backend: LlmBackend,
     router_config: RouterConfig,
 ) -> RoleRegistry:
-    """Build a role registry from legacy per-route config (backwards compatible)."""
+    """Build a role registry from chat/action/orchestration backends."""
     classifier = router_config.classifier_backend or chat_backend
     planner = router_config.planner_backend or classifier
     verifier = router_config.verifier_backend or classifier
@@ -127,8 +117,6 @@ def build_role_registry(
         if router_config.action_enabled and router_config.action_backend
         else chat_backend
     )
-    email = router_config.email_backend or chat_backend
-    news = router_config.news_backend or chat_backend
     roles = {
         ModelRole.ROUTER: classifier,
         ModelRole.PLANNER: planner,
@@ -136,11 +124,11 @@ def build_role_registry(
         ModelRole.OBSERVER: observer,
         ModelRole.WORKER_CHAT: chat_backend,
         ModelRole.WORKER_ACTION: action,
-        ModelRole.WORKER_EMAIL: email,
-        ModelRole.WORKER_NEWS: news,
     }
     return RoleRegistry(
         chat_backend=chat_backend,
         roles=roles,
-        action_enabled=router_config.action_enabled,
+        action_enabled=bool(
+            router_config.action_enabled and router_config.action_backend
+        ),
     )

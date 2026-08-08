@@ -42,9 +42,6 @@ class HaAgentPanel extends HTMLElement {
     this._skillNotice = null;
     this._skillsDirectory = "";
     this._skillTemplate = "";
-    this._playbooks = [];
-    this._editingPlaybook = null;
-    this._playbookNotice = null;
     this._routeKeywords = [];
     this._editingRoute = null;
     this._routeNotice = null;
@@ -544,7 +541,6 @@ class HaAgentPanel extends HTMLElement {
       await this._loadHacsStatus();
       if (this._tab === "eval") await this._loadEvalStatus();
       if (this._tab === "activity") await this._loadActivity();
-      if (this._tab === "playbooks") await this._loadPlaybooks();
       if (this._tab === "routes") await this._loadRouteKeywords();
       if (this._tab === "recovery") await this._loadRecoveryHints();
       if (this._tab === "skills") await this._loadSkills();
@@ -982,14 +978,6 @@ class HaAgentPanel extends HTMLElement {
       limit: 50,
     });
     this._activity = data.turns || [];
-  }
-
-  async _loadPlaybooks() {
-    if (!this._entryId) return;
-    const data = await this._call("ha_agent/playbooks/list", {
-      entry_id: this._entryId,
-    });
-    this._playbooks = data.playbooks || [];
   }
 
   async _loadRouteKeywords() {
@@ -1817,10 +1805,6 @@ class HaAgentPanel extends HTMLElement {
     }
     if (m.keyword_hint) {
       add("Keyword hint", m.keyword_hint);
-    }
-    add("Playbook", m.playbook);
-    if (m.playbook_detail) {
-      add("Playbook picker", m.playbook_detail);
     }
     if (m.skill) {
       add("Skill", m.skill);
@@ -3467,6 +3451,8 @@ class HaAgentPanel extends HTMLElement {
   _renderSkillEditor() {
     const skill = this._editingSkill;
     if (!skill) return "";
+    const model = skill.llm_model || "";
+    const baseUrl = skill.llm_base_url || "";
     return `
       <div class="skill-editor">
         <h3>${skill.id ? "Edit skill" : "New skill"}</h3>
@@ -3477,6 +3463,8 @@ class HaAgentPanel extends HTMLElement {
             : ""}
         </p>
         <div class="form-grid">
+          <label>Model (optional; blank = inherit chat / legacy domain fallback)<input id="skill-llm-model" type="text" value="${this._escape(model)}" placeholder="e.g. qwen2.5-7b" /></label>
+          <label>Base URL (optional)<input id="skill-llm-base-url" type="text" value="${this._escape(baseUrl)}" placeholder="Inherit chat base URL" /></label>
           <label>Skill markdown<textarea id="skill-markdown" rows="24" spellcheck="false">${this._escape(skill.markdown || "")}</textarea></label>
           ${skill.file_path ? `<p class="hint">File: ${this._escape(skill.file_path)}</p>` : ""}
           <div class="actions">
@@ -3528,84 +3516,6 @@ class HaAgentPanel extends HTMLElement {
       ${this._renderSkillEditor()}`;
   }
 
-  _renderPlaybookEditor() {
-    const pb = this._editingPlaybook;
-    if (!pb) return "";
-    const isNew = !pb.route;
-    const isBuiltin = pb.is_builtin === true;
-    const heading = isNew
-      ? "New playbook rule"
-      : `Edit playbook · ${this._escape(pb.title || pb.route)}`;
-    return `
-      <div class="skill-editor">
-        <h3>${heading}</h3>
-        <div class="form-grid">
-          <label>Title<input id="playbook-title" value="${this._escape(pb.title || "")}" /></label>
-          <label>When to apply (the model uses this to decide if the rule fires)<textarea id="playbook-match" rows="2">${this._escape(pb.match_text || "")}</textarea></label>
-          <label>Workflow text<textarea id="playbook-body" rows="10">${this._escape(pb.body || "")}</textarea></label>
-          <label><input type="checkbox" id="playbook-enabled" ${pb.enabled !== false ? "checked" : ""}/> Enabled</label>
-          <div class="actions">
-            <button data-action="playbook-save">Save</button>
-            ${isNew ? "" : isBuiltin ? '<button data-action="playbook-reset">Reset to default</button>' : '<button data-action="playbook-delete">Delete</button>'}
-            <button data-action="playbook-cancel">Cancel</button>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  _renderPlaybooks() {
-    const notice = this._playbookNotice
-      ? `<div class="skill-notice">${this._escape(this._playbookNotice)}</div>`
-      : "";
-    const rows = this._playbooks
-      .map(
-        (p) => `
-      <tr class="${this._editingPlaybook?.route === p.route ? "active-skill-row" : ""}">
-        <td>${this._escape(p.title || p.route)}</td>
-        <td>${p.is_builtin ? this._escape(p.route) : "custom"}</td>
-        <td>${p.enabled ? "Yes" : "No"}</td>
-        <td>${p.is_builtin ? (p.is_default ? "Default" : "Customized") : "Custom"}</td>
-        <td class="actions">
-          <button data-playbook-edit="${this._escape(p.route)}">Edit</button>
-          <button data-playbook-toggle="${this._escape(p.route)}">${p.enabled ? "Disable" : "Enable"}</button>
-          ${p.is_builtin ? `<button data-playbook-reset="${this._escape(p.route)}">Reset</button>` : `<button data-playbook-delete="${this._escape(p.route)}">Delete</button>`}
-        </td>
-      </tr>`
-      )
-      .join("");
-
-    return `
-      ${notice}
-      <p class="playbook-intro">Playbooks are workflow recipes injected into the prompt. Built-in playbooks map to routes; custom rules you add fire when the model decides their "when to apply" text matches the request. The model only runs that selection when at least one custom rule exists.</p>
-      <div class="actions" style="margin-bottom:12px">
-        <button data-action="playbook-new">Add playbook</button>
-      </div>
-      <table>
-        <thead><tr><th>Title</th><th>Kind</th><th>Enabled</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="5">No playbooks.</td></tr>'}</tbody>
-      </table>
-      ${this._renderPlaybookEditor()}`;
-  }
-
-  _openPlaybookEditor(route) {
-    if (route === null) {
-      this._editingPlaybook = {
-        route: null,
-        title: "",
-        match_text: "",
-        body: "",
-        enabled: true,
-        is_builtin: false,
-      };
-    } else {
-      const pb = this._playbooks.find((p) => p.route === route);
-      if (!pb) return;
-      this._editingPlaybook = { ...pb };
-    }
-    this._tab = "playbooks";
-    this._render();
-  }
-
   _renderRouteEditor() {
     const route = this._editingRoute;
     if (!route) return "";
@@ -3650,7 +3560,7 @@ class HaAgentPanel extends HTMLElement {
 
     return `
       ${notice}
-      <p class="playbook-intro">Route keywords decide which built-in workflow (email, news, or device action) a request triggers. Matching is case-insensitive whole-word. When a route's custom keywords are disabled, empty, or unchanged from the default, the shipped matcher is used.</p>
+      <p class="section-intro">Keywords for email and news are domain hints on the chat route (skills handle those workflows). Action keywords still select the action route for device control. Matching is case-insensitive whole-word. When custom keywords are disabled, empty, or unchanged from the default, the shipped matcher is used.</p>
       <table>
         <thead><tr><th>Route</th><th>Keywords</th><th>Custom enabled</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5">No routes.</td></tr>'}</tbody>
@@ -3716,7 +3626,7 @@ class HaAgentPanel extends HTMLElement {
 
     return `
       ${notice}
-      <p class="playbook-intro">Recovery hints are appended to a failed tool result to help the model change strategy. A hint fires when its tool-name substring and error-text pattern both match (blank fields match anything).</p>
+      <p class="section-intro">Recovery hints are appended to a failed tool result to help the model change strategy. A hint fires when its tool-name substring and error-text pattern both match (blank fields match anything).</p>
       <div class="actions" style="margin-bottom:12px">
         <button data-action="hint-new">Add recovery hint</button>
       </div>
@@ -3961,6 +3871,8 @@ class HaAgentPanel extends HTMLElement {
           id: skill.id,
           markdown: skill.markdown || "",
           file_path: skill.file_path || "",
+          llm_model: skill.llm_model || "",
+          llm_base_url: skill.llm_base_url || "",
         }
       : {
           id: null,
@@ -3968,6 +3880,8 @@ class HaAgentPanel extends HTMLElement {
             this._skillTemplate ||
             "---\ntitle: My Skill\ndescription: What this skill does\ntriggers:\n  - example\nenabled: true\n---\n\n# Workflow\n",
           file_path: "",
+          llm_model: "",
+          llm_base_url: "",
         };
     this._tab = "skills";
     this._render();
@@ -4045,10 +3959,38 @@ class HaAgentPanel extends HTMLElement {
     URL.revokeObjectURL(url);
   }
 
+  _mergeSkillModelFields(markdown, model, baseUrl) {
+    const text = markdown || "";
+    if (!text.startsWith("---")) {
+      const lines = ["---"];
+      if (model) lines.push(`llm_model: ${JSON.stringify(model)}`);
+      if (baseUrl) lines.push(`llm_base_url: ${JSON.stringify(baseUrl)}`);
+      lines.push("---", "", text);
+      return lines.join("\n");
+    }
+    const end = text.indexOf("\n---", 3);
+    if (end < 0) return text;
+    let front = text.slice(4, end);
+    const body = text.slice(end + 4);
+    front = front
+      .split("\n")
+      .filter((line) => !/^\s*llm_model\s*:/.test(line) && !/^\s*llm_base_url\s*:/.test(line))
+      .join("\n")
+      .replace(/\n+$/, "");
+    const extras = [];
+    if (model) extras.push(`llm_model: ${JSON.stringify(model)}`);
+    if (baseUrl) extras.push(`llm_base_url: ${JSON.stringify(baseUrl)}`);
+    const mergedFront = [front, ...extras].filter(Boolean).join("\n");
+    return `---\n${mergedFront}\n---${body}`;
+  }
+
   async _saveSkillEditor() {
     const editor = this.shadowRoot.querySelector(".skill-editor");
     if (!editor || !this._editingSkill) return;
-    const markdown = editor.querySelector("#skill-markdown")?.value || "";
+    let markdown = editor.querySelector("#skill-markdown")?.value || "";
+    const model = (editor.querySelector("#skill-llm-model")?.value || "").trim();
+    const baseUrl = (editor.querySelector("#skill-llm-base-url")?.value || "").trim();
+    markdown = this._mergeSkillModelFields(markdown, model, baseUrl);
     if (!markdown.trim()) {
       this._skillNotice = "Skill markdown cannot be empty.";
       this._render();
@@ -4271,7 +4213,7 @@ class HaAgentPanel extends HTMLElement {
         </div>
 
         <h3 class="settings-section-title">Route models (optional)</h3>
-        <p class="hint">Routes are how a turn is classified (action / email / news / chat) so the right playbook and tools apply. You only need a dedicated route model if that route should use a different LLM than Chat — e.g. a small Action model. Leave Email/News on Inherit unless you want a special mail/news model.</p>
+        <p class="hint">Routes are action (device control) or chat (everything else). Assign a dedicated Action model when device control should use a different LLM than Chat. Email and news use skills — set an optional model on the skill editor (legacy entry email/news models still work as fallback).</p>
         <div class="role-editor">
           ${this._renderRoleModelRow({
             title: "Action",
@@ -4281,26 +4223,6 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.action_model_enabled,
             model: c.action_model,
             baseUrl: c.action_llm_base_url,
-            inheritHint: "Inherit chat model",
-          })}
-          ${this._renderRoleModelRow({
-            title: "Email",
-            enabledKey: "email_model_enabled",
-            modelKey: "email_llm_model",
-            urlKey: "email_llm_base_url",
-            enabled: c.email_model_enabled,
-            model: c.email_model,
-            baseUrl: c.email_llm_base_url,
-            inheritHint: "Inherit chat model",
-          })}
-          ${this._renderRoleModelRow({
-            title: "News",
-            enabledKey: "news_model_enabled",
-            modelKey: "news_llm_model",
-            urlKey: "news_llm_base_url",
-            enabled: c.news_model_enabled,
-            model: c.news_model,
-            baseUrl: c.news_llm_base_url,
             inheritHint: "Inherit chat model",
           })}
         </div>
@@ -5062,8 +4984,6 @@ class HaAgentPanel extends HTMLElement {
     switch (this._tab) {
       case "skills":
         return this._renderSkills();
-      case "playbooks":
-        return this._renderPlaybooks();
       case "routes":
         return this._renderRoutes();
       case "recovery":
@@ -5086,7 +5006,6 @@ class HaAgentPanel extends HTMLElement {
     const tabs = [
       "chat",
       "skills",
-      "playbooks",
       "routes",
       "recovery",
       "users",
@@ -5168,21 +5087,13 @@ class HaAgentPanel extends HTMLElement {
         try {
           if (this._tab === "activity") await this._loadActivity();
           if (this._tab === "skills") await this._loadSkills();
-          if (this._tab === "playbooks") await this._loadPlaybooks();
           if (this._tab === "routes") await this._loadRouteKeywords();
           if (this._tab === "recovery") await this._loadRecoveryHints();
-          if (this._tab === "users") await this._loadIdentityUsers();
-          if (this._tab === "settings") {
-            await this._loadSystemMemory();
-            await this._loadLlmModels();
-          }
           if (this._tab === "eval") await this._loadEvalStatus();
         } catch (err) {
           const message = err?.message || String(err);
           if (this._tab === "skills") {
             this._skillNotice = `Could not load skills: ${message}`;
-          } else if (this._tab === "playbooks") {
-            this._playbookNotice = `Could not load playbooks: ${message}`;
           } else if (this._tab === "routes") {
             this._routeNotice = `Could not load route keywords: ${message}`;
           } else if (this._tab === "recovery") {
@@ -5519,124 +5430,6 @@ class HaAgentPanel extends HTMLElement {
         this._render();
       });
 
-    this.shadowRoot
-      .querySelector('[data-action="playbook-new"]')
-      ?.addEventListener("click", () => this._openPlaybookEditor(null));
-
-    this.shadowRoot.querySelectorAll("[data-playbook-edit]").forEach((el) => {
-      el.onclick = () => this._openPlaybookEditor(el.getAttribute("data-playbook-edit"));
-    });
-
-    this.shadowRoot.querySelectorAll("[data-playbook-delete]").forEach((el) => {
-      el.onclick = async () => {
-        const route = el.getAttribute("data-playbook-delete");
-        await this._call("ha_agent/playbooks/delete", {
-          entry_id: this._entryId,
-          route,
-        });
-        this._playbookNotice = "Deleted custom playbook.";
-        if (this._editingPlaybook?.route === route) this._editingPlaybook = null;
-        await this._loadPlaybooks();
-        this._render();
-      };
-    });
-
-    this.shadowRoot.querySelectorAll("[data-playbook-toggle]").forEach((el) => {
-      el.onclick = async () => {
-        const route = el.getAttribute("data-playbook-toggle");
-        const pb = this._playbooks.find((p) => p.route === route);
-        await this._call("ha_agent/playbooks/set_enabled", {
-          entry_id: this._entryId,
-          route,
-          enabled: !pb?.enabled,
-        });
-        this._playbookNotice = `${pb?.title || route} ${pb?.enabled ? "disabled" : "enabled"}.`;
-        await this._loadPlaybooks();
-        this._render();
-      };
-    });
-
-    this.shadowRoot.querySelectorAll("[data-playbook-reset]").forEach((el) => {
-      el.onclick = async () => {
-        const route = el.getAttribute("data-playbook-reset");
-        await this._call("ha_agent/playbooks/reset", {
-          entry_id: this._entryId,
-          route,
-        });
-        this._playbookNotice = `Reset ${route} playbook to default.`;
-        if (this._editingPlaybook?.route === route) this._editingPlaybook = null;
-        await this._loadPlaybooks();
-        this._render();
-      };
-    });
-
-    this.shadowRoot
-      .querySelector('[data-action="playbook-save"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingPlaybook) return;
-        const title = this.shadowRoot.querySelector("#playbook-title")?.value || "";
-        const match_text = this.shadowRoot.querySelector("#playbook-match")?.value || "";
-        const body = this.shadowRoot.querySelector("#playbook-body")?.value || "";
-        const enabled = this.shadowRoot.querySelector("#playbook-enabled")?.checked;
-        try {
-          if (this._editingPlaybook.route) {
-            await this._call("ha_agent/playbooks/update", {
-              entry_id: this._entryId,
-              route: this._editingPlaybook.route,
-              playbook: { title, match_text, body, enabled },
-            });
-          } else {
-            await this._call("ha_agent/playbooks/create", {
-              entry_id: this._entryId,
-              playbook: { title, match_text, body, enabled },
-            });
-          }
-          this._playbookNotice = `Saved ${title || "playbook"}.`;
-          this._editingPlaybook = null;
-        } catch (err) {
-          this._playbookNotice = `Could not save playbook: ${err?.message || err}`;
-        }
-        await this._loadPlaybooks();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="playbook-delete"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingPlaybook?.route) return;
-        const route = this._editingPlaybook.route;
-        await this._call("ha_agent/playbooks/delete", {
-          entry_id: this._entryId,
-          route,
-        });
-        this._playbookNotice = "Deleted custom playbook.";
-        this._editingPlaybook = null;
-        await this._loadPlaybooks();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="playbook-reset"]')
-      ?.addEventListener("click", async () => {
-        if (!this._editingPlaybook) return;
-        const route = this._editingPlaybook.route;
-        await this._call("ha_agent/playbooks/reset", {
-          entry_id: this._entryId,
-          route,
-        });
-        this._playbookNotice = `Reset ${route} playbook to default.`;
-        this._editingPlaybook = null;
-        await this._loadPlaybooks();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="playbook-cancel"]')
-      ?.addEventListener("click", () => {
-        this._editingPlaybook = null;
-        this._render();
-      });
-
     this._bindRouteEvents();
     this._bindRecoveryEvents();
     this._bindEvalEvents();
@@ -5804,8 +5597,6 @@ class HaAgentPanel extends HTMLElement {
         ["verifier_llm_model", "verifier_model_enabled"],
         ["observer_llm_model", "observer_model_enabled"],
         ["action_llm_model", "action_model_enabled"],
-        ["email_llm_model", "email_model_enabled"],
-        ["news_llm_model", "news_model_enabled"],
       ];
       for (const [modelKey, enabledKey] of rolePairs) {
         if (!(modelKey in updates)) continue;

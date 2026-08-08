@@ -6,7 +6,6 @@ from typing import Any
 
 from ..identity.models import AgentUser, ResolvedIdentity, VoiceProfile
 from ..persistent_memory.models import MemoryEntry
-from ..playbooks import Playbook
 from ..recovery_hints import RecoveryHint
 from ..route_keywords import RouteKeywords
 from ..skills.models import PendingSkillDraft, Skill, SkillIndexRow, TurnTrace
@@ -23,20 +22,6 @@ def memory_entry_to_dict(entry: MemoryEntry) -> dict[str, Any]:
         "notes": entry.notes,
         "created_at": entry.created_at,
         "updated_at": entry.updated_at,
-    }
-
-
-def playbook_to_dict(playbook: Playbook) -> dict[str, Any]:
-    """Serialize an editable route playbook."""
-    return {
-        "route": playbook.route,
-        "title": playbook.title,
-        "body": playbook.body,
-        "match_text": playbook.match_text,
-        "enabled": playbook.enabled,
-        "updated_at": playbook.updated_at,
-        "is_default": playbook.is_default,
-        "is_builtin": playbook.is_builtin,
     }
 
 
@@ -98,6 +83,8 @@ def skill_to_dict(skill: Skill) -> dict[str, Any]:
         "preconditions": skill.preconditions,
         "parent_id": skill.parent_id,
         "route_scope": skill.route_scope,
+        "llm_model": skill.llm_model,
+        "llm_base_url": skill.llm_base_url,
         "score": skill.score,
         "is_builtin": skill.is_builtin,
     }

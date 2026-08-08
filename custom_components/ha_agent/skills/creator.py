@@ -38,6 +38,8 @@ async def save_skill_from_draft(
             skill.preconditions = draft.preconditions
             skill.parent_id = draft.parent_id
             skill.route_scope = draft.route_scope
+            skill.llm_model = draft.llm_model
+            skill.llm_base_url = draft.llm_base_url
             skill.version += 1
             return store.update_skill(skill)
         return store.insert_skill(
@@ -50,6 +52,8 @@ async def save_skill_from_draft(
             preconditions=draft.preconditions,
             parent_id=draft.parent_id,
             route_scope=draft.route_scope,
+            llm_model=draft.llm_model,
+            llm_base_url=draft.llm_base_url,
         )
 
     skill = await hass.async_add_executor_job(_save)

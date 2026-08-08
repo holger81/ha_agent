@@ -28,6 +28,8 @@ from .context import (
     build_tool_context,
     format_identity_context,
     is_affirmative,
+    is_email_query,
+    is_news_query,
 )
 from .embedded_tools import (
     is_tool_call_only_text,
@@ -105,7 +107,6 @@ from .persistent_memory import (
     is_preference_shaped_turn,
 )
 from .persistent_memory.intent import MemoryIntentKind
-from .playbooks import async_select_playbook
 from .prepass import run_turn_prepass
 from .recovery_hints import async_recovery_hints
 from .role_registry import (
@@ -115,7 +116,8 @@ from .role_registry import (
     collapse_identical_roles,
 )
 from .route_keywords import async_route_keyword_map
-from .router import TaskRoute, backend_for_route, resolve_route_with_classifier
+from .router import TaskRoute, resolve_route_with_classifier
+from .skills.backend import backend_for_skill
 from .skills.commands import (
     _MANUAL_SAVE,
     is_skill_admin_query,
@@ -146,7 +148,6 @@ from .skills.params import (
     missing_required_bindings,
 )
 from .skills.repair import auto_repair_skill, detect_repairable_issues
-from .skills.route_skills import load_route_skill, merge_route_and_learned_skills
 from .skills.runtime import (
     override_turn_eligible_for_learning,
     should_offer_skill_creation,
@@ -202,13 +203,25 @@ def _model_chip(backend: LlmBackend) -> dict[str, str]:
     }
 
 
-def _agent_model_role(route: TaskRoute, *, use_chat_backend: bool) -> str:
-    if route == TaskRoute.EMAIL:
+def _domain_hint_for_text(text: str) -> str | None:
+    if is_email_query(text):
         return "email"
-    if route == TaskRoute.NEWS:
+    if is_news_query(text):
         return "news"
-    if route == TaskRoute.HA_ACTION and not use_chat_backend:
+    return None
+
+
+def _agent_model_role(
+    route: TaskRoute,
+    *,
+    use_chat_backend: bool,
+    skill_scope: str | None = None,
+) -> str:
+    if not use_chat_backend and route == TaskRoute.HA_ACTION:
         return "action"
+    scope = (skill_scope or "").lower()
+    if scope in {"email", "news"}:
+        return scope
     return "chat"
 
 
@@ -798,6 +811,7 @@ async def _run_orchestrated_turn(
     registry: RoleRegistry,
     agent_config: AgentConfig,
     skills_config: SkillsConfig,
+    router_config: RouterConfig,
     entry_id: str,
     conversation_id: str | None,
     user_text: str,
@@ -831,21 +845,12 @@ async def _run_orchestrated_turn(
                 subtask.subgoal,
                 history=[],
                 route=subtask.route,
+                domain_hint=_domain_hint_for_text(subtask.subgoal),
                 max_inject=1,
                 structured_output_enabled=structured,
                 trace=trace,
             )
             sub_skills = sub_sel.skills
-            route_skill = await load_route_skill(
-                hass,
-                entry_id,
-                llm,
-                registry.backend_for(ModelRole.ROUTER),
-                user_text=subtask.subgoal,
-                route_value=subtask.route,
-                history=[],
-            )
-            sub_skills = merge_route_and_learned_skills(route_skill, sub_skills)
             for skill in sub_skills:
                 if not skill.is_builtin and skill.id not in {
                     item.id for item in subtask_learned
@@ -866,6 +871,7 @@ async def _run_orchestrated_turn(
             mcp_session_prompt=mcp_session_prompt,
             llm_tools=llm_tools,
             prior_results=worker_results,
+            router_config=router_config,
         ):
             if meta:
                 yield AgentDelta(subagent=meta)
@@ -1592,22 +1598,12 @@ async def run_agent(
                 user_text,
                 history=history,
                 route=route.value,
+                domain_hint=route_resolution.domain_hint,
                 max_inject=skills_config.max_inject,
                 structured_output_enabled=structured,
                 trace=trace,
             )
             matched_skills = skill_selection.skills
-        learned_only = [s for s in matched_skills if not s.is_builtin]
-        route_skill = await load_route_skill(
-            hass,
-            entry_id,
-            llm,
-            classifier_backend,
-            user_text=user_text,
-            route_value=route.value,
-            history=history,
-        )
-        matched_skills = merge_route_and_learned_skills(route_skill, learned_only)
         primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
         if primary_learned and (
             not slot_bindings
@@ -1709,6 +1705,7 @@ async def run_agent(
             registry=role_registry,
             agent_config=agent_config,
             skills_config=skills_config,
+            router_config=router_config,
             entry_id=entry_id,
             conversation_id=conversation_id,
             user_text=user_text,
@@ -1731,22 +1728,12 @@ async def run_agent(
         skill_hints=skill_hints,
         route=route.value,
     )
-    playbook_selection = await async_select_playbook(
-        hass,
-        entry_id,
-        llm,
-        router_config.classifier_backend or backend,
-        user_text=user_text,
-        route_value=route.value,
-        history=history,
-    )
     system_message = build_system_message(
         agent_config.system_prompt,
         agent_config.tool_instructions,
         mcp_session_prompt=mcp_session_prompt,
         tool_context=tool_context,
         extra_system_prompt=extra_system_prompt,
-        route_playbook=playbook_selection.body,
         identity_context=identity_context,
         memory_context=memory_context,
     )
@@ -1760,12 +1747,13 @@ async def run_agent(
     controlled_entity_ids: list[str] = []
     loop_state = LoopState()
     skill_steps: list[dict[str, Any]] | None = None
+    primary_skill = None
     if matched_skills:
-        primary = next(
+        primary_skill = next(
             (s for s in matched_skills if not s.is_builtin),
             matched_skills[0],
         )
-        raw_steps = filter_tool_steps_for_route(primary.tool_steps, route.value)
+        raw_steps = filter_tool_steps_for_route(primary_skill.tool_steps, route.value)
         if raw_steps:
             skill_steps = bind_tool_steps(raw_steps, slot_bindings)
     initialize_loop_plan(
@@ -1775,6 +1763,11 @@ async def run_agent(
         tool_steps=skill_steps,
         skill_title=matched_skills[0].title if matched_skills else "",
         slot_bindings=slot_bindings or None,
+        discovery_domain=(
+            (primary_skill.route_scope or "").lower()
+            if primary_skill and (primary_skill.route_scope or "").strip()
+            else (route_resolution.domain_hint or None)
+        ),
     )
     cache_mcp_tools_from_schemas(loop_state, llm_tools)
     if user_requests_skill_override(user_text):
@@ -1803,9 +1796,7 @@ async def run_agent(
         "keyword_hint": route_resolution.keyword_hint,
         "classification": route_resolution.classifier_summary,
         "route_method": route_resolution.method,
-        "playbook": playbook_selection.key,
-        "playbook_method": playbook_selection.method,
-        "playbook_detail": playbook_selection.detail,
+        "domain_hint": route_resolution.domain_hint,
         "skill": matched_skills[0].title if matched_skills else None,
         "skill_slug": matched_skills[0].slug if matched_skills else None,
         "skill_classifier": skill_selection.summary if skill_selection else None,
@@ -1849,19 +1840,33 @@ async def run_agent(
             max_tools=agent_config.max_loop_tools,
             include_full_catalog=loop_state.include_full_tool_catalog,
         )
-        active_backend = backend_for_route(
-            route,
+        active_backend = backend_for_skill(
+            primary_skill,
+            route=route,
             chat_backend=backend,
+            action_backend=(
+                router_config.action_backend
+                if router_config.action_enabled and not use_chat_backend
+                else None
+            ),
             router_config=router_config,
-            prefer_action=route == TaskRoute.HA_ACTION and not use_chat_backend,
         )
-        model_role = _agent_model_role(route, use_chat_backend=use_chat_backend)
+        model_role = _agent_model_role(
+            route,
+            use_chat_backend=use_chat_backend,
+            skill_scope=(
+                (primary_skill.route_scope or "").lower() if primary_skill else None
+            ),
+        )
         _attach_plan_progress(turn_meta, loop_state, trace)
         iteration_meta = {
             "iteration": iteration + 1,
             "model_role": model_role,
             **_model_chip(active_backend),
         }
+        if primary_skill and (primary_skill.llm_model or "").strip():
+            iteration_meta["skill_model"] = primary_skill.llm_model
+            turn_meta["skill_model"] = primary_skill.llm_model
         if turn_meta.get("plan_progress"):
             iteration_meta["plan_progress"] = turn_meta["plan_progress"]
         turn_meta.update(iteration_meta)
@@ -1869,10 +1874,16 @@ async def run_agent(
 
         # After tool failures, buffer the next answer so Assist/console never
         # hears a streamed success claim that we later have to retract.
+        tool_critical = (
+            str(route) == "action"
+            or bool(skill_steps)
+            or (primary_skill is not None and bool(primary_skill.tool_steps))
+            or (route_resolution.domain_hint or "") in {"email", "news"}
+        )
         stream_this_iteration = agent_config.enable_streaming and not (
             trace.tool_errors > 0
             and not had_successful_control_tool(trace.tool_calls)
-            and str(route) in {"action", "email", "news"}
+            and tool_critical
         )
 
         if stream_this_iteration:
@@ -2085,6 +2096,11 @@ async def run_agent(
             route=str(route),
             iteration=iteration,
             max_iterations=agent_config.max_iterations,
+            tool_critical=bool(
+                skill_steps
+                or (primary_skill is not None and bool(primary_skill.tool_steps))
+                or (route_resolution.domain_hint or "") in {"email", "news"}
+            ),
         ):
             if streamed_answer:
                 yield AgentDelta(content_clear=True)

@@ -158,8 +158,6 @@ async def apply_eval_recommendations(
     updates: dict[str, Any] = {}
     chat = assignments.get("chat") or {}
     action = assignments.get("action") or {}
-    email = assignments.get("email") or {}
-    news = assignments.get("news") or {}
     classifier = assignments.get("classifier") or {}
     planner = assignments.get("planner") or {}
     verifier = assignments.get("verifier") or {}
@@ -168,12 +166,6 @@ async def apply_eval_recommendations(
     if isinstance(action, dict) and action.get("model"):
         updates["action_model_enabled"] = True
         updates["action_llm_model"] = action["model"]
-    if isinstance(email, dict) and email.get("model"):
-        updates["email_model_enabled"] = True
-        updates["email_llm_model"] = email["model"]
-    if isinstance(news, dict) and news.get("model"):
-        updates["news_model_enabled"] = True
-        updates["news_llm_model"] = news["model"]
     if isinstance(classifier, dict) and classifier.get("model"):
         updates["classifier_model_enabled"] = True
         updates["classifier_llm_model"] = classifier["model"]
@@ -186,11 +178,40 @@ async def apply_eval_recommendations(
         updates["classifier_model_enabled"] = True
         updates["classifier_llm_model"] = role_model
 
-    if not updates:
+    # Map legacy email/news recommendations onto bundled skill models when present.
+    email = assignments.get("email") or {}
+    news = assignments.get("news") or {}
+    skill_updates: list[tuple[str, str]] = []
+    if isinstance(email, dict) and email.get("model"):
+        skill_updates.append(("check-and-read-unread-emails", str(email["model"])))
+    if isinstance(news, dict) and news.get("model"):
+        skill_updates.append(("news-briefing", str(news["model"])))
+    if skill_updates:
+        from ..skills.store import get_skill_store
+
+        store = get_skill_store(hass, entry_id)
+
+        def _apply_skill_models() -> None:
+            for slug, model in skill_updates:
+                skill = store.get_skill_by_slug(slug)
+                if skill is None:
+                    continue
+                skill.llm_model = model
+                store.update_skill(skill)
+
+        await hass.async_add_executor_job(_apply_skill_models)
+
+    if not updates and not skill_updates:
         raise HomeAssistantError("No supported model assignments to apply.")
 
-    config = await set_config(hass, entry_id, updates)
-    return {"applied": updates, "config": config}
+    config = None
+    if updates:
+        config = await set_config(hass, entry_id, updates)
+    return {
+        "applied": updates,
+        "skill_models": {slug: model for slug, model in skill_updates},
+        "config": config,
+    }
 
 
 async def apply_server_settings(

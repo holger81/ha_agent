@@ -211,7 +211,7 @@ def get_action_backend(entry: ConfigEntry) -> LlmBackend | None:
 
 
 def get_classifier_backend(entry: ConfigEntry) -> LlmBackend | None:
-    """Return a dedicated playbook-classifier / router backend when configured."""
+    """Return a dedicated route-classifier / router backend when configured."""
     return _optional_role_backend(
         entry,
         enabled_key=CONF_CLASSIFIER_MODEL_ENABLED,

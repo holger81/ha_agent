@@ -19,7 +19,6 @@ from .context import (
     is_news_query,
     route_keyword_match,
 )
-from .playbooks import default_playbook_body, playbook_key_for_route
 from .structured_output import ROUTE_SCHEMA, json_schema_format
 
 if TYPE_CHECKING:
@@ -28,12 +27,10 @@ if TYPE_CHECKING:
 
 
 class TaskRoute(StrEnum):
-    """Agent loop backend and playbook selection."""
+    """Agent loop backend selection for one user turn."""
 
     CHAT = "chat"
     HA_ACTION = "action"
-    EMAIL = "email"
-    NEWS = "news"
 
 
 @dataclass(frozen=True)
@@ -43,47 +40,38 @@ class RouteDecision:
     route: TaskRoute
     method: str
     detail: str
+    domain_hint: str | None = None
 
     @property
     def summary(self) -> str:
         """Human-readable classification label for the chat UI."""
         if self.method == "default":
             return "default chat (no route keyword)"
+        if self.method == "domain_hint":
+            return f"domain hint → {self.domain_hint} ({self.detail})"
         if self.method == "follow_up":
-            return f"follow-up → {self.route.value} ({self.detail})"
+            label = self.domain_hint or self.route.value
+            return f"follow-up → {label} ({self.detail})"
         return f"keyword → {self.route.value} ({self.detail})"
 
 
 _ROUTE_CLASSIFIER_PROMPT = (
     "You classify the user's latest request into exactly one agent route.\n"
-    'Return ONLY valid JSON: {{"route": "chat"|"email"|"news"|"action"}}.\n'
+    'Return ONLY valid JSON: {{"route": "chat"|"action"}}.\n'
     "Rules:\n"
-    "- chat: greetings, jokes, chitchat, general questions, capabilities.\n"
-    "- email: inbox, mail, unread messages, reading or searching email.\n"
-    "- news: headlines, news briefings, RSS, current events.\n"
+    "- chat: greetings, jokes, chitchat, general questions, email, news, "
+    "capabilities, and anything that is not device control.\n"
     "- action: control devices (lights, covers, locks, climate) or camera "
     "snapshots.\n"
-    "- Use recent user turns for follow-ups (e.g. 'tell me more' after news "
-    "stays news).\n"
-    "- Pick chat when none of the specialized routes clearly apply."
+    "- Pick chat when the request is not clearly device control."
 )
 
 _ROUTE_CLASSIFIER_CATALOG: tuple[tuple[str, str, str], ...] = (
     (
         "chat",
         "General chat",
-        "Greetings, jokes, chitchat, general knowledge, and requests that "
-        "do not need email, news, or device tools.",
-    ),
-    (
-        "email",
-        "Email",
-        "The user asks about email, mail, inbox, or unread messages.",
-    ),
-    (
-        "news",
-        "News",
-        "The user asks for news, headlines, or a briefing.",
+        "Greetings, jokes, chitchat, email, news, general knowledge, and "
+        "requests that are not device control.",
     ),
     (
         "action",
@@ -95,8 +83,6 @@ _ROUTE_CLASSIFIER_CATALOG: tuple[tuple[str, str, str], ...] = (
 
 _ROUTE_VALUE_TO_TASK: dict[str, TaskRoute] = {
     "chat": TaskRoute.CHAT,
-    "email": TaskRoute.EMAIL,
-    "news": TaskRoute.NEWS,
     "action": TaskRoute.HA_ACTION,
 }
 
@@ -111,6 +97,7 @@ class RouteResolution:
     classifier_detail: str
     keyword_hint: str
     classifier_raw: str | None = None
+    domain_hint: str | None = None
 
 
 def parse_route_classifier_response(content: str) -> str | None:
@@ -246,7 +233,12 @@ async def resolve_route_with_classifier(
                 ),
                 keyword_hint=keyword_decision.summary,
                 classifier_raw=raw_preview,
+                domain_hint=keyword_decision.domain_hint,
             )
+        # Preserve email/news domain hints even when the LLM picks chat.
+        domain_hint = keyword_decision.domain_hint
+        if route == TaskRoute.HA_ACTION:
+            domain_hint = None
         return RouteResolution(
             route=route,
             method="llm",
@@ -257,6 +249,7 @@ async def resolve_route_with_classifier(
             ),
             keyword_hint=keyword_decision.summary,
             classifier_raw=raw_preview,
+            domain_hint=domain_hint,
         )
 
     return RouteResolution(
@@ -269,6 +262,7 @@ async def resolve_route_with_classifier(
         ),
         keyword_hint=keyword_decision.summary,
         classifier_raw=raw_preview,
+        domain_hint=keyword_decision.domain_hint,
     )
 
 
@@ -282,18 +276,28 @@ def classify_route_with_detail(
 ) -> RouteDecision:
     """Pick the route for this user turn and explain how it was chosen.
 
-    ``route_keywords`` carries optional per-route UI keyword overrides
-    (``{"email": [...], "news": [...], "action": [...]}``). A route absent
-    from the map uses its shipped default matcher.
+    ``route_keywords`` carries optional per-domain UI keyword overrides
+    (``{"email": [...], "news": [...], "action": [...]}``). Email/news
+    keywords become skill domain hints on the chat route.
     """
     del exposed_entities  # reserved for future entity-aware routing
     overrides = route_keywords or {}
     prior = history or []
     if match := route_keyword_match(user_text, "email", overrides.get("email")):
-        return RouteDecision(TaskRoute.EMAIL, "keyword", match)
+        return RouteDecision(
+            TaskRoute.CHAT,
+            "domain_hint",
+            match,
+            domain_hint="email",
+        )
 
     if match := route_keyword_match(user_text, "news", overrides.get("news")):
-        return RouteDecision(TaskRoute.NEWS, "keyword", match)
+        return RouteDecision(
+            TaskRoute.CHAT,
+            "domain_hint",
+            match,
+            domain_hint="news",
+        )
 
     if (
         router_config.action_enabled
@@ -308,9 +312,10 @@ def classify_route_with_detail(
         and not is_email_query(user_text, overrides.get("email"))
     ):
         return RouteDecision(
-            TaskRoute.NEWS,
+            TaskRoute.CHAT,
             "follow_up",
             "recent news context",
+            domain_hint="news",
         )
 
     if (
@@ -319,9 +324,10 @@ def classify_route_with_detail(
         and not is_news_query(user_text, overrides.get("news"))
     ):
         return RouteDecision(
-            TaskRoute.EMAIL,
+            TaskRoute.CHAT,
             "follow_up",
             "recent email context",
+            domain_hint="email",
         )
 
     return RouteDecision(TaskRoute.CHAT, "default", "general chat")
@@ -350,15 +356,6 @@ def has_exposed_match(user_text: str, exposed_entities: list[dict]) -> bool:
     return any(entity_matches_query(entity, user_text) for entity in exposed_entities)
 
 
-def route_playbook(route: TaskRoute) -> str:
-    """Return the default route playbook text (UI-editable overrides win).
-
-    This is the shipped fallback used when no per-entry override exists; the
-    editable copy lives in the playbook store. See ``playbooks.py``.
-    """
-    return default_playbook_body(playbook_key_for_route(route.value))
-
-
 def backend_for_route(
     route: TaskRoute,
     *,
@@ -366,11 +363,7 @@ def backend_for_route(
     router_config: RouterConfig,
     prefer_action: bool = True,
 ) -> LlmBackend:
-    """Return the LLM backend for the active route."""
+    """Return the LLM backend for the active route (action or chat)."""
     if prefer_action and route == TaskRoute.HA_ACTION and router_config.action_backend:
         return router_config.action_backend
-    if route == TaskRoute.EMAIL and router_config.email_backend:
-        return router_config.email_backend
-    if route == TaskRoute.NEWS and router_config.news_backend:
-        return router_config.news_backend
     return chat_backend

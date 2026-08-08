@@ -128,6 +128,8 @@ def normalize_skill_draft(
     draft.preconditions = fixed.preconditions
     draft.parent_id = fixed.parent_id
     draft.route_scope = fixed.route_scope
+    draft.llm_model = fixed.llm_model
+    draft.llm_base_url = fixed.llm_base_url
     steps = resolve_tool_steps(
         draft.body,
         draft.tool_steps,
@@ -144,6 +146,8 @@ def normalize_skill_draft(
         preconditions=draft.preconditions,
         parent_id=draft.parent_id,
         route_scope=draft.route_scope,
+        llm_model=draft.llm_model,
+        llm_base_url=draft.llm_base_url,
     )
 
 

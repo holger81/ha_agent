@@ -22,9 +22,9 @@ from .structured_output import (
 _COMPLEXITY_PROMPT = (
     "Classify request complexity for a Home Assistant agent.\n"
     'Return ONLY JSON: {"complexity": "simple"|"single"|"complex", '
-    '"routes": ["chat"|"email"|"news"|"action", ...], "reason": "..."}.\n'
+    '"routes": ["chat"|"action", ...], "reason": "..."}.\n'
     "- simple: greeting, joke, factual chat, no tools.\n"
-    "- single: one domain, one workflow (email OR device OR news).\n"
+    "- single: one domain, one workflow (email OR device OR news via skills).\n"
     "- complex: multiple domains, multiple unrelated goals, or AND-chained tasks."
 )
 
@@ -32,15 +32,17 @@ _REPLAN_PROMPT = (
     "A worker subtask failed during a multi-step Home Assistant plan.\n"
     "Return a revised remainder plan as JSON subtasks only for unfinished work.\n"
     'Return ONLY JSON: {"subtasks": [{"id": "t1", "subgoal": "...", '
-    '"route": "email|news|action|chat", "depends_on": []}]}. '
-    "Max 4 subtasks."
+    '"route": "action|chat", "depends_on": []}]}. '
+    "Max 4 subtasks. Use action only for device control; otherwise chat "
+    "(email/news are skills on chat)."
 )
 
 _PLAN_PROMPT = (
     "Decompose a complex user request into ordered subtasks for specialized workers.\n"
     'Return ONLY JSON: {"subtasks": [{"id": "t1", "subgoal": "...", '
-    '"route": "email|news|action|chat", "depends_on": []}]}. '
-    "Max 4 subtasks. depends_on lists prior subtask ids."
+    '"route": "action|chat", "depends_on": []}]}. '
+    "Max 4 subtasks. depends_on lists prior subtask ids. "
+    "Use action only for device control; email and news use chat."
 )
 
 
@@ -119,11 +121,16 @@ def _parse_subtasks_payload(
     for index, item in enumerate(subtasks_raw[:4]):
         if not isinstance(item, dict):
             continue
+        route = str(item.get("route") or fallback_route).lower()
+        if route in {"email", "news"}:
+            route = "chat"
+        elif route not in {"chat", "action"}:
+            route = fallback_route
         subtasks.append(
             SubtaskSpec(
                 id=str(item.get("id") or f"t{index + 1}"),
                 subgoal=str(item.get("subgoal") or user_text),
-                route=str(item.get("route") or fallback_route),
+                route=route,
                 depends_on=[str(d) for d in (item.get("depends_on") or []) if d],
             )
         )

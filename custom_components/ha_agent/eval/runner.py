@@ -34,7 +34,6 @@ from ..llm_server import (
 )
 from ..skills.models import TurnTrace
 from .cases import list_eval_cases_for_entry
-from .classifier_runner import run_classifier_case
 from .mcp_mock import EvalMcpClient
 from .models import EVAL_TASKS, EvalCaseScore, EvalRun, EvalRunState, EvalTaskScore
 from .recommender import (
@@ -316,42 +315,6 @@ async def run_eval_suite(
                         model_total=model_total,
                         completed_cases=len(run.case_scores),
                     )
-                    if case.task == "classifier":
-                        classifier_backend = LlmBackend(
-                            base_url=chat_backend.base_url,
-                            model=model,
-                            api_key=chat_backend.api_key,
-                            max_tokens=256,
-                            temperature=0.0,
-                            timeout=chat_backend.timeout,
-                            thinking_level="off",
-                        )
-                        try:
-                            run.case_scores.append(
-                                await run_classifier_case(
-                                    llm,
-                                    classifier_backend,
-                                    case,
-                                )
-                            )
-                        except Exception as err:
-                            LOGGER.warning(
-                                "Classifier eval case %s failed for %s: %s",
-                                case.id,
-                                model,
-                                err,
-                            )
-                            run.case_scores.append(
-                                EvalCaseScore(
-                                    case_id=case.id,
-                                    task=case.task,
-                                    model=model,
-                                    score=0.0,
-                                    passed=False,
-                                    details=[str(err)],
-                                )
-                            )
-                        continue
 
                     mcp = EvalMcpClient(
                         session_prompt=(
@@ -532,32 +495,6 @@ async def benchmark_single_model(
                         "case_id": case.id,
                     }
                 )
-            if case.task == "classifier":
-                classifier_backend = LlmBackend(
-                    base_url=chat_backend.base_url,
-                    model=model,
-                    api_key=chat_backend.api_key,
-                    max_tokens=256,
-                    temperature=0.0,
-                    timeout=chat_backend.timeout,
-                    thinking_level="off",
-                )
-                try:
-                    case_scores.append(
-                        await run_classifier_case(llm, classifier_backend, case)
-                    )
-                except Exception as err:
-                    case_scores.append(
-                        EvalCaseScore(
-                            case_id=case.id,
-                            task=case.task,
-                            model=model,
-                            score=0.0,
-                            passed=False,
-                            details=[str(err)],
-                        )
-                    )
-                continue
 
             mcp = EvalMcpClient(
                 session_prompt=(

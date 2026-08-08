@@ -72,7 +72,7 @@ _MAX_REASONING_CHARS = 8000
 _MAX_EMPTY_RESPONSES = 2
 _MAX_MCP_GUIDANCE_CHARS = 600
 _MAX_LOOP_GUIDANCE_CHARS = 500
-# Route → MCP discovery domain when no skill/playbook tool_steps are seeded.
+# Route → MCP discovery domain when no skill tool_steps are seeded.
 _ROUTE_DISCOVERY_DOMAINS: dict[str, str] = {
     "email": "email",
     "news": "news",
@@ -963,6 +963,7 @@ def initialize_loop_plan(
     tool_steps: list[dict[str, Any]] | None = None,
     skill_title: str = "",
     slot_bindings: dict[str, str] | None = None,
+    discovery_domain: str | None = None,
 ) -> None:
     """Seed per-turn plan state from the user goal, route, and optional skill."""
     loop_state.plan_goal = goal.strip()
@@ -975,7 +976,7 @@ def initialize_loop_plan(
     loop_state.plan_current_step_index = 0 if steps else None
     loop_state.plan_completed_tools = []
     if not steps:
-        domain = _ROUTE_DISCOVERY_DOMAINS.get(route)
+        domain = discovery_domain or _ROUTE_DISCOVERY_DOMAINS.get(route)
         if domain:
             loop_state.mcp_guidance.insert(
                 0,
@@ -1414,7 +1415,7 @@ _FAILURE_ADMISSION = re.compile(
     r"\b(couldn'?t|could not|unable|failed|error|didn'?t work|not able)\b",
     re.IGNORECASE,
 )
-_TOOL_CRITICAL_ROUTES = frozenset({"action", "email", "news"})
+_TOOL_CRITICAL_ROUTES = frozenset({"action"})
 
 
 def had_successful_control_tool(tool_calls: list[dict[str, Any]]) -> bool:
@@ -1464,6 +1465,7 @@ def should_retry_after_failed_tools(
     route: str | None,
     iteration: int,
     max_iterations: int,
+    tool_critical: bool = False,
 ) -> bool:
     """Return True when a final answer should be blocked after tool failures."""
     if tool_errors <= 0:
@@ -1471,7 +1473,7 @@ def should_retry_after_failed_tools(
     if iteration >= max_iterations - 1:
         return False
     route_key = (route or "").lower()
-    if route_key not in _TOOL_CRITICAL_ROUTES:
+    if route_key not in _TOOL_CRITICAL_ROUTES and not tool_critical:
         return False
     if had_successful_control_tool(tool_calls):
         return False

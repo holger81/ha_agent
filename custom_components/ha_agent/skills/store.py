@@ -80,6 +80,8 @@ _ADDED_COLUMNS = {
     "preconditions": "TEXT NOT NULL DEFAULT ''",
     "parent_id": "TEXT",
     "route_scope": "TEXT",
+    "llm_model": "TEXT",
+    "llm_base_url": "TEXT",
     "score": "REAL NOT NULL DEFAULT 1.0",
     "is_builtin": "INTEGER NOT NULL DEFAULT 0",
 }
@@ -147,6 +149,8 @@ def _row_to_skill(row: sqlite3.Row) -> Skill:
         preconditions=str(row["preconditions"]) if "preconditions" in keys else "",
         parent_id=row["parent_id"] if "parent_id" in keys else None,
         route_scope=row["route_scope"] if "route_scope" in keys else None,
+        llm_model=row["llm_model"] if "llm_model" in keys else None,
+        llm_base_url=row["llm_base_url"] if "llm_base_url" in keys else None,
         score=float(row["score"]) if "score" in keys else 1.0,
         is_builtin=bool(row["is_builtin"]) if "is_builtin" in keys else False,
     )
@@ -237,6 +241,8 @@ class SkillStore:
         preconditions: str = "",
         parent_id: str | None = None,
         route_scope: str | None = None,
+        llm_model: str | None = None,
+        llm_base_url: str | None = None,
         score: float = 1.0,
         is_builtin: bool = False,
     ) -> Skill:
@@ -257,6 +263,12 @@ class SkillStore:
             preconditions=preconditions,
             parent_id=parent_id,
             route_scope=route_scope,
+            llm_model=(llm_model.strip() if llm_model and llm_model.strip() else None),
+            llm_base_url=(
+                llm_base_url.strip().rstrip("/")
+                if llm_base_url and llm_base_url.strip()
+                else None
+            ),
             score=score,
             is_builtin=is_builtin,
         )
@@ -265,8 +277,8 @@ class SkillStore:
             "INSERT INTO skills "
             "(id, slug, title, description, triggers_json, body, tool_steps_json, "
             "enabled, created_at, version, slots_json, preconditions, parent_id, "
-            "route_scope, score, is_builtin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "route_scope, llm_model, llm_base_url, score, is_builtin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 skill.id,
                 skill.slug,
@@ -292,6 +304,8 @@ class SkillStore:
                 skill.preconditions,
                 skill.parent_id,
                 skill.route_scope,
+                skill.llm_model,
+                skill.llm_base_url,
                 skill.score,
                 int(skill.is_builtin),
             ),
@@ -309,7 +323,8 @@ class SkillStore:
             "tool_steps_json = ?, enabled = ?, last_used_at = ?, use_count = ?, "
             "success_count = ?, last_improved_at = ?, last_evaluation_at = ?, "
             "version = ?, slots_json = ?, preconditions = ?, parent_id = ?, "
-            "route_scope = ?, score = ?, is_builtin = ? "
+            "route_scope = ?, llm_model = ?, llm_base_url = ?, score = ?, "
+            "is_builtin = ? "
             "WHERE id = ?",
             (
                 skill.slug,
@@ -339,6 +354,8 @@ class SkillStore:
                 skill.preconditions,
                 skill.parent_id,
                 skill.route_scope,
+                skill.llm_model,
+                skill.llm_base_url,
                 skill.score,
                 int(skill.is_builtin),
                 skill.id,
@@ -557,6 +574,8 @@ class SkillStore:
                 "preconditions": skill.preconditions,
                 "parent_id": skill.parent_id,
                 "route_scope": skill.route_scope,
+                "llm_model": skill.llm_model,
+                "llm_base_url": skill.llm_base_url,
                 "score": skill.score,
             },
             ensure_ascii=True,
@@ -636,6 +655,8 @@ class SkillStore:
         skill.preconditions = str(data.get("preconditions", skill.preconditions))
         skill.parent_id = data.get("parent_id")
         skill.route_scope = data.get("route_scope")
+        skill.llm_model = data.get("llm_model")
+        skill.llm_base_url = data.get("llm_base_url")
         skill.score = float(data.get("score", skill.score))
         if "enabled" in data:
             skill.enabled = bool(data.get("enabled"))

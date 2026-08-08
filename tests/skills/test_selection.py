@@ -187,31 +187,27 @@ async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
     models = _load("skills.models")
     Skill = models.Skill
 
-    def _skill(slug: str) -> object:
-        return Skill(
-            id=slug,
-            slug=slug,
-            title=slug,
-            description="check inbox email",
-            triggers=["email"],
-            body="imap mailbox",
-            tool_steps=[],
-        )
+    skill = Skill(
+        id="a",
+        slug="a",
+        title="check inbox email",
+        description="check inbox email",
+        triggers=["email", "inbox"],
+        body="imap mailbox",
+        tool_steps=[],
+        route_scope="email",
+    )
 
-    enabled = [_skill("a"), _skill("b")]
-    fts = [_skill("a")]
+    store = MagicMock()
+    store.search.return_value = [MagicMock(id="a")]
+    store.load_skills_by_ids.return_value = [skill]
 
     async def _executor(func):
         return func()
 
     hass = MagicMock()
     hass.async_add_executor_job = AsyncMock(side_effect=_executor)
-    monkeypatch.setattr(
-        selection, "get_skill_store", MagicMock(return_value=MagicMock())
-    )
-    monkeypatch.setattr(
-        selection, "_load_skill_candidates", MagicMock(return_value=(enabled, fts))
-    )
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
 
     llm = MagicMock()
     llm.chat = AsyncMock()
@@ -222,17 +218,18 @@ async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
         llm,
         MagicMock(),
         "check email inbox",
-        route="email",
+        route="chat",
+        domain_hint="email",
     )
 
-    assert [skill.slug for skill in result.skills] == ["a"]
+    assert [item.slug for item in result.skills] == ["a"]
     assert result.method == "fts_only"
     llm.chat.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_news_route_does_not_select_email_only_skill(monkeypatch) -> None:
-    """A news-routed query must not pick an email-only skill."""
+async def test_news_domain_hint_does_not_select_email_only_skill(monkeypatch) -> None:
+    """A news domain hint on chat must not pick an email-only skill."""
     selection = _load("skills.selection")
     models = _load("skills.models")
     Skill = models.Skill
@@ -245,10 +242,11 @@ async def test_news_route_does_not_select_email_only_skill(monkeypatch) -> None:
         triggers=["email", "inbox", "unread"],
         body="",
         tool_steps=[],
+        route_scope="email",
     )
 
     # The store has only an email skill; neither the news query nor the news
-    # route hint matches it, so FTS returns nothing for both searches.
+    # domain hint matches it, so FTS returns nothing for both searches.
     store = MagicMock()
     store.list_enabled.return_value = [email_skill]
     store.search.return_value = []
@@ -270,11 +268,12 @@ async def test_news_route_does_not_select_email_only_skill(monkeypatch) -> None:
         llm,
         MagicMock(),
         "what are todays news",
-        route="news",
+        route="chat",
+        domain_hint="news",
     )
 
     assert result.skills == []
-    assert result.method == "none"
+    assert result.method in {"none", "skipped", "fts_only"}
     llm.chat.assert_not_called()
 
 
@@ -292,7 +291,7 @@ def test_filter_tool_steps_for_route_drops_email_on_news() -> None:
 
 
 def test_skill_matches_route_rejects_email_on_news() -> None:
-    """Email-only skills must not match the news route."""
+    """Email-only skills must not match a news domain hint on chat."""
     selection = _load("skills.selection")
     models = _load("skills.models")
     Skill = models.Skill
@@ -305,10 +304,15 @@ def test_skill_matches_route_rejects_email_on_news() -> None:
         triggers=["email", "inbox"],
         body="Use imap tools for mailbox status.",
         tool_steps=[],
+        route_scope="email",
     )
 
-    assert selection.skill_matches_route(email_skill, "news") is False
-    assert selection.skill_matches_route(email_skill, "email") is True
+    assert (
+        selection.skill_matches_route(email_skill, "chat", domain_hint="news") is False
+    )
+    assert (
+        selection.skill_matches_route(email_skill, "chat", domain_hint="email") is True
+    )
 
 
 def test_skill_matches_route_rejects_email_tools_on_action() -> None:
@@ -330,10 +334,13 @@ def test_skill_matches_route_rejects_email_tools_on_action() -> None:
                 "arguments": {"mailbox": "INBOX"},
             }
         ],
+        route_scope="email",
     )
 
     assert selection.skill_matches_route(email_skill, "action") is False
-    assert selection.skill_matches_route(email_skill, "email") is True
+    assert (
+        selection.skill_matches_route(email_skill, "chat", domain_hint="email") is True
+    )
 
 
 @pytest.mark.asyncio

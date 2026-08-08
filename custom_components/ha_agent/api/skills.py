@@ -175,6 +175,8 @@ async def create_skill(
                 preconditions=draft.preconditions,
                 parent_id=draft.parent_id,
                 route_scope=draft.route_scope,
+                llm_model=draft.llm_model,
+                llm_base_url=draft.llm_base_url,
                 slug=slug,
                 enabled=bool(payload.get("enabled", True)),
             )

@@ -9,9 +9,7 @@ from pathlib import Path
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load(name: str):
@@ -83,23 +81,25 @@ def test_classify_route_uses_action_for_device_commands() -> None:
 
 
 def test_classify_route_uses_chat_for_news() -> None:
-    """News queries use the news route."""
-    route = router.classify_route(
+    """News queries stay on chat with a news domain hint."""
+    decision = router.classify_route_with_detail(
         "what's the news?",
         [],
         _router_config(enabled=True),
     )
-    assert route == router.TaskRoute.NEWS
+    assert decision.route == router.TaskRoute.CHAT
+    assert decision.domain_hint == "news"
 
 
-def test_classify_route_uses_email_for_mail_queries() -> None:
-    """Email queries use the email route."""
-    route = router.classify_route(
+def test_classify_route_uses_chat_for_mail_queries() -> None:
+    """Email queries stay on chat with an email domain hint."""
+    decision = router.classify_route_with_detail(
         "do I have new emails?",
         [],
         _router_config(enabled=True),
     )
-    assert route == router.TaskRoute.EMAIL
+    assert decision.route == router.TaskRoute.CHAT
+    assert decision.domain_hint == "email"
 
 
 def test_classify_route_uses_action_for_camera_snapshot() -> None:
@@ -123,14 +123,15 @@ def test_classify_route_disabled_always_chat() -> None:
 
 
 def test_classify_route_uses_keyword_override() -> None:
-    """A custom email keyword routes to email; defaults no longer apply."""
-    route = router.classify_route(
+    """A custom email keyword becomes a domain hint on chat."""
+    decision = router.classify_route_with_detail(
         "any postbox updates?",
         [],
         _router_config(enabled=True),
         route_keywords={"email": ["postbox"]},
     )
-    assert route == router.TaskRoute.EMAIL
+    assert decision.route == router.TaskRoute.CHAT
+    assert decision.domain_hint == "email"
 
 
 def test_classify_route_override_does_not_match_default_keyword() -> None:
@@ -166,7 +167,7 @@ def test_backend_for_route_returns_action_backend() -> None:
 
 
 def test_classify_route_news_follow_up_after_briefing() -> None:
-    """News detail questions stay on the news route."""
+    """News detail questions keep a news domain hint on chat."""
     history = [
         {"role": "user", "content": "what are todays news"},
         {
@@ -174,24 +175,26 @@ def test_classify_route_news_follow_up_after_briefing() -> None:
             "content": "California shooting at a library and World Cup headlines.",
         },
     ]
-    route = router.classify_route(
+    decision = router.classify_route_with_detail(
         "what is this about the California shooting",
         [],
         _router_config(enabled=True),
         history=history,
     )
-    assert route == router.TaskRoute.NEWS
+    assert decision.route == router.TaskRoute.CHAT
+    assert decision.domain_hint == "news"
 
 
 def test_classify_route_with_detail_news_keyword() -> None:
-    """News classification includes the matched keyword."""
+    """News classification includes the matched keyword as a domain hint."""
     decision = router.classify_route_with_detail(
         "what are todays news",
         [],
         _router_config(enabled=True),
     )
-    assert decision.route == router.TaskRoute.NEWS
-    assert decision.method == "keyword"
+    assert decision.route == router.TaskRoute.CHAT
+    assert decision.domain_hint == "news"
+    assert decision.method == "domain_hint"
     assert "news" in decision.detail.lower()
     assert "news" in decision.summary
 
@@ -202,9 +205,7 @@ async def test_resolve_route_with_classifier_uses_llm() -> None:
     from unittest.mock import AsyncMock, MagicMock
 
     llm = MagicMock()
-    llm.chat = AsyncMock(
-        return_value=MagicMock(content='{"route": "chat"}')
-    )
+    llm.chat = AsyncMock(return_value=MagicMock(content='{"route": "chat"}'))
     backend = config_helpers.LlmBackend(
         base_url="http://example/v1",
         model="classifier",
@@ -231,7 +232,8 @@ async def test_resolve_route_with_classifier_uses_llm() -> None:
     llm.chat.assert_awaited_once()
 
 
-def test_backend_for_route_returns_email_backend() -> None:
+def test_backend_for_route_action_and_chat_only() -> None:
+    """backend_for_route only distinguishes action vs chat."""
     chat = config_helpers.LlmBackend(
         base_url="http://example/v1",
         model="chat-model",
@@ -241,23 +243,28 @@ def test_backend_for_route_returns_email_backend() -> None:
         timeout=30,
         thinking_level="off",
     )
-    email = config_helpers.LlmBackend(
-        base_url="http://example/v1",
-        model="email-model",
-        api_key=None,
-        max_tokens=512,
-        temperature=0.3,
-        timeout=30,
-        thinking_level="off",
+    router_config = _router_config(enabled=True)
+    assert (
+        router.backend_for_route(
+            router.TaskRoute.HA_ACTION,
+            chat_backend=chat,
+            router_config=router_config,
+            prefer_action=True,
+        ).model
+        == "action-model"
     )
-    router_config = config_helpers.RouterConfig(
-        action_enabled=False,
-        action_backend=None,
-        email_backend=email,
+    assert (
+        router.backend_for_route(
+            router.TaskRoute.CHAT,
+            chat_backend=chat,
+            router_config=router_config,
+        ).model
+        == "chat-model"
     )
-    backend = router.backend_for_route(
-        router.TaskRoute.EMAIL,
-        chat_backend=chat,
-        router_config=router_config,
-    )
-    assert backend.model == "email-model"
+
+
+def test_route_schema_rejects_email_news() -> None:
+    """Classifier schema only allows chat|action."""
+    from ha_agent.structured_output import ROUTE_SCHEMA
+
+    assert ROUTE_SCHEMA["properties"]["route"]["enum"] == ["chat", "action"]

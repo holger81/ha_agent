@@ -39,6 +39,8 @@ class Skill:
     preconditions: str = ""
     parent_id: str | None = None
     route_scope: str | None = None
+    llm_model: str | None = None
+    llm_base_url: str | None = None
     score: float = 1.0
     is_builtin: bool = False
 
@@ -146,3 +148,5 @@ class SkillDraft:
     preconditions: str = ""
     parent_id: str | None = None
     route_scope: str | None = None
+    llm_model: str | None = None
+    llm_base_url: str | None = None

@@ -18,8 +18,7 @@ A typical tool turn issues 4â€“8 sequential LLM calls; an orchestrated turn 15â€
 | 2 | Complexity triage (if heuristic flags) | planner | `orchestrator.py` |
 | 3 | Skill selection | router | `skills/selection.py` |
 | 4 | Slot binding | router | `skills/params.py` |
-| 5 | Playbook selection (if custom) | classifier | `playbooks.py` |
-| 6..N | Loop iterations (1 per tool round-trip + final) | worker | `agent.py` |
+| 5..N | Loop iterations (1 per tool round-trip + final) | worker | `agent.py` |
 | N+1 | Verifier | verifier | `verifier.py` |
 | N+2 | Observer (learning) | observer | `skills/observer.py` |
 

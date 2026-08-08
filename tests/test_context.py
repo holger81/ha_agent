@@ -122,15 +122,6 @@ def test_build_tool_context_matched_device_allows_discovery() -> None:
     assert "searchToolsForDomain" in tool_context
 
 
-def test_route_playbook_device_mentions_discovery() -> None:
-    """Device playbook prefers shortcuts but allows entity discovery."""
-    router = _load_module("router")
-    playbook = router.route_playbook(router.TaskRoute.HA_ACTION)
-    assert "shortcut" in playbook.lower()
-    assert "discover" in playbook.lower()
-    assert "MCP definition" in playbook
-
-
 def test_build_tool_context_adds_entity_candidates_for_match() -> None:
     """Matched exposed lights list entity ids without hardcoded tool names."""
     tool_context = context.build_tool_context(
@@ -171,18 +162,6 @@ def test_build_tool_context_adds_capability_hint() -> None:
     """Capability questions reference MCP session context."""
     tool_context = context.build_tool_context("what tools do you have access to?", [])
     assert "MCP SERVER INSTRUCTIONS" in tool_context
-
-
-def test_build_system_message_includes_route_playbook() -> None:
-    """Route playbooks are injected into the system message."""
-    system_message = context.build_system_message(
-        "You are helpful.",
-        "Use tools.",
-        route_playbook="EMAIL PLAYBOOK:\n1. Check inbox.",
-    )
-    assert "EMAIL PLAYBOOK" in system_message
-    assert "You are helpful." in system_message
-    assert "Use tools." in system_message
 
 
 def test_build_system_message_includes_mcp_session_prompt() -> None:

@@ -28,10 +28,9 @@ _SELECT_PROMPT = (
     "- Prefer a skill when the request clearly matches its title, triggers, or "
     "description.\n"
     "- Return [] when no skill applies or a generic reply suffices.\n"
-    "- Never pick a skill whose domain conflicts with route (e.g. email skill "
-    "when route is news, or news skill when route is email).\n"
-    "- When route is news, email, or action, only pick skills that clearly "
-    "belong to that domain."
+    "- When a domain_hint is email or news, prefer skills for that domain.\n"
+    "- Never pick an action/device skill for an email or news request, or an "
+    "email/news skill for a device-control request."
 )
 
 _ROUTE_DOMAIN_MARKERS: dict[str, re.Pattern[str]] = {
@@ -127,9 +126,37 @@ def _skill_text(skill: Skill) -> str:
     )
 
 
-def skill_matches_route(skill: Skill, route: str | None) -> bool:
-    """Return True when a skill plausibly belongs on the active route."""
+def skill_matches_route(
+    skill: Skill,
+    route: str | None,
+    *,
+    domain_hint: str | None = None,
+) -> bool:
+    """Return True when a skill plausibly belongs on the active route/domain."""
     route_key = (route or "").lower()
+    hint = (domain_hint or "").lower()
+    scope = (skill.route_scope or "").lower()
+
+    # Soft domain hint on chat: prefer matching scope, reject obvious conflicts.
+    if route_key in {"", "chat"} and hint in {"email", "news"}:
+        if scope and scope != hint and scope in {"email", "news", "action"}:
+            return False
+        if scope == hint:
+            return True
+        target = _ROUTE_DOMAIN_MARKERS.get(hint)
+        if target and target.search(_skill_text(skill)):
+            return True
+        step_names = [
+            str(step.get("toolName") or "")
+            for step in (skill.tool_steps or [])
+            if step.get("toolName")
+        ]
+        marker = _ROUTE_TOOL_MARKERS.get(hint)
+        if marker and any(marker.search(name) for name in step_names):
+            return True
+        # Keep non-domain skills eligible; FTS/LLM can still reject them.
+        return scope not in {"email", "news", "action"} or not scope
+
     if route_key not in _SPECIALIZED_ROUTES:
         return True
 
@@ -162,9 +189,18 @@ def skill_matches_route(skill: Skill, route: str | None) -> bool:
     )
 
 
-def _filter_by_route(skills: list[Skill], route: str | None) -> list[Skill]:
-    """Drop skills whose domain conflicts with the active route."""
-    return [skill for skill in skills if skill_matches_route(skill, route)]
+def _filter_by_route(
+    skills: list[Skill],
+    route: str | None,
+    *,
+    domain_hint: str | None = None,
+) -> list[Skill]:
+    """Drop skills whose domain conflicts with the active route/hint."""
+    return [
+        skill
+        for skill in skills
+        if skill_matches_route(skill, route, domain_hint=domain_hint)
+    ]
 
 
 def tool_step_matches_route(tool_name: str, route: str | None) -> bool:
@@ -358,26 +394,50 @@ def _resolve_chat_route_skills(
     user_text: str,
     *,
     max_inject: int,
+    domain_hint: str | None = None,
 ) -> SkillSelectionResult:
-    """On chat routes, only pin a skill when the user text alone matches one."""
-    rows = store.search(user_text.strip(), limit=2, enabled_only=True)
-    if len(rows) != 1:
+    """On chat routes, pin a skill when user text or domain hint clearly matches."""
+    query = user_text.strip()
+    hint = (domain_hint or "").lower().strip()
+    if hint in _ROUTE_SEARCH_HINTS:
+        query = f"{query} {_ROUTE_SEARCH_HINTS[hint]}".strip()
+    rows = store.search(query, limit=3 if hint else 2, enabled_only=True)
+    skills = store.load_skills_by_ids([row.id for row in rows]) if rows else []
+    skills = _filter_by_route(skills, "chat", domain_hint=hint or None)
+
+    if hint and skills:
+        scoped = [
+            skill
+            for skill in skills
+            if (skill.route_scope or "").lower() == hint
+            or (
+                hint in _ROUTE_DOMAIN_MARKERS
+                and _ROUTE_DOMAIN_MARKERS[hint].search(_skill_text(skill))
+            )
+        ]
+        if len(scoped) == 1:
+            skill = scoped[0]
+            return SkillSelectionResult(
+                skills=[skill][:max_inject],
+                method="fts_only",
+                summary=f"FTS → {skill.slug}",
+                detail=(
+                    f"Domain hint {hint!r} pinned skill {skill.title!r} on chat route."
+                ),
+                candidate_count=len(rows),
+            )
+
+    if len(rows) != 1 or not skills:
         return SkillSelectionResult(
             skills=[],
             method="skipped",
             summary="no skill (chat route)",
             detail="Chat turns skip learned skills unless one clearly matches.",
         )
-    skills = store.load_skills_by_ids([rows[0].id])
-    skill = skills[0] if skills else None
-    if skill is None or skill.is_builtin:
-        return SkillSelectionResult(
-            skills=[],
-            method="skipped",
-            summary="no skill (chat route)",
-            detail="Chat turns skip learned skills unless one clearly matches.",
-        )
-    if not _strong_fts_match(user_text, skill):
+    skill = skills[0]
+    if not _strong_fts_match(user_text, skill) and not (
+        hint and (skill.route_scope or "").lower() == hint
+    ):
         return SkillSelectionResult(
             skills=[],
             method="skipped",
@@ -403,6 +463,7 @@ async def resolve_skills_for_turn(
     *,
     history: list[dict[str, str]] | None = None,
     route: str | None = None,
+    domain_hint: str | None = None,
     max_inject: int = 3,
     structured_output_enabled: bool = True,
     trace: Any | None = None,
@@ -425,6 +486,7 @@ async def resolve_skills_for_turn(
                 store,
                 user_text,
                 max_inject=max_inject,
+                domain_hint=domain_hint,
             )
 
         return await hass.async_add_executor_job(_chat_only)
@@ -439,8 +501,8 @@ async def resolve_skills_for_turn(
         )
 
     candidates, fts_matches = await hass.async_add_executor_job(_load)
-    candidates = _filter_by_route(candidates, route)
-    fts_matches = _filter_by_route(fts_matches, route)
+    candidates = _filter_by_route(candidates, route, domain_hint=domain_hint)
+    fts_matches = _filter_by_route(fts_matches, route, domain_hint=domain_hint)
     if not candidates and not fts_matches:
         return SkillSelectionResult(
             skills=[],
@@ -461,7 +523,11 @@ async def resolve_skills_for_turn(
             candidate_count=1,
         )
 
-    catalog = _filter_by_route(_merge_catalog(fts_matches, candidates), route)
+    catalog = _filter_by_route(
+        _merge_catalog(fts_matches, candidates),
+        route,
+        domain_hint=domain_hint,
+    )
     if not catalog:
         return SkillSelectionResult(
             skills=[],
@@ -482,7 +548,9 @@ async def resolve_skills_for_turn(
     )
     raw_preview = raw[:240] if raw else None
     if selected:
-        filtered = _filter_by_route(selected, route)[:max_inject]
+        filtered = _filter_by_route(selected, route, domain_hint=domain_hint)[
+            :max_inject
+        ]
         slugs = ", ".join(skill.slug for skill in filtered)
         return SkillSelectionResult(
             skills=filtered,

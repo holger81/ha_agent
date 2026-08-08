@@ -188,7 +188,7 @@ def is_casual_chat_query(query: str) -> bool:
 
 
 def is_chat_route(route: str | None) -> bool:
-    """Return True for general conversation routes (not email/news/action)."""
+    """Return True for general conversation routes (not action)."""
     return (route or "").lower() in _CHAT_ROUTES
 
 
@@ -394,10 +394,8 @@ def build_tool_context(
 
     if skill_hints.strip():
         context_parts.append(skill_hints.strip())
-
-    if route in {"email", "news"} and skill_hints.strip():
         context_parts.append(
-            "When ACTIVE SKILLS include a workflow for this route, follow that "
+            "When ACTIVE SKILLS include a workflow for this request, follow that "
             "workflow first when it fits the user's goal. Use tool_steps only "
             "when present; otherwise follow the markdown workflow text. If the "
             "skill does not fit, declare SKILL_OVERRIDE: <reason> in your "
@@ -415,7 +413,7 @@ def build_tool_context(
     if follow_up_hint := _follow_up_device_hint(query, prior_turns):
         context_parts.append(follow_up_hint)
 
-    if route == "email" or is_email_query(query):
+    if is_email_query(query) and not skill_hints.strip():
         context_parts.append(
             "EMAIL: follow MCP SERVER INSTRUCTIONS. Discover tools in the email "
             "domain (searchToolsForDomain / searchTool), then callTool with an "
@@ -423,10 +421,9 @@ def build_tool_context(
         )
 
     if (
-        route == "news"
-        or is_news_query(query)
+        is_news_query(query)
         or (is_affirmative(query) and _recent_news_context(prior_turns))
-    ):
+    ) and not skill_hints.strip():
         context_parts.append(
             "NEWS: follow MCP SERVER INSTRUCTIONS. Discover tools in the news "
             "domain (searchToolsForDomain / searchTool), then callTool with an "
@@ -466,14 +463,11 @@ def build_system_message(
     mcp_session_prompt: str = "",
     tool_context: str = "",
     extra_system_prompt: str | None = None,
-    route_playbook: str = "",
     identity_context: str = "",
     memory_context: str = "",
 ) -> str:
     """Assemble the system message for the LLM."""
     parts = [agent_system_prompt.strip(), tool_instructions.strip()]
-    if route_playbook.strip():
-        parts.append(route_playbook.strip())
     if identity_context.strip():
         parts.append(identity_context.strip())
     if memory_context.strip():

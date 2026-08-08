@@ -82,7 +82,6 @@ def test_stick_action_helper_via_agent_module() -> None:
 
     assert stick_action_or_chat(TaskRoute.HA_ACTION) is False
     assert stick_action_or_chat(TaskRoute.CHAT) is True
-    assert stick_action_or_chat(TaskRoute.EMAIL) is True
 
 
 def test_should_retry_after_failed_tools_once() -> None:

@@ -16,7 +16,6 @@ from .api import eval as eval_api
 from .api import hacs as hacs_api
 from .api import identity as identity_api
 from .api import persistent_memory as persistent_memory_api
-from .api import playbooks as playbooks_api
 from .api import recovery_hints as recovery_hints_api
 from .api import route_keywords as route_keywords_api
 from .api import skills as skills_api
@@ -80,12 +79,6 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_skills_directory)
     websocket_api.async_register_command(hass, ws_skills_revisions_list)
     websocket_api.async_register_command(hass, ws_skills_revisions_restore)
-    websocket_api.async_register_command(hass, ws_playbooks_list)
-    websocket_api.async_register_command(hass, ws_playbooks_create)
-    websocket_api.async_register_command(hass, ws_playbooks_update)
-    websocket_api.async_register_command(hass, ws_playbooks_delete)
-    websocket_api.async_register_command(hass, ws_playbooks_set_enabled)
-    websocket_api.async_register_command(hass, ws_playbooks_reset)
     websocket_api.async_register_command(hass, ws_route_keywords_list)
     websocket_api.async_register_command(hass, ws_route_keywords_update)
     websocket_api.async_register_command(hass, ws_route_keywords_set_enabled)
@@ -894,119 +887,6 @@ async def ws_skills_revisions_restore(
         msg["revision_id"],
     )
     connection.send_message(websocket_api.result_message(msg["id"], {"skill": skill}))
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "ha_agent/playbooks/list",
-        **_entry_id_schema(),
-    }
-)
-@websocket_api.async_response
-async def ws_playbooks_list(hass: HomeAssistant, connection, msg: dict) -> None:
-    require_admin(connection)
-    playbooks = await playbooks_api.list_playbooks(hass, msg["entry_id"])
-    connection.send_message(
-        websocket_api.result_message(msg["id"], {"playbooks": playbooks})
-    )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "ha_agent/playbooks/create",
-        vol.Required("entry_id"): str,
-        vol.Required("playbook"): dict,
-    }
-)
-@websocket_api.async_response
-async def ws_playbooks_create(hass: HomeAssistant, connection, msg: dict) -> None:
-    require_admin(connection)
-    playbook = await playbooks_api.create_playbook(
-        hass,
-        msg["entry_id"],
-        msg["playbook"],
-    )
-    connection.send_message(
-        websocket_api.result_message(msg["id"], {"playbook": playbook})
-    )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "ha_agent/playbooks/delete",
-        vol.Required("entry_id"): str,
-        vol.Required("route"): str,
-    }
-)
-@websocket_api.async_response
-async def ws_playbooks_delete(hass: HomeAssistant, connection, msg: dict) -> None:
-    require_admin(connection)
-    await playbooks_api.delete_playbook(hass, msg["entry_id"], msg["route"])
-    connection.send_message(websocket_api.result_message(msg["id"], {"success": True}))
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "ha_agent/playbooks/update",
-        vol.Required("entry_id"): str,
-        vol.Required("route"): str,
-        vol.Required("playbook"): dict,
-    }
-)
-@websocket_api.async_response
-async def ws_playbooks_update(hass: HomeAssistant, connection, msg: dict) -> None:
-    require_admin(connection)
-    playbook = await playbooks_api.update_playbook(
-        hass,
-        msg["entry_id"],
-        msg["route"],
-        msg["playbook"],
-    )
-    connection.send_message(
-        websocket_api.result_message(msg["id"], {"playbook": playbook})
-    )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "ha_agent/playbooks/set_enabled",
-        vol.Required("entry_id"): str,
-        vol.Required("route"): str,
-        vol.Required("enabled"): bool,
-    }
-)
-@websocket_api.async_response
-async def ws_playbooks_set_enabled(hass: HomeAssistant, connection, msg: dict) -> None:
-    require_admin(connection)
-    playbook = await playbooks_api.set_playbook_enabled(
-        hass,
-        msg["entry_id"],
-        msg["route"],
-        enabled=msg["enabled"],
-    )
-    connection.send_message(
-        websocket_api.result_message(msg["id"], {"playbook": playbook})
-    )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "ha_agent/playbooks/reset",
-        vol.Required("entry_id"): str,
-        vol.Required("route"): str,
-    }
-)
-@websocket_api.async_response
-async def ws_playbooks_reset(hass: HomeAssistant, connection, msg: dict) -> None:
-    require_admin(connection)
-    playbook = await playbooks_api.reset_playbook(
-        hass,
-        msg["entry_id"],
-        msg["route"],
-    )
-    connection.send_message(
-        websocket_api.result_message(msg["id"], {"playbook": playbook})
-    )
 
 
 @websocket_api.websocket_command(

@@ -38,7 +38,8 @@ _PREPAS_PROMPT = (
     "Pick route, complexity, optional learned skill slug from the catalog, "
     "and slot_bindings for that skill.\n"
     "Rules:\n"
-    "- route: chat|email|news|action\n"
+    "- route: chat|action (email/news are skills on chat, not routes)\n"
+    '- domain_hint: email|news|"" when the request is clearly mail or news\n'
     "- complexity: simple (no tools), single (one workflow), complex (multi-domain)\n"
     "- skill_slug: empty string when no catalog skill applies\n"
     "- slot_bindings: only keys listed for the chosen skill; use empty strings "
@@ -84,7 +85,11 @@ def _parse_prepass_payload(
     keyword_decision,
     heuristic: Complexity,
 ) -> TurnPrepassResult | None:
-    route_value = str(data.get("route", "")).strip()
+    route_value = str(data.get("route", "")).strip().lower()
+    domain_hint = str(data.get("domain_hint") or "").strip().lower() or None
+    if route_value in {"email", "news"}:
+        domain_hint = domain_hint or route_value
+        route_value = "chat"
     if route_value not in _ROUTE_VALUE_TO_TASK:
         return None
     route = _ROUTE_VALUE_TO_TASK[route_value]
@@ -126,6 +131,9 @@ def _parse_prepass_payload(
     else:
         slot_bindings = {}
 
+    if domain_hint not in {"email", "news"}:
+        domain_hint = getattr(keyword_decision, "domain_hint", None)
+
     return TurnPrepassResult(
         route_resolution=RouteResolution(
             route=route,
@@ -137,6 +145,7 @@ def _parse_prepass_payload(
             ),
             keyword_hint=keyword_decision.summary,
             classifier_raw=json.dumps(data, ensure_ascii=True)[:240],
+            domain_hint=domain_hint,
         ),
         orch_plan=OrchestrationPlan(
             complexity=complexity,
@@ -275,7 +284,7 @@ async def run_turn_prepass(
                     "heuristic_complexity": heuristic.value,
                     "available_routes": [
                         route
-                        for route in ("chat", "email", "news", "action")
+                        for route in ("chat", "action")
                         if route != "action"
                         or (
                             router_config.action_enabled

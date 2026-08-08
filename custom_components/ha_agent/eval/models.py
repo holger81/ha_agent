@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-EVAL_TASKS = ("chat", "action", "email", "news", "classifier", "planner", "verifier")
+EVAL_TASKS = ("chat", "action", "email", "news", "planner", "verifier")
 
 
 @dataclass(slots=True)
@@ -19,7 +19,6 @@ class EvalCase:
     expected_tool: str | None = None
     expected_tool_args: dict[str, Any] | None = None
     expected_text_contains: list[str] = field(default_factory=list)
-    expected_playbook_route: str | None = None
     mock_mcp_responses: list[str] = field(default_factory=list)
     max_iterations: int = 6
     source: str = "builtin"

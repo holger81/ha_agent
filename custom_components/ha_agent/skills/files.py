@@ -11,6 +11,7 @@ from ..const import LOGGER
 from .body import normalize_skill
 from .bundled import (
     apply_bundled_skill,
+    apply_legacy_route_models_to_bundled,
     email_skill_needs_refresh,
     seed_missing_bundled_skills,
 )
@@ -99,6 +100,8 @@ def _import_file(store: SkillStore, path: Path) -> bool:
         preconditions=draft.preconditions,
         parent_id=draft.parent_id,
         route_scope=draft.route_scope,
+        llm_model=draft.llm_model,
+        llm_base_url=draft.llm_base_url,
         slug=slug,
     )
     if skill.slug != slug:
@@ -116,6 +119,37 @@ def sync_skill_files(hass: HomeAssistant, entry_id: str) -> SkillFileSyncResult:
     result = SkillFileSyncResult(directory=str(directory))
     seeded = seed_missing_bundled_skills(store, directory)
     result.imported += seeded
+
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is not None:
+        from ..const import (
+            CONF_EMAIL_LLM_BASE_URL,
+            CONF_EMAIL_LLM_MODEL,
+            CONF_EMAIL_MODEL_ENABLED,
+            CONF_NEWS_LLM_BASE_URL,
+            CONF_NEWS_LLM_MODEL,
+            CONF_NEWS_MODEL_ENABLED,
+        )
+
+        data = {**entry.data, **entry.options}
+        email_model = (
+            str(data.get(CONF_EMAIL_LLM_MODEL) or "").strip()
+            if data.get(CONF_EMAIL_MODEL_ENABLED)
+            else ""
+        )
+        news_model = (
+            str(data.get(CONF_NEWS_LLM_MODEL) or "").strip()
+            if data.get(CONF_NEWS_MODEL_ENABLED)
+            else ""
+        )
+        apply_legacy_route_models_to_bundled(
+            store,
+            directory,
+            email_model=email_model or None,
+            email_base_url=str(data.get(CONF_EMAIL_LLM_BASE_URL) or "") or None,
+            news_model=news_model or None,
+            news_base_url=str(data.get(CONF_NEWS_LLM_BASE_URL) or "") or None,
+        )
 
     for path in sorted(directory.glob("*.md")):
         try:

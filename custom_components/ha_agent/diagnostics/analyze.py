@@ -61,7 +61,7 @@ def analyze_turn_dict(turn: dict[str, Any]) -> dict[str, Any]:
                 "kind": "verifier_fail",
                 "detail": detail,
                 "suggestion": (
-                    "Compare assistant text with tool results and route playbook."
+                    "Compare assistant text with tool results and active skills."
                 ),
             }
         )
