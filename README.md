@@ -1,207 +1,153 @@
 # HA Agent
 
-**HA Agent** is a Home Assistant custom integration that powers the **Assist conversation** stage of your voice pipeline. It connects your assistant to a local LLM and an MCP tool server so Assist can answer questions, control devices, fetch news, check email, and more — with multi-turn memory and optional learned skills.
+**Your Home Assistant Assist agent — local LLM, real tools, lasting skills.**
 
-Replaces the n8n **Webhook Conversation** agent from [ha_liquidai_n8n](https://github.com/holger81/ha_liquidai_n8n). See **[Migration from n8n](docs/migration-from-n8n.md)** if you are switching from the hybrid workflow.
-Pair it with **[LiquidAI](https://github.com/holger81/ha_liquidai)** for speech-to-text and text-to-speech in the same pipeline.
+HA Agent is the conversation brain in your Assist pipeline. Speak or type a request; it plans, calls tools through MCP, and answers — then remembers enough context to handle *“turn them back off”* without starting over.
 
-> **Migrating from n8n?** Follow **[docs/migration-from-n8n.md](docs/migration-from-n8n.md)** for a step-by-step cutover from Webhook Conversation to HA Agent.
+Built for a home that stays private: OpenAI-compatible local models (llama.cpp and friends), your own MCP tool server, optional [LiquidAI](https://github.com/holger81/ha_liquidai) STT/TTS for a fully on-prem voice stack.
 
 ```mermaid
 flowchart LR
-  subgraph assist [Assist pipeline]
-    STT[LiquidAI STT]
-    Agent[HA Agent]
-    TTS[LiquidAI TTS]
-  end
-
-  subgraph backends [Backends]
-    LLM[OpenAI-compatible LLM]
-    MCP[MCP Proxy]
-  end
-
-  You((You)) --> STT --> Agent --> TTS --> You
-  Agent --> LLM
-  Agent --> MCP
+  You((You)) --> STT[STT]
+  STT --> Agent[HA Agent]
+  Agent --> TTS[TTS]
+  TTS --> You
+  Agent --> LLM[Local LLM]
+  Agent --> MCP[MCP Proxy]
   MCP --> HA[Home Assistant]
+  MCP --> Mail[Email / News / …]
 ```
 
 ---
 
-## What it does
+## Why HA Agent
 
-- **Conversation agent** — registers as your Assist conversation provider
-- **Tool loop** — calls MCP tools (lights, covers, news, mail, …) until the task is done
-- **Multi-turn memory** — follow-ups like “turn them back off” reuse prior context
-- **Streaming** — text deltas flow to LiquidAI TTS for responsive voice replies
-- **Learned skills** — optional workflows saved after successful multi-step tasks and reused later
-- **Live tuning** — change chat/action models and skill settings from the HA Agent device page
+| | |
+|--|--|
+| **Device control that sticks** | Routes device commands to an action lane (optional dedicated model) and keeps follow-ups grounded in what it actually controlled. |
+| **More than lights** | Same loop drives MCP domains — mail, news, smart home, and whatever else your proxy exposes. |
+| **Skills that learn** | Successful multi-step workflows can become reusable skills (with optional per-skill models). |
+| **Built for Assist** | Streaming replies for voice, short conversation memory, and a sidebar console for admins. |
+| **Tunable live** | Swap chat/action models, routing, and skill settings from the HA UI — no redeploy for day-to-day changes. |
+
+**Try saying:**
+
+- *“Turn off the dining room lights.”*
+- *“What’s in the news?”*
+- *“Any unread email?”*
+- *“Turn them back off.”* ← follow-up; uses conversation memory
 
 ---
 
 ## Requirements
 
-| Item | Notes |
-|------|--------|
+| | |
+|--|--|
 | Home Assistant | **2025.10+** (conversation streaming) |
-| LLM server | OpenAI-compatible API (e.g. [llama.cpp](https://github.com/ggerganov/llama.cpp)) |
-| MCP Proxy | Tool server with bearer token (Home Assistant, news, email, …) |
-| Speech (optional) | [ha_liquidai](https://github.com/holger81/ha_liquidai) for STT/TTS |
+| LLM | OpenAI-compatible API (e.g. [llama.cpp](https://github.com/ggerganov/llama.cpp)) |
+| Tools | An MCP proxy (or compatible server) with bearer auth — Home Assistant, news, email, … |
+| Voice *(optional)* | [LiquidAI](https://github.com/holger81/ha_liquidai) for STT/TTS |
 
 ---
 
 ## Install with HACS
 
-The easiest way to install is through [HACS](https://hacs.xyz/).
+1. **HACS** → **Integrations** → **⋮** → **Custom repositories**
+2. URL: `https://github.com/holger81/ha_agent` · Category: **Integration** → **Add**
+3. Search **HA Agent** → **Download** → **Restart Home Assistant**
+4. **Settings** → **Devices & services** → **Add integration** → **HA Agent**
 
-### 1. Add the custom repository
+Tip: install [LiquidAI](https://github.com/holger81/ha_liquidai) the same way for voice in / voice out.
 
-1. Open **HACS** → **Integrations**
-2. Click the **⋮** menu (top right) → **Custom repositories**
-3. Paste the repository URL:
-
-   ```
-   https://github.com/holger81/ha_agent
-   ```
-
-4. Category: **Integration** → **Add**
-
-### 2. Download the integration
-
-1. In HACS → **Integrations**, search for **HA Agent**
-2. Open it → **Download**
-3. **Restart Home Assistant**
-
-### 3. Add the integration
-
-1. **Settings** → **Devices & services** → **Add integration**
-2. Search for **HA Agent** and complete the setup wizard (see [First-time setup](#first-time-setup) below)
-
-> **Tip:** Install **[LiquidAI](https://github.com/holger81/ha_liquidai)** the same way if you want voice input and output.
-
----
-
-## Manual install
-
-Copy the integration into your config folder and restart Home Assistant:
+### Manual install
 
 ```bash
 git clone https://github.com/holger81/ha_agent.git
 HA_CONFIG=/path/to/your/homeassistant/config ./ha_agent/scripts/deploy_to_ha.sh
 ```
 
-Or copy `custom_components/ha_agent/` into `<config>/custom_components/` yourself.
+Or copy `custom_components/ha_agent/` into `<config>/custom_components/` and restart.
 
 ---
 
 ## First-time setup
 
-After adding the integration, the config flow walks you through:
+The config flow covers:
 
-| Step | What you configure |
-|------|---------------------|
-| **Agent prompts** | System prompt and short MCP tool reminder |
-| **LLM backend** | Base URL, model, API key (optional), temperature, timeout |
-| **MCP Proxy** | URL, bearer token, health check URL |
-| **Action model** *(optional)* | Smaller/faster model for device commands only |
-| **Agent settings** | Max tool iterations, conversation history, streaming |
+| Step | What you set |
+|------|----------------|
+| **Prompts** | System prompt and short tool reminder |
+| **Chat LLM** | Base URL, model, optional API key, temperature, timeout |
+| **MCP Proxy** | URL, bearer token, health check |
+| **Action model** *(optional)* | Faster/smaller model for device control |
+| **Limits** | Max tool iterations, history length, streaming |
 
-Defaults assume a local stack (e.g. llama.cpp on `:9292`, MCP Proxy on `:2222`). Change everything in the UI — nothing is hardcoded at runtime.
+Defaults assume a local stack (e.g. llama.cpp on `:9292`, MCP on `:2222`). Everything is editable later in the UI.
 
 ---
 
 ## Wire up Assist
 
-### 1. Expose entities
+1. **Expose entities** — **Settings** → **Voice assistants** → **Expose** the devices the agent may control.
+2. **Pipeline** — **Settings** → **Voice assistants** → your assistant → **Configure**:
 
-**Settings** → **Voice assistants** → **Expose** — enable the lights, covers, and other entities you want the agent to control.
+   | Stage | Provider |
+   |-------|----------|
+   | Speech-to-text | LiquidAI STT *(or another STT)* |
+   | Conversation | **HA Agent** |
+   | Text-to-speech | LiquidAI TTS *(or another TTS)* |
 
-### 2. Set the pipeline
-
-**Settings** → **Voice assistants** → your assistant → **Configure**:
-
-| Stage | Provider |
-|-------|----------|
-| Speech-to-text | **LiquidAI STT** |
-| Conversation | **HA Agent** |
-| Text-to-speech | **LiquidAI TTS** |
-
-Remove any old **Webhook Conversation** entry if you are migrating from n8n.
-
-### 3. Talk or type
-
-Use Assist from the dashboard, the companion app, or a voice satellite. Example prompts:
-
-- *“Turn off the dining room lights”*
-- *“What’s the news?”*
-- *“How many unread emails do I have?”*
-- *“Turn them back off”* *(follow-up — uses conversation memory)*
+3. Talk from the dashboard, companion app, or a voice satellite — or use the **HA Agent** sidebar console for text.
 
 ---
 
-## Using the agent day to day
+## Day to day
 
-### Device page
+### Device page & options
 
-Open **Settings** → **Devices & services** → **HA Agent** → your device.
+**Settings** → **Devices & services** → **HA Agent** → device:
 
-**Configuration** (you can change these anytime):
+- Chat / action models and action routing
+- Skill learning, auto-save, auto-use
+- Diagnostics: route (`chat` / `action`), MCP reachability, active skill, tool counts
 
-| Entity | Purpose |
-|--------|---------|
-| Chat model | Main conversational model |
-| Action model | Optional faster model for device actions |
-| Action model routing | Send device commands to the action model |
-| Skill learning | Learn workflows from successful multi-step tasks |
-| Skill auto-save | Save skills without asking |
-| Skill auto-use | Inject matching skills into new requests |
+**Configure** on the integration card for model roles and how many skills inject per turn.
 
-**Diagnostic** sensors show last route (`chat` / `action`), MCP tool count, LLM/MCP reachability, active skill, and skill stats.
+### Skills
 
-### Options flow
+With **Skill learning** on, a successful multi-step turn can become a skill:
 
-**Configure** on the integration card → **Models and routing**, then **Skills** to set how many skills are injected per turn (default 3).
+- Auto-save **off** → agent asks *“Save this as a skill?”*
+- Auto-save **on** → saved in the background
 
-### Learned skills
+Manage by voice (*“list my skills”*, *“disable …”*) or from the console. Automations can call `ha_agent.enable_skill`, `ha_agent.disable_skill`, `ha_agent.delete_skill`, and `ha_agent.list_skills`.
 
-When **Skill learning** is on and a multi-step task succeeds:
+Skills can optionally pin their own LLM model; otherwise they inherit chat (or legacy email/news backends when still configured).
 
-- **Auto-save off** — the agent asks *“Save this as a skill?”*; reply **yes** to store it
-- **Auto-save on** — the skill is saved in the background
+### Console
 
-Manage skills by voice or text:
-
-- *“List my skills”*
-- *“Disable the dining room lights skill”*
-- *“Enable skill …”* / *“Delete skill …”*
-
-Automations can call `ha_agent.enable_skill`, `ha_agent.disable_skill`, `ha_agent.delete_skill`, and `ha_agent.list_skills`.
-
-### Follow-up conversations
-
-The agent keeps short per-conversation history (configurable turn count). Pronouns and phrases like *“them”*, *“again”*, and *“back”* can refer to entities controlled in the previous turn.
-
-### HA Agent Console
-
-Open the **HA Agent** item in the Home Assistant sidebar (admin only) for text chat, skills management, settings, and an activity log — without using Assist voice. See **[Agent Console](docs/agent-console.md)** for the WebSocket API and feature overview.
+Sidebar **HA Agent** (admin): chat, skills, settings, activity. Details: **[Agent Console](docs/agent-console.md)**.
 
 ---
 
-## Architecture (short)
+## How a turn works
 
 ```
-Assist → ha_liquidai STT → HA Agent → ha_liquidai TTS → you
-                              ↓
-                    LLM (:9292/v1) + MCP Proxy (:2222/mcp)
+You → Assist (optional STT) → HA Agent → optional TTS → You
+                                 │
+                    route: action | chat
+                                 │
+              skill match → LLM tool loop → MCP tools
 ```
 
-HA Agent runs an LLM tool loop: the model may call MCP tools several times per turn until it has a final answer. Streaming mode sends text to TTS as it is generated.
+- **action** — device control (optional dedicated model)
+- **chat** — everything else (including email/news via skills)
+
+The model may call several MCP tools per turn. Streaming sends text to TTS as it arrives.
 
 ---
 
-## Verify everything works
-
-From your dev machine (optional):
+## Verify
 
 ```bash
 pip install aiohttp
@@ -209,9 +155,9 @@ export HA_AGENT_MCP_TOKEN="your-bearer-token"   # if required
 python3 scripts/smoke_test_phase4.py
 ```
 
-In Assist, try a device command, a news question, and a follow-up in the same conversation. Enable streaming in agent settings and check that replies appear progressively.
+In Assist: a light command, a news or mail question, then a follow-up in the same conversation. Turn streaming on and confirm progressive replies.
 
-More detail: **[Assist pipeline setup](docs/assist-setup.md)** · **[Agent Console](docs/agent-console.md)** · **[Voice identity plan](docs/agent-voice-inference-plan.md)** · **[Migration from n8n](docs/migration-from-n8n.md)** · **[LiquidAI STT/TTS](https://github.com/holger81/ha_liquidai/blob/main/docs/assist-setup.md)**
+More: **[Assist setup](docs/assist-setup.md)** · **[Agent Console](docs/agent-console.md)** · **[LiquidAI Assist](https://github.com/holger81/ha_liquidai/blob/main/docs/assist-setup.md)**
 
 ---
 
@@ -223,7 +169,7 @@ ruff check custom_components tests
 pytest tests/
 ```
 
-See [PLAN.md](PLAN.md) for the roadmap.
+Roadmap: [PLAN.md](PLAN.md).
 
 ---
 
