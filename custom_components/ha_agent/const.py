@@ -48,6 +48,18 @@ CONF_CLASSIFIER_MODEL_ENABLED = "classifier_model_enabled"
 CONF_CLASSIFIER_LLM_BASE_URL = "classifier_llm_base_url"
 CONF_CLASSIFIER_LLM_MODEL = "classifier_llm_model"
 
+CONF_PLANNER_MODEL_ENABLED = "planner_model_enabled"
+CONF_PLANNER_LLM_BASE_URL = "planner_llm_base_url"
+CONF_PLANNER_LLM_MODEL = "planner_llm_model"
+
+CONF_VERIFIER_MODEL_ENABLED = "verifier_model_enabled"
+CONF_VERIFIER_LLM_BASE_URL = "verifier_llm_base_url"
+CONF_VERIFIER_LLM_MODEL = "verifier_llm_model"
+
+CONF_OBSERVER_MODEL_ENABLED = "observer_model_enabled"
+CONF_OBSERVER_LLM_BASE_URL = "observer_llm_base_url"
+CONF_OBSERVER_LLM_MODEL = "observer_llm_model"
+
 CONF_EMAIL_MODEL_ENABLED = "email_model_enabled"
 CONF_EMAIL_LLM_BASE_URL = "email_llm_base_url"
 CONF_EMAIL_LLM_MODEL = "email_llm_model"

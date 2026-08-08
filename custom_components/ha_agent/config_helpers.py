@@ -40,6 +40,12 @@ from .const import (
     CONF_NEWS_LLM_BASE_URL,
     CONF_NEWS_LLM_MODEL,
     CONF_NEWS_MODEL_ENABLED,
+    CONF_OBSERVER_LLM_BASE_URL,
+    CONF_OBSERVER_LLM_MODEL,
+    CONF_OBSERVER_MODEL_ENABLED,
+    CONF_PLANNER_LLM_BASE_URL,
+    CONF_PLANNER_LLM_MODEL,
+    CONF_PLANNER_MODEL_ENABLED,
     CONF_PREPAS_ENABLED,
     CONF_SKILLS_AUTO_SAVE,
     CONF_SKILLS_LEARNING_ENABLED,
@@ -48,6 +54,9 @@ from .const import (
     CONF_STRUCTURED_OUTPUT_ENABLED,
     CONF_TOOL_INSTRUCTIONS,
     CONF_TURN_TOKEN_BUDGET,
+    CONF_VERIFIER_LLM_BASE_URL,
+    CONF_VERIFIER_LLM_MODEL,
+    CONF_VERIFIER_MODEL_ENABLED,
     DEFAULT_ACTION_LLM_MAX_TOKENS,
     DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -202,25 +211,79 @@ def get_action_backend(entry: ConfigEntry) -> LlmBackend | None:
 
 
 def get_classifier_backend(entry: ConfigEntry) -> LlmBackend | None:
-    """Return a dedicated playbook-classifier backend when configured."""
-    data = entry.data
-    if not data.get(CONF_CLASSIFIER_MODEL_ENABLED):
-        return None
+    """Return a dedicated playbook-classifier / router backend when configured."""
+    return _optional_role_backend(
+        entry,
+        enabled_key=CONF_CLASSIFIER_MODEL_ENABLED,
+        model_key=CONF_CLASSIFIER_LLM_MODEL,
+        base_url_key=CONF_CLASSIFIER_LLM_BASE_URL,
+        max_tokens=DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
+        temperature=DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
+    )
 
-    model = data.get(CONF_CLASSIFIER_LLM_MODEL)
+
+def _optional_role_backend(
+    entry: ConfigEntry,
+    *,
+    enabled_key: str,
+    model_key: str,
+    base_url_key: str,
+    max_tokens: int,
+    temperature: float,
+) -> LlmBackend | None:
+    """Return a dedicated orchestration-role backend when enabled + model set."""
+    data = entry.data
+    if not data.get(enabled_key):
+        return None
+    model = data.get(model_key)
     if not model:
         return None
-
     chat = get_llm_backend(entry)
-    base_url = (data.get(CONF_CLASSIFIER_LLM_BASE_URL) or chat.base_url).rstrip("/")
+    base_url = (data.get(base_url_key) or chat.base_url).rstrip("/")
     return LlmBackend(
         base_url=base_url,
         model=model,
         api_key=chat.api_key,
-        max_tokens=DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
-        temperature=DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
+        max_tokens=max_tokens,
+        temperature=temperature,
         timeout=chat.timeout,
         thinking_level="off",
+    )
+
+
+def get_planner_backend(entry: ConfigEntry) -> LlmBackend | None:
+    """Return a dedicated planner backend when configured."""
+    return _optional_role_backend(
+        entry,
+        enabled_key=CONF_PLANNER_MODEL_ENABLED,
+        model_key=CONF_PLANNER_LLM_MODEL,
+        base_url_key=CONF_PLANNER_LLM_BASE_URL,
+        max_tokens=DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
+        temperature=DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
+    )
+
+
+def get_verifier_backend(entry: ConfigEntry) -> LlmBackend | None:
+    """Return a dedicated verifier backend when configured."""
+    return _optional_role_backend(
+        entry,
+        enabled_key=CONF_VERIFIER_MODEL_ENABLED,
+        model_key=CONF_VERIFIER_LLM_MODEL,
+        base_url_key=CONF_VERIFIER_LLM_BASE_URL,
+        max_tokens=DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
+        temperature=DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
+    )
+
+
+def get_observer_backend(entry: ConfigEntry) -> LlmBackend | None:
+    """Return a dedicated observer backend when configured."""
+    return _optional_role_backend(
+        entry,
+        enabled_key=CONF_OBSERVER_MODEL_ENABLED,
+        model_key=CONF_OBSERVER_LLM_MODEL,
+        base_url_key=CONF_OBSERVER_LLM_BASE_URL,
+        max_tokens=DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
+        temperature=DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
     )
 
 
@@ -289,6 +352,9 @@ def get_router_config(entry: ConfigEntry) -> RouterConfig:
         classifier_backend=get_classifier_backend(entry),
         email_backend=get_email_backend(entry),
         news_backend=get_news_backend(entry),
+        planner_backend=get_planner_backend(entry),
+        verifier_backend=get_verifier_backend(entry),
+        observer_backend=get_observer_backend(entry),
     )
 
 

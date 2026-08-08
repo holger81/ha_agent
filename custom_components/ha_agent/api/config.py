@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from ..const import (
+    CONF_ACTION_LLM_BASE_URL,
     CONF_ACTION_LLM_MODEL,
     CONF_ACTION_MODEL_ENABLED,
     CONF_CLASSIFIER_LLM_BASE_URL,
@@ -37,10 +38,19 @@ from ..const import (
     CONF_NEWS_LLM_BASE_URL,
     CONF_NEWS_LLM_MODEL,
     CONF_NEWS_MODEL_ENABLED,
+    CONF_OBSERVER_LLM_BASE_URL,
+    CONF_OBSERVER_LLM_MODEL,
+    CONF_OBSERVER_MODEL_ENABLED,
+    CONF_PLANNER_LLM_BASE_URL,
+    CONF_PLANNER_LLM_MODEL,
+    CONF_PLANNER_MODEL_ENABLED,
     CONF_SKILLS_AUTO_SAVE,
     CONF_SKILLS_LEARNING_ENABLED,
     CONF_SKILLS_MAX_INJECT,
     CONF_SKILLS_USE_ENABLED,
+    CONF_VERIFIER_LLM_BASE_URL,
+    CONF_VERIFIER_LLM_MODEL,
+    CONF_VERIFIER_MODEL_ENABLED,
 )
 from ..memory import async_load_memory, async_save_memory
 from .helpers import config_snapshot, get_entry
@@ -50,9 +60,19 @@ _CONFIG_KEYS = {
     "thinking_level": CONF_LLM_THINKING_LEVEL,
     "action_model_enabled": CONF_ACTION_MODEL_ENABLED,
     "action_llm_model": CONF_ACTION_LLM_MODEL,
+    "action_llm_base_url": CONF_ACTION_LLM_BASE_URL,
     "classifier_model_enabled": CONF_CLASSIFIER_MODEL_ENABLED,
     "classifier_llm_model": CONF_CLASSIFIER_LLM_MODEL,
     "classifier_llm_base_url": CONF_CLASSIFIER_LLM_BASE_URL,
+    "planner_model_enabled": CONF_PLANNER_MODEL_ENABLED,
+    "planner_llm_model": CONF_PLANNER_LLM_MODEL,
+    "planner_llm_base_url": CONF_PLANNER_LLM_BASE_URL,
+    "verifier_model_enabled": CONF_VERIFIER_MODEL_ENABLED,
+    "verifier_llm_model": CONF_VERIFIER_LLM_MODEL,
+    "verifier_llm_base_url": CONF_VERIFIER_LLM_BASE_URL,
+    "observer_model_enabled": CONF_OBSERVER_MODEL_ENABLED,
+    "observer_llm_model": CONF_OBSERVER_LLM_MODEL,
+    "observer_llm_base_url": CONF_OBSERVER_LLM_BASE_URL,
     "email_model_enabled": CONF_EMAIL_MODEL_ENABLED,
     "email_llm_model": CONF_EMAIL_LLM_MODEL,
     "email_llm_base_url": CONF_EMAIL_LLM_BASE_URL,

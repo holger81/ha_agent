@@ -26,7 +26,7 @@ from ..const import (
     CONF_IDENTITY_VOICE_ENABLED,
     DOMAIN,
 )
-from ..role_registry import ModelRole, build_role_registry
+from ..role_registry import ModelRole, build_role_registry, friendly_role_label
 
 
 def require_admin(connection) -> None:
@@ -75,11 +75,27 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "action_model": (
             router.action_backend.model if router.action_backend else None
         ),
+        "action_llm_base_url": data.get("action_llm_base_url", ""),
         "classifier_model_enabled": router.classifier_backend is not None,
         "classifier_model": (
             router.classifier_backend.model if router.classifier_backend else None
         ),
         "classifier_llm_base_url": data.get("classifier_llm_base_url", ""),
+        "planner_model_enabled": router.planner_backend is not None,
+        "planner_model": (
+            router.planner_backend.model if router.planner_backend else None
+        ),
+        "planner_llm_base_url": data.get("planner_llm_base_url", ""),
+        "verifier_model_enabled": router.verifier_backend is not None,
+        "verifier_model": (
+            router.verifier_backend.model if router.verifier_backend else None
+        ),
+        "verifier_llm_base_url": data.get("verifier_llm_base_url", ""),
+        "observer_model_enabled": router.observer_backend is not None,
+        "observer_model": (
+            router.observer_backend.model if router.observer_backend else None
+        ),
+        "observer_llm_base_url": data.get("observer_llm_base_url", ""),
         "email_model_enabled": router.email_backend is not None,
         "email_model": router.email_backend.model if router.email_backend else None,
         "email_llm_base_url": data.get("email_llm_base_url", ""),
@@ -118,5 +134,8 @@ def config_snapshot(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "identity_auto_name_enabled": bool(
             data.get(CONF_IDENTITY_AUTO_NAME_ENABLED, True)
         ),
-        "role_models": {role.value: role_registry.chip_for(role) for role in ModelRole},
+        "role_models": {
+            friendly_role_label(role): role_registry.chip_for(role)
+            for role in ModelRole
+        },
     }

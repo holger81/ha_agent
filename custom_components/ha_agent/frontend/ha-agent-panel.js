@@ -3105,6 +3105,48 @@ class HaAgentPanel extends HTMLElement {
         word-break: break-word;
         line-height: 1.35;
       }
+      .role-editor {
+        display: grid;
+        gap: 10px;
+        margin: 4px 0 8px;
+      }
+      .role-editor-row {
+        display: grid;
+        gap: 6px;
+        padding: 8px 0;
+        border-bottom: 1px solid color-mix(in srgb, var(--divider-color, #ccc) 45%, transparent);
+      }
+      .role-editor-row:last-child { border-bottom: none; }
+      .role-editor-title {
+        font-weight: 600;
+        font-size: 0.92rem;
+      }
+      .role-editor-fields {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: auto 1fr 1fr;
+        align-items: end;
+      }
+      @media (max-width: 720px) {
+        .role-editor-fields { grid-template-columns: 1fr; }
+      }
+      .role-editor-fields label {
+        display: grid;
+        gap: 4px;
+        font-size: 0.85rem;
+      }
+      .role-editor-fields .role-enable {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding-bottom: 6px;
+        white-space: nowrap;
+      }
+      .settings-section-title {
+        margin: 12px 0 0;
+        font-size: 0.95rem;
+        font-weight: 650;
+      }
       .discover-section {
         gap: 12px;
       }
@@ -4015,9 +4057,46 @@ class HaAgentPanel extends HTMLElement {
     }
   }
 
-  _renderRoleModels(roleModels) {
+  _renderRoleModelRow({
+    title,
+    enabledKey,
+    modelKey,
+    urlKey,
+    enabled,
+    model,
+    baseUrl,
+    inheritHint,
+  }) {
+    return `
+      <div class="role-editor-row">
+        <div class="role-editor-title">${this._escape(title)}</div>
+        <div class="role-editor-fields">
+          <label class="role-enable"><input type="checkbox" data-config-bool="${enabledKey}" ${enabled ? "checked" : ""}/> Dedicated</label>
+          <label>Model<input data-config="${modelKey}" value="${this._escape(model || "")}" placeholder="${this._escape(inheritHint)}" /></label>
+          <label>Base URL<input data-config="${urlKey}" value="${this._escape(baseUrl || "")}" placeholder="defaults to chat base URL" /></label>
+        </div>
+      </div>`;
+  }
+
+  _renderResolvedRoles(roleModels) {
     if (!roleModels || typeof roleModels !== "object") return "";
-    const rows = Object.entries(roleModels)
+    const order = [
+      "router",
+      "planner",
+      "verifier",
+      "observer",
+      "chat",
+      "action",
+      "email",
+      "news",
+    ];
+    const entries = Object.entries(roleModels);
+    entries.sort((a, b) => {
+      const ai = order.indexOf(a[0]);
+      const bi = order.indexOf(b[0]);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+    const rows = entries
       .map(([role, chip]) => {
         if (!chip || !chip.model) return "";
         const host = chip.host ? ` · ${chip.host}` : "";
@@ -4030,7 +4109,9 @@ class HaAgentPanel extends HTMLElement {
       .filter(Boolean)
       .join("");
     if (!rows) return "";
-    return `<table class="role-models-table"><tbody>${rows}</tbody></table>`;
+    return `
+      <p class="hint">Resolved for this entry (empty dedicated fields inherit as shown):</p>
+      <table class="role-models-table"><tbody>${rows}</tbody></table>`;
   }
 
   _renderSettings() {
@@ -4055,17 +4136,88 @@ class HaAgentPanel extends HTMLElement {
               .join("")}
           </select>
         </label>
-        <label><input type="checkbox" data-config-bool="classifier_model_enabled" ${c.classifier_model_enabled ? "checked" : ""}/> Use a dedicated playbook classifier model</label>
-        <label>Classifier model<input data-config="classifier_llm_model" value="${this._escape(c.classifier_model || "")}" placeholder="defaults to chat model" /></label>
-        <label>Classifier base URL<input data-config="classifier_llm_base_url" value="${this._escape(c.classifier_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
-        <p class="hint">Orchestration roles (router, planner, verifier, observer) use the classifier model when set; workers use chat/action/email/news models.</p>
-        ${this._renderRoleModels(c.role_models)}
-        <label><input type="checkbox" data-config-bool="email_model_enabled" ${c.email_model_enabled ? "checked" : ""}/> Use a dedicated email-route model</label>
-        <label>Email model<input data-config="email_llm_model" value="${this._escape(c.email_model || "")}" placeholder="defaults to chat model" /></label>
-        <label>Email base URL<input data-config="email_llm_base_url" value="${this._escape(c.email_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
-        <label><input type="checkbox" data-config-bool="news_model_enabled" ${c.news_model_enabled ? "checked" : ""}/> Use a dedicated news-route model</label>
-        <label>News model<input data-config="news_llm_model" value="${this._escape(c.news_model || "")}" placeholder="defaults to chat model" /></label>
-        <label>News base URL<input data-config="news_llm_base_url" value="${this._escape(c.news_llm_base_url || "")}" placeholder="defaults to chat base URL" /></label>
+
+        <h3 class="settings-section-title">Orchestration roles</h3>
+        <p class="hint">Router classifies/routes. Planner, verifier, and observer inherit from Router when unset; Router inherits from Chat.</p>
+        <div class="role-editor">
+          ${this._renderRoleModelRow({
+            title: "Router",
+            enabledKey: "classifier_model_enabled",
+            modelKey: "classifier_llm_model",
+            urlKey: "classifier_llm_base_url",
+            enabled: c.classifier_model_enabled,
+            model: c.classifier_model,
+            baseUrl: c.classifier_llm_base_url,
+            inheritHint: "defaults to chat model",
+          })}
+          ${this._renderRoleModelRow({
+            title: "Planner",
+            enabledKey: "planner_model_enabled",
+            modelKey: "planner_llm_model",
+            urlKey: "planner_llm_base_url",
+            enabled: c.planner_model_enabled,
+            model: c.planner_model,
+            baseUrl: c.planner_llm_base_url,
+            inheritHint: "defaults to router / chat",
+          })}
+          ${this._renderRoleModelRow({
+            title: "Verifier",
+            enabledKey: "verifier_model_enabled",
+            modelKey: "verifier_llm_model",
+            urlKey: "verifier_llm_base_url",
+            enabled: c.verifier_model_enabled,
+            model: c.verifier_model,
+            baseUrl: c.verifier_llm_base_url,
+            inheritHint: "defaults to router / chat",
+          })}
+          ${this._renderRoleModelRow({
+            title: "Observer",
+            enabledKey: "observer_model_enabled",
+            modelKey: "observer_llm_model",
+            urlKey: "observer_llm_base_url",
+            enabled: c.observer_model_enabled,
+            model: c.observer_model,
+            baseUrl: c.observer_llm_base_url,
+            inheritHint: "defaults to router / chat",
+          })}
+        </div>
+
+        <h3 class="settings-section-title">Route models</h3>
+        <p class="hint">Optional overrides for specific routes. Unset routes use the Chat model.</p>
+        <div class="role-editor">
+          ${this._renderRoleModelRow({
+            title: "Action",
+            enabledKey: "action_model_enabled",
+            modelKey: "action_llm_model",
+            urlKey: "action_llm_base_url",
+            enabled: c.action_model_enabled,
+            model: c.action_model,
+            baseUrl: c.action_llm_base_url,
+            inheritHint: "defaults to chat model",
+          })}
+          ${this._renderRoleModelRow({
+            title: "Email",
+            enabledKey: "email_model_enabled",
+            modelKey: "email_llm_model",
+            urlKey: "email_llm_base_url",
+            enabled: c.email_model_enabled,
+            model: c.email_model,
+            baseUrl: c.email_llm_base_url,
+            inheritHint: "defaults to chat model",
+          })}
+          ${this._renderRoleModelRow({
+            title: "News",
+            enabledKey: "news_model_enabled",
+            modelKey: "news_llm_model",
+            urlKey: "news_llm_base_url",
+            enabled: c.news_model_enabled,
+            model: c.news_model,
+            baseUrl: c.news_llm_base_url,
+            inheritHint: "defaults to chat model",
+          })}
+        </div>
+        ${this._renderResolvedRoles(c.role_models)}
+
         <label><input type="checkbox" data-config-bool="show_reasoning_in_chat" ${c.show_reasoning_in_chat ? "checked" : ""}/> Show model reasoning in chat</label>
         <label><input type="checkbox" data-config-bool="enable_streaming" ${c.enable_streaming ? "checked" : ""}/> Enable streaming</label>
         <label><input type="checkbox" data-config-bool="skills_learning_enabled" ${c.skills_learning_enabled ? "checked" : ""}/> Skill learning</label>

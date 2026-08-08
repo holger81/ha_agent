@@ -63,3 +63,31 @@ def test_collapse_identical_roles() -> None:
     collapsed = role_registry.collapse_identical_roles(registry)
     assert collapsed.backend_for(role_registry.ModelRole.PLANNER) is backend
     assert collapsed.backend_for(role_registry.ModelRole.VERIFIER) is backend
+
+
+def test_friendly_role_labels() -> None:
+    assert (
+        role_registry.friendly_role_label(role_registry.ModelRole.WORKER_CHAT) == "chat"
+    )
+    assert (
+        role_registry.friendly_role_label(role_registry.ModelRole.WORKER_ACTION)
+        == "action"
+    )
+    assert (
+        role_registry.friendly_role_label(role_registry.ModelRole.PLANNER) == "planner"
+    )
+    assert role_registry.friendly_role_label("worker_email") == "email"
+    chip = role_registry.RoleRegistry(
+        chat_backend=config_helpers.LlmBackend(
+            base_url="http://example/v1",
+            model="m",
+            api_key=None,
+            max_tokens=64,
+            temperature=0.0,
+            timeout=10,
+            thinking_level="off",
+        ),
+        roles={},
+    ).chip_for(role_registry.ModelRole.WORKER_NEWS)
+    assert chip["label"] == "news"
+    assert chip["role"] == "worker_news"

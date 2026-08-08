@@ -119,3 +119,62 @@ def test_email_backend_when_enabled():
     assert backend is not None
     assert backend.model == "mail-model"
     assert backend.thinking_level == "off"
+
+
+def test_planner_verifier_observer_flow_into_router_and_registry():
+    """Dedicated orchestration roles load via get_router_config → registry."""
+    # Fresh load of role_registry against current config helpers.
+    for name in ("ha_agent.role_registry", "ha_agent.config_helpers", "ha_agent.const"):
+        sys.modules.pop(name, None)
+    ch = _load_config_helpers()
+    rr = _load_module("role_registry")
+
+    entry = _Entry(
+        {
+            "llm_model": "chat-model",
+            "llm_base_url": "http://chat:9292/v1",
+            "classifier_model_enabled": True,
+            "classifier_llm_model": "router-model",
+            "planner_model_enabled": True,
+            "planner_llm_model": "planner-model",
+            "verifier_model_enabled": True,
+            "verifier_llm_model": "verifier-model",
+            "observer_model_enabled": True,
+            "observer_llm_model": "observer-model",
+        }
+    )
+    router = ch.get_router_config(entry)
+    assert router.planner_backend is not None
+    assert router.planner_backend.model == "planner-model"
+    assert router.verifier_backend is not None
+    assert router.verifier_backend.model == "verifier-model"
+    assert router.observer_backend is not None
+    assert router.observer_backend.model == "observer-model"
+
+    chat = ch.get_llm_backend(entry)
+    registry = rr.build_role_registry(chat, router)
+    assert registry.backend_for(rr.ModelRole.ROUTER).model == "router-model"
+    assert registry.backend_for(rr.ModelRole.PLANNER).model == "planner-model"
+    assert registry.backend_for(rr.ModelRole.VERIFIER).model == "verifier-model"
+    assert registry.backend_for(rr.ModelRole.OBSERVER).model == "observer-model"
+    assert registry.backend_for(rr.ModelRole.WORKER_CHAT).model == "chat-model"
+
+
+def test_orchestration_roles_inherit_classifier_when_unset():
+    ch = _load_config_helpers()
+    rr_mod = sys.modules.get("ha_agent.role_registry")
+    if rr_mod is None:
+        rr_mod = _load_module("role_registry")
+    entry = _Entry(
+        {
+            "llm_model": "chat-model",
+            "classifier_model_enabled": True,
+            "classifier_llm_model": "router-model",
+        }
+    )
+    router = ch.get_router_config(entry)
+    assert router.planner_backend is None
+    registry = rr_mod.build_role_registry(ch.get_llm_backend(entry), router)
+    assert registry.backend_for(rr_mod.ModelRole.PLANNER).model == "router-model"
+    assert registry.backend_for(rr_mod.ModelRole.VERIFIER).model == "router-model"
+    assert registry.backend_for(rr_mod.ModelRole.OBSERVER).model == "router-model"

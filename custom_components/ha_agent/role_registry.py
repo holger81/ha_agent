@@ -23,6 +23,28 @@ class ModelRole(StrEnum):
     WORKER_NEWS = "worker_news"
 
 
+_FRIENDLY_ROLE_LABELS: dict[ModelRole, str] = {
+    ModelRole.ROUTER: "router",
+    ModelRole.PLANNER: "planner",
+    ModelRole.VERIFIER: "verifier",
+    ModelRole.OBSERVER: "observer",
+    ModelRole.WORKER_CHAT: "chat",
+    ModelRole.WORKER_ACTION: "action",
+    ModelRole.WORKER_EMAIL: "email",
+    ModelRole.WORKER_NEWS: "news",
+}
+
+
+def friendly_role_label(role: ModelRole | str) -> str:
+    """Return a user-facing role label (no worker_ prefix)."""
+    if isinstance(role, ModelRole):
+        return _FRIENDLY_ROLE_LABELS.get(role, role.value)
+    try:
+        return _FRIENDLY_ROLE_LABELS.get(ModelRole(role), str(role))
+    except ValueError:
+        return str(role).removeprefix("worker_")
+
+
 ROLE_CAPABILITIES: dict[ModelRole, frozenset[str]] = {
     ModelRole.ROUTER: frozenset({"fast", "classification"}),
     ModelRole.PLANNER: frozenset({"reasoning", "decomposition"}),
@@ -65,7 +87,12 @@ class RoleRegistry:
         """Return model/host chip metadata for UI."""
         backend = self.backend_for(role)
         host = backend.base_url.split("//", 1)[-1].split("/", 1)[0]
-        return {"model": backend.model, "host": host, "role": role.value}
+        return {
+            "model": backend.model,
+            "host": host,
+            "role": role.value,
+            "label": friendly_role_label(role),
+        }
 
 
 def _backend_key(backend: LlmBackend) -> tuple[str, str]:
