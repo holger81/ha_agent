@@ -49,6 +49,7 @@ class LoopState:
     skill_plan_override_reason: str = ""
     empty_responses: int = 0
     failed_tool_answer_retries: int = 0
+    missing_control_retries: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
     include_full_tool_catalog: bool = False
     preferred_tool_names: list[str] = field(default_factory=list)
@@ -1403,12 +1404,17 @@ def build_empty_response_nudge(loop_state: LoopState) -> str:
 
 
 _MAX_FAILED_TOOL_ANSWER_RETRIES = 1
+_MAX_MISSING_CONTROL_RETRIES = 1
 _CONTROL_TOOL_TAIL = re.compile(
     r"(ha_call_service|hassturnon|hassturnoff|hasstoggle)\b",
     re.IGNORECASE,
 )
 _SUCCESS_CLAIM = re.compile(
-    r"\b(successfully|turned on|turned off|completed|all set)\b",
+    r"\b("
+    r"successfully|turned on|turned off|completed|all set|"
+    r"i'?ve turned|i have turned|done\.?"
+    r")\b|"
+    r"\bcontrolled:\s*\w+\.",
     re.IGNORECASE,
 )
 _FAILURE_ADMISSION = re.compile(
@@ -1457,6 +1463,26 @@ def honest_failed_tools_message() -> str:
     )
 
 
+def build_missing_control_nudge(loop_state: LoopState) -> str:
+    """Directive when the model claimed device success without calling a tool."""
+    return (
+        "SYSTEM (internal — not from the user): You claimed a device action "
+        "succeeded but no successful control tool ran this turn. Call the MCP "
+        "control tool now (for example home_assistant__ha_call_service with "
+        "turn_on/turn_off, or HassTurnOn/HassTurnOff). Use Exposed entities / "
+        "prior Controlled entity ids for the target. Do not invent success. "
+        f"{describe_plan_next_action(loop_state)}"
+    )
+
+
+def honest_missing_control_message() -> str:
+    """User-visible fallback when success was claimed with no control tool."""
+    return (
+        "I haven't confirmed that device change with a tool call yet, so I "
+        "can't say it worked. Please try the request again."
+    )
+
+
 def should_retry_after_failed_tools(
     loop_state: LoopState,
     *,
@@ -1480,6 +1506,30 @@ def should_retry_after_failed_tools(
     if loop_state.failed_tool_answer_retries >= _MAX_FAILED_TOOL_ANSWER_RETRIES:
         return False
     loop_state.failed_tool_answer_retries += 1
+    return True
+
+
+def should_retry_missing_control(
+    loop_state: LoopState,
+    *,
+    route: str | None,
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Return True when an action answer claims success without a control tool."""
+    if (route or "").lower() != "action":
+        return False
+    if iteration >= max_iterations - 1:
+        return False
+    if had_successful_control_tool(tool_calls):
+        return False
+    if not claims_action_success(assistant_text):
+        return False
+    if loop_state.missing_control_retries >= _MAX_MISSING_CONTROL_RETRIES:
+        return False
+    loop_state.missing_control_retries += 1
     return True
 
 

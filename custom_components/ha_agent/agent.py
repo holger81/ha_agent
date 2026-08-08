@@ -56,6 +56,7 @@ from .loop_policy import (
     build_empty_response_nudge,
     build_failed_tools_answer_nudge,
     build_mcp_tool_adherence_hint,
+    build_missing_control_nudge,
     build_pending_failure_summary,
     cache_mcp_tools_from_schemas,
     check_stuck,
@@ -63,6 +64,7 @@ from .loop_policy import (
     finalize_output,
     had_successful_control_tool,
     honest_failed_tools_message,
+    honest_missing_control_message,
     initialize_loop_plan,
     inject_loop_context,
     mark_iteration_after_tools,
@@ -83,6 +85,7 @@ from .loop_policy import (
     should_block_reasoning_execution_mismatch,
     should_retry_after_failed_tools,
     should_retry_empty_response,
+    should_retry_missing_control,
     skill_plan_blocks_discovery,
     suspend_skill_plan,
     user_requests_skill_override,
@@ -1820,7 +1823,9 @@ async def run_agent(
     _attach_plan_progress(turn_meta, loop_state, trace)
     yield AgentDelta(meta=turn_meta)
 
+    false_action_success = False
     for iteration in range(agent_config.max_iterations):
+        false_action_success = False
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
         if iteration > 0 and not loop_state.preserve_stream_ui:
@@ -2115,13 +2120,50 @@ async def run_agent(
             use_chat_backend = _stick_action_or_chat(route)
             continue
 
+        if assistant_text and should_retry_missing_control(
+            loop_state,
+            route=str(route),
+            assistant_text=assistant_text,
+            tool_calls=trace.tool_calls,
+            iteration=iteration,
+            max_iterations=agent_config.max_iterations,
+        ):
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            messages.append(
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_missing_control_nudge(loop_state),
+                }
+            )
+            _prepare_next_loop_iteration(loop_state)
+            mark_iteration_preserve_stream(loop_state)
+            use_chat_backend = _stick_action_or_chat(route)
+            continue
+
         if (
+            assistant_text
+            and route == TaskRoute.HA_ACTION
+            and not had_successful_control_tool(trace.tool_calls)
+            and claims_action_success(assistant_text)
+        ):
+            assistant_text = (
+                honest_failed_tools_message()
+                if trace.tool_errors > 0
+                else honest_missing_control_message()
+            )
+            false_action_success = True
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            yield AgentDelta(content=assistant_text)
+        elif (
             assistant_text
             and trace.tool_errors > 0
             and not had_successful_control_tool(trace.tool_calls)
             and claims_action_success(assistant_text)
         ):
             assistant_text = honest_failed_tools_message()
+            false_action_success = True
             if streamed_answer:
                 yield AgentDelta(content_clear=True)
             yield AgentDelta(content=assistant_text)
@@ -2165,8 +2207,10 @@ async def run_agent(
         trace.skill_plan_override = loop_state.skill_plan_override
         trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
         # Tentative outcome; verifier may soft-downgrade to PARTIAL.
-        if failed_ha_verify or (
-            trace.tool_errors and not had_successful_control_tool(trace.tool_calls)
+        if (
+            false_action_success
+            or failed_ha_verify
+            or (trace.tool_errors and not had_successful_control_tool(trace.tool_calls))
         ):
             trace.outcome = TurnOutcome.PARTIAL
         elif trace.tool_errors and not assistant_text:

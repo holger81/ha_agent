@@ -100,6 +100,11 @@ def heuristic_complexity(user_text: str) -> Complexity:
         return Complexity.COMPLEX
     if domains == 1:
         return Complexity.SINGLE
+    # Pronoun follow-ups to prior device control still need tools.
+    if re.search(r"\b(turn|switch|toggle|dim|open|close|lock|unlock)\b", text) and (
+        re.search(r"\b(it|them|those|these|that|back|again|off|on)\b", text)
+    ):
+        return Complexity.SINGLE
     if len(text.split()) <= 6 and not re.search(
         r"\b(mail|email|news|light|turn|open|close|inbox)\b", text
     ):

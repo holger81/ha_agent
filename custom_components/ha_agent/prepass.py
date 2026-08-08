@@ -40,7 +40,9 @@ _PREPAS_PROMPT = (
     "Rules:\n"
     "- route: chat|action (email/news are skills on chat, not routes)\n"
     '- domain_hint: email|news|"" when the request is clearly mail or news\n'
-    "- complexity: simple (no tools), single (one workflow), complex (multi-domain)\n"
+    "- complexity: simple (chat, no tools), single (one workflow with tools), "
+    "complex (multi-domain). Never use simple for action / device control "
+    "(including follow-ups like 'turn it back off').\n"
     "- skill_slug: empty string when no catalog skill applies\n"
     "- slot_bindings: only keys listed for the chosen skill; use empty strings "
     "when unknown\n"
@@ -133,6 +135,11 @@ def _parse_prepass_payload(
 
     if domain_hint not in {"email", "news"}:
         domain_hint = getattr(keyword_decision, "domain_hint", None)
+
+    # Device control always needs tools — never treat action as "simple".
+    if route == TaskRoute.HA_ACTION and complexity == Complexity.SIMPLE:
+        complexity = Complexity.SINGLE
+        reason = (reason + "; ").lstrip("; ") + "action route requires tools"
 
     return TurnPrepassResult(
         route_resolution=RouteResolution(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 _DISCOVERY_MARKERS = (
@@ -14,7 +15,13 @@ _DISCOVERY_MARKERS = (
 
 def _severity(issues: list[dict[str, Any]]) -> str:
     kinds = {issue.get("kind") for issue in issues}
-    if {"tool_error", "fallback", "verifier_fail", "outcome_failed"} & kinds:
+    if {
+        "tool_error",
+        "fallback",
+        "verifier_fail",
+        "outcome_failed",
+        "false_action_success",
+    } & kinds:
         return "error"
     if kinds - {"ok"}:
         return "warning"
@@ -138,6 +145,55 @@ def analyze_turn_dict(turn: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
+    route = str(
+        turn.get("route") or (turn.get("turn_meta") or {}).get("route") or ""
+    ).lower()
+    assistant = str(turn.get("assistant_text") or "")
+    tool_calls = turn.get("tool_calls") or []
+    controlled = turn.get("controlled_entity_ids") or []
+    success_claim = bool(
+        re.search(
+            r"\b(successfully|turned on|turned off|completed|all set|"
+            r"i'?ve turned|i have turned)\b|"
+            r"\bcontrolled:\s*\w+\.",
+            assistant,
+            re.IGNORECASE,
+        )
+    ) and not re.search(
+        r"\b(couldn'?t|could not|unable|failed|error|didn'?t work|not able|"
+        r"haven'?t confirmed)\b",
+        assistant,
+        re.IGNORECASE,
+    )
+    control_ok = False
+    for call in tool_calls:
+        if call.get("succeeded") is False:
+            continue
+        name = str(call.get("toolName") or call.get("name") or "")
+        if re.search(
+            r"(ha_call_service|hassturnon|hassturnoff|hasstoggle)\b",
+            name,
+            re.IGNORECASE,
+        ):
+            control_ok = True
+            break
+    if controlled:
+        control_ok = True
+    if route == "action" and success_claim and not control_ok:
+        issues.append(
+            {
+                "kind": "false_action_success",
+                "detail": (
+                    "Action route claimed device success without a successful "
+                    "control tool call."
+                ),
+                "suggestion": (
+                    "Retry the request; ensure the action model calls "
+                    "ha_call_service / HassTurnOn / HassTurnOff before confirming."
+                ),
+            }
+        )
+
     if not issues:
         issues.append(
             {
@@ -148,7 +204,12 @@ def analyze_turn_dict(turn: dict[str, Any]) -> dict[str, Any]:
         )
 
     timestamp = turn.get("timestamp")
-    if timestamp is not None and not turn.get("fallback") and tool_errors == 0:
+    if (
+        timestamp is not None
+        and not turn.get("fallback")
+        and tool_errors == 0
+        and not any(issue.get("kind") == "false_action_success" for issue in issues)
+    ):
         suggested_actions.append(
             {
                 "action": "promote_eval_case",

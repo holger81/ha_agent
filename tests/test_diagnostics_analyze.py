@@ -71,6 +71,7 @@ def test_analyze_turn_ok_for_clean_success() -> None:
         "tool_errors": 0,
         "outcome": "success",
         "verifier_verdict": "pass",
+        "route": "action",
         "tool_calls": [
             {"toolName": "home_assistant__ha_call_service", "succeeded": True}
         ],
@@ -80,6 +81,30 @@ def test_analyze_turn_ok_for_clean_success() -> None:
     result = analyze_turn_dict(turn)
     assert result["severity"] == "ok"
     assert any(
+        action["action"] == "promote_eval_case"
+        for action in result["suggested_actions"]
+    )
+
+
+def test_analyze_turn_detects_false_action_success() -> None:
+    turn = {
+        "user_text": "turn it back off",
+        "assistant_text": (
+            "OK. I've turned off the dining room lights. "
+            "Controlled: light.dining_room_lights_ceiling."
+        ),
+        "tool_errors": 0,
+        "outcome": "success",
+        "route": "action",
+        "tool_calls": [],
+        "controlled_entity_ids": [],
+        "timestamp": 1710000001.0,
+        "conversation_id": "console-2",
+    }
+    result = analyze_turn_dict(turn)
+    assert result["severity"] == "error"
+    assert any(issue["kind"] == "false_action_success" for issue in result["issues"])
+    assert not any(
         action["action"] == "promote_eval_case"
         for action in result["suggested_actions"]
     )

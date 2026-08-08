@@ -124,10 +124,55 @@ def test_claims_action_success_and_honest_message() -> None:
     assert policy.claims_action_success(
         "The dining room lights have been turned on successfully."
     )
+    assert policy.claims_action_success(
+        "OK. I've turned off the dining room lights. "
+        "Controlled: light.dining_room_lights_ceiling."
+    )
     assert not policy.claims_action_success(
         "I couldn't turn on the lights because the tool failed."
     )
     assert "couldn't complete" in policy.honest_failed_tools_message().lower()
+    assert "haven't confirmed" in policy.honest_missing_control_message().lower()
+
+
+def test_should_retry_missing_control_once() -> None:
+    """Action answers that invent success without tools get one retry."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    claim = "OK. I've turned off the dining room lights."
+    assert (
+        policy.should_retry_missing_control(
+            state,
+            route="action",
+            assistant_text=claim,
+            tool_calls=[],
+            iteration=0,
+            max_iterations=6,
+        )
+        is True
+    )
+    assert (
+        policy.should_retry_missing_control(
+            state,
+            route="action",
+            assistant_text=claim,
+            tool_calls=[],
+            iteration=1,
+            max_iterations=6,
+        )
+        is False
+    )
+    assert (
+        policy.should_retry_missing_control(
+            policy.LoopState(),
+            route="chat",
+            assistant_text=claim,
+            tool_calls=[],
+            iteration=0,
+            max_iterations=6,
+        )
+        is False
+    )
 
 
 def test_had_successful_control_tool() -> None:
