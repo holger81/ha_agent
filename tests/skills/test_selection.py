@@ -223,7 +223,7 @@ async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
         "entry",
         llm,
         MagicMock(),
-        "anything",
+        "check email inbox",
         route="email",
     )
 

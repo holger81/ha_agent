@@ -215,10 +215,14 @@ async def test_run_agent_executes_tool_then_replies() -> None:
         },
     )
     second = llm_client.ChatResult(content="Done.", tool_calls=[])
+    verifier = llm_client.ChatResult(
+        content='{"pass": true, "reason": "ok", "skill_followed": true}',
+        tool_calls=[],
+    )
 
     mock_llm = MagicMock()
     mock_llm.chat = AsyncMock(
-        side_effect=_chat_side_effect_with_route("chat", first, second)
+        side_effect=_chat_side_effect_with_route("chat", first, second, verifier)
     )
 
     mock_mcp = MagicMock()
@@ -287,7 +291,8 @@ async def test_run_agent_executes_tool_then_replies() -> None:
     ]
 
     assert _agent_content(chunks) == ["Done."]
-    assert mock_llm.chat.await_count == 3
+    # route/prepass + tool turn + final answer + gated verifier (HA verify note)
+    assert mock_llm.chat.await_count == 4
     mock_mcp.call_tool.assert_awaited_once()
 
 
