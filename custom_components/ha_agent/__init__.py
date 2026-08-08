@@ -170,6 +170,12 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         data.setdefault(CONF_MAX_LOOP_TOOLS, DEFAULT_MAX_LOOP_TOOLS)
         data.setdefault(CONF_TURN_TOKEN_BUDGET, DEFAULT_TURN_TOKEN_BUDGET)
         data.setdefault(CONF_MAX_REPLANS, DEFAULT_MAX_REPLANS)
+        version = 10
+
+    if version == 10:
+        # Drop hardcoded upstream tool names from shipped/default tool instructions.
+        if _is_legacy_tool_instructions(data.get(CONF_TOOL_INSTRUCTIONS, "")):
+            data[CONF_TOOL_INSTRUCTIONS] = DEFAULT_TOOL_INSTRUCTIONS
         version = CONFIG_ENTRY_VERSION
 
     if version != config_entry.version:

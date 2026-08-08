@@ -24,8 +24,10 @@ _DISCOVERY_MAX_TOOLS = 40
 _FAILED_OUTPUT_PATTERN = re.compile(
     r"(?i)\b("
     r"failed to deserialize|missing field [\w']+|unknown tool|"
+    r"invalid tool(?:\s*name|name)?|"
     r"tool returned an error|invalid (?:argument|parameter)|"
-    r"deserialization error|unexpected token"
+    r"deserialization error|unexpected token|"
+    r"no matching tool|tool not found|pass the exact string from disc"
     r")\b"
 )
 _MISSING_FIELD_PATTERN = re.compile(r"missing field ['\"]?(\w+)", re.IGNORECASE)
@@ -349,10 +351,9 @@ async def execute_tool(
         upstream = tool_name
     if _is_deprecated_upstream_tool(upstream if isinstance(upstream, str) else None):
         return (
-            "Tool error: Unknown tool: 'ha_search_entities' "
-            "(deprecated/unavailable). Use Exposed entities from context, then "
-            "call home_assistant__ha_call_service with domain, service, and "
-            "entity_id. Do not claim success until that call succeeds."
+            "Tool error: Unknown or unavailable tool. Discover tools with "
+            "searchToolsForDomain / searchTool, then callTool with an exact "
+            "toolName from that result. Do not retry this tool name."
         )
 
     try:

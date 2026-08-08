@@ -334,6 +334,15 @@ def test_classify_tool_output_marks_deserialize_failures() -> None:
     assert "mailbox" in output
 
 
+def test_classify_tool_output_marks_invalid_tool_name() -> None:
+    """MCP proxy invalid toolName text is treated as a tool error."""
+    output = tools.classify_tool_output(
+        "Invalid toolName 'light.dining_room': pass the exact string from disc..."
+    )
+    assert output.startswith("Tool error:")
+    assert "light.dining_room" in output
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_blocks_deprecated_ha_search_entities() -> None:
     """ha_search_entities is rejected locally without calling MCP."""
@@ -352,6 +361,6 @@ async def test_execute_tool_blocks_deprecated_ha_search_entities() -> None:
     output = await tools.execute_tool(mcp, call)
 
     assert output.startswith("Tool error:")
-    assert "ha_search_entities" in output
-    assert "ha_call_service" in output
+    assert "Unknown or unavailable" in output
+    assert "searchToolsForDomain" in output
     mcp.call_tool.assert_not_called()

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from homeassistant.core import HomeAssistant, callback
 
 from ..const import DATA_KEY
@@ -10,6 +13,18 @@ from .observer import is_discovery_tool
 
 PENDING_DRAFTS_KEY = "skill_pending_drafts"
 EVAL_PENDING_KEY = "skill_eval_pending"
+
+_FAILURE_ADMISSION = re.compile(
+    r"\b("
+    r"couldn'?t|could not|unable|failed|error|didn'?t work|not able|"
+    r"no matching tool|could not find|verify the device"
+    r")\b",
+    re.IGNORECASE,
+)
+_CONTROL_TOOL_TAIL = re.compile(
+    r"(ha_call_service|hassturnon|hassturnoff|hasstoggle)\b",
+    re.IGNORECASE,
+)
 
 
 @callback
@@ -88,6 +103,28 @@ def _is_content_extraction_turn(trace: TurnTrace) -> bool:
     return len(non_discovery) <= 1 and trace.iterations <= 1
 
 
+def _had_successful_workflow_tool(tool_calls: list[dict[str, Any]]) -> bool:
+    """Return True when at least one non-discovery tool succeeded."""
+    for call in tool_calls:
+        if call.get("succeeded") is False:
+            continue
+        name = str(call.get("toolName") or call.get("name") or "")
+        if name and not is_discovery_tool(name):
+            return True
+    return False
+
+
+def _had_successful_control_tool(tool_calls: list[dict[str, Any]]) -> bool:
+    """Return True when a mutating HA/control tool succeeded."""
+    for call in tool_calls:
+        if call.get("succeeded") is False:
+            continue
+        name = str(call.get("toolName") or call.get("name") or "")
+        if _CONTROL_TOOL_TAIL.search(name):
+            return True
+    return False
+
+
 def should_offer_skill_creation(
     trace: TurnTrace,
     *,
@@ -96,7 +133,13 @@ def should_offer_skill_creation(
 ) -> bool:
     """Return True when a turn passes local heuristics for skill learning."""
     if manual_save:
-        return bool(trace.tool_calls) and not trace.fallback and trace.tool_errors == 0
+        return (
+            bool(trace.tool_calls)
+            and not trace.fallback
+            and trace.tool_errors == 0
+            and _had_successful_workflow_tool(trace.tool_calls)
+            and not _FAILURE_ADMISSION.search(trace.assistant_text or "")
+        )
 
     if not learning_enabled:
         return False
@@ -110,9 +153,18 @@ def should_offer_skill_creation(
         return False
     if not trace.assistant_text.strip():
         return False
+    if _FAILURE_ADMISSION.search(trace.assistant_text):
+        return False
+    if not _had_successful_workflow_tool(trace.tool_calls):
+        return False
 
     route = (trace.route or "").lower()
     if route in {"news", "email"} and _is_content_extraction_turn(trace):
+        return False
+    if route == "action" and not (
+        _had_successful_control_tool(trace.tool_calls) or trace.controlled_entity_ids
+    ):
+        # Discovery-only or invalid toolName turns must not become skills.
         return False
 
     if trace.tool_errors > 0:
@@ -125,6 +177,8 @@ def should_offer_skill_creation(
             trace.tool_errors > 0
             and bool(trace.assistant_text.strip())
             and len(non_discovery) >= 2
+            and _had_successful_workflow_tool(trace.tool_calls)
+            and not _FAILURE_ADMISSION.search(trace.assistant_text)
         )
         if not recovered:
             return False

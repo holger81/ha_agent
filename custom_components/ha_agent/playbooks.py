@@ -65,8 +65,8 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
         "body": (
             "DEVICE PLAYBOOK:\n"
             "1. Prefer an exposed-entity shortcut when one clearly matches.\n"
-            "2. Otherwise discover tools in domain smart-home, then adhere "
-            "strictly to each tool's MCP definition.\n"
+            "2. Otherwise discover tools for the relevant MCP domain, then "
+            "adhere strictly to each tool's MCP definition.\n"
             "3. Read VERIFICATION lines in tool results before telling the user "
             "the action succeeded."
         ),
@@ -77,9 +77,8 @@ DEFAULT_PLAYBOOKS: dict[str, dict[str, str]] = {
         "body": (
             "GENERAL PLAYBOOK:\n"
             "Gather evidence with tools before answering. Cite tool results. "
-            "Exposed entities in context are shortcuts only; discover more in "
-            "domain smart-home when needed. If a tool fails, change strategy "
-            "using RECOVERY HINTS."
+            "Exposed entities in context are shortcuts only; discover MCP tools "
+            "when needed. If a tool fails, change strategy using RECOVERY HINTS."
         ),
     },
 }
@@ -243,16 +242,16 @@ class PlaybookStore:
 
     def list_playbooks(self) -> list[Playbook]:
         """Return built-in playbooks (canonical order) then custom rules."""
-        rows = self._connection().execute(
-            "SELECT * FROM playbooks",
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT * FROM playbooks",
+            )
+            .fetchall()
+        )
         by_route = {row["route"]: _row_to_playbook(row) for row in rows}
         ordered = [by_route[route] for route in PLAYBOOK_ROUTES if route in by_route]
-        extra = [
-            pb
-            for route, pb in by_route.items()
-            if route not in PLAYBOOK_ROUTES
-        ]
+        extra = [pb for route, pb in by_route.items() if route not in PLAYBOOK_ROUTES]
         extra.sort(key=lambda pb: (pb.priority, pb.updated_at))
         return ordered + extra
 
@@ -262,17 +261,25 @@ class PlaybookStore:
 
     def custom_count(self) -> int:
         """Return the number of user-added custom playbook rules."""
-        row = self._connection().execute(
-            "SELECT COUNT(*) AS c FROM playbooks WHERE is_builtin = 0",
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT COUNT(*) AS c FROM playbooks WHERE is_builtin = 0",
+            )
+            .fetchone()
+        )
         return int(row["c"]) if row else 0
 
     def get_playbook(self, route: str) -> Playbook | None:
         """Return one playbook by route key."""
-        row = self._connection().execute(
-            "SELECT * FROM playbooks WHERE route = ?",
-            (route,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT * FROM playbooks WHERE route = ?",
+                (route,),
+            )
+            .fetchone()
+        )
         return _row_to_playbook(row) if row else None
 
     def create_playbook(
@@ -504,9 +511,7 @@ async def async_select_playbook(
     key = playbook_key_for_route(route_value)
     try:
         store = get_playbook_store(hass, entry_id)
-        catalog, custom = await hass.async_add_executor_job(
-            _selection_inputs, store
-        )
+        catalog, custom = await hass.async_add_executor_job(_selection_inputs, store)
     except Exception as err:
         LOGGER.debug("Playbook store unavailable, using default: %s", err)
         body = default_playbook_body(key)

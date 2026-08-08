@@ -3139,6 +3139,24 @@ class HaAgentPanel extends HTMLElement {
         gap: 4px;
         font-size: 0.85rem;
       }
+      .form-grid select,
+      .role-editor-fields select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 28px 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--divider-color, #ccc);
+        background-color: var(--card-background-color, #fff);
+        color: var(--primary-text-color, inherit);
+        appearance: auto;
+        -webkit-appearance: menulist;
+        cursor: pointer;
+      }
+      .form-grid select:disabled,
+      .role-editor-fields select:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
       .role-editor-fields .role-enable {
         display: flex;
         align-items: center;
@@ -4071,18 +4089,27 @@ class HaAgentPanel extends HTMLElement {
     baseUrl,
     inheritHint,
   }) {
+    const dedicated = Boolean(enabled || (model || "").trim());
     return `
       <div class="role-editor-row">
         <div class="role-editor-title">${this._escape(title)}</div>
         <div class="role-editor-fields">
-          <label class="role-enable"><input type="checkbox" data-config-bool="${enabledKey}" ${enabled ? "checked" : ""}/> Dedicated</label>
-          <label>Model${this._renderModelPicker(modelKey, model, { allowEmpty: true, emptyLabel: inheritHint })}</label>
-          <label>Base URL<input data-config="${urlKey}" value="${this._escape(baseUrl || "")}" placeholder="defaults to chat base URL" /></label>
+          <label class="role-enable"><input type="checkbox" data-config-bool="${enabledKey}" data-role-enable="${enabledKey}" ${dedicated ? "checked" : ""}/> Dedicated</label>
+          <label>Model${this._renderModelPicker(modelKey, dedicated ? model : "", {
+            allowEmpty: true,
+            emptyLabel: inheritHint,
+            disabled: !dedicated,
+          })}</label>
+          <label>Base URL<input data-config="${urlKey}" value="${this._escape(baseUrl || "")}" placeholder="defaults to chat base URL" ${dedicated ? "" : "disabled"} /></label>
         </div>
       </div>`;
   }
 
-  _renderModelPicker(configKey, selected, { allowEmpty = false, emptyLabel = "Inherit" } = {}) {
+  _renderModelPicker(
+    configKey,
+    selected,
+    { allowEmpty = false, emptyLabel = "Inherit", disabled = false } = {},
+  ) {
     const models = [...(this._llmModels || [])];
     if (selected && !models.includes(selected)) {
       models.unshift(selected);
@@ -4103,7 +4130,8 @@ class HaAgentPanel extends HTMLElement {
         `<option value="${this._escape(selected || "")}" selected>${this._escape(selected || "No models loaded")}</option>`
       );
     }
-    return `<select data-config="${configKey}">${options.join("")}</select>`;
+    const disabledAttr = disabled ? " disabled" : "";
+    return `<select data-config="${configKey}"${disabledAttr}>${options.join("")}</select>`;
   }
 
   async _loadLlmModels({ force = false } = {}) {
@@ -5744,10 +5772,27 @@ class HaAgentPanel extends HTMLElement {
       void this._loadLlmModels({ force: true });
     });
 
+    this.shadowRoot.querySelectorAll("[data-role-enable]").forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        const row = checkbox.closest(".role-editor-row");
+        if (!row) return;
+        const on = checkbox.checked;
+        row.querySelectorAll("select[data-config], input[data-config]").forEach((el) => {
+          el.disabled = !on;
+          if (!on && el.tagName === "SELECT") {
+            el.value = "";
+          }
+        });
+      });
+    });
+
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {
       const updates = {};
       this.shadowRoot.querySelectorAll("[data-config]").forEach((el) => {
-        updates[el.getAttribute("data-config")] = el.value;
+        // Disabled inherit fields still submit empty/inherit values.
+        updates[el.getAttribute("data-config")] = el.disabled && el.tagName === "SELECT"
+          ? ""
+          : el.value;
       });
       this.shadowRoot.querySelectorAll("[data-config-bool]").forEach((el) => {
         updates[el.getAttribute("data-config-bool")] = el.checked;
@@ -5764,7 +5809,9 @@ class HaAgentPanel extends HTMLElement {
       ];
       for (const [modelKey, enabledKey] of rolePairs) {
         if (!(modelKey in updates)) continue;
-        updates[enabledKey] = Boolean(String(updates[modelKey] || "").trim());
+        const hasModel = Boolean(String(updates[modelKey] || "").trim());
+        // Keep Dedicated checked only when a concrete model is chosen.
+        updates[enabledKey] = hasModel;
       }
       const data = await this._call("ha_agent/config/set", {
         entry_id: this._entryId,

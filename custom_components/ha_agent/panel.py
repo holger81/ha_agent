@@ -20,12 +20,24 @@ PANEL_COMPONENT = "ha-agent-panel"
 
 
 def _integration_version() -> str:
-    manifest_path = Path(__file__).parent / "manifest.json"
+    """Return a cache-busting token for the panel module URL.
+
+    Include the panel JS mtime so local edits invalidate the browser module
+    cache even when manifest.json version is unchanged.
+    """
+    base = Path(__file__).parent
+    manifest_path = base / "manifest.json"
+    panel_js = base / "frontend" / "ha-agent-panel.js"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        return str(manifest.get("version", "1"))
+        version = str(manifest.get("version", "1"))
     except (OSError, json.JSONDecodeError):
-        return "1"
+        version = "1"
+    try:
+        mtime = int(panel_js.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    return f"{version}.{mtime}"
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:

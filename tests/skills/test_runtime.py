@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _ensure_ha_stubs() -> None:
@@ -219,11 +217,14 @@ def test_manual_save_requires_successful_tools() -> None:
         tool_calls=[{"toolName": "a"}, {"toolName": "b"}],
         assistant_text="Done.",
     )
-    assert should_offer_skill_creation(
-        trace,
-        learning_enabled=False,
-        manual_save=True,
-    ) is True
+    assert (
+        should_offer_skill_creation(
+            trace,
+            learning_enabled=False,
+            manual_save=True,
+        )
+        is True
+    )
 
     failed = TurnTrace(
         user_text="save this as a skill",
@@ -232,11 +233,14 @@ def test_manual_save_requires_successful_tools() -> None:
         assistant_text="Done.",
         tool_errors=1,
     )
-    assert should_offer_skill_creation(
-        failed,
-        learning_enabled=False,
-        manual_save=True,
-    ) is False
+    assert (
+        should_offer_skill_creation(
+            failed,
+            learning_enabled=False,
+            manual_save=True,
+        )
+        is False
+    )
 
 
 def test_override_turn_eligible_for_generic_skill_creation() -> None:
@@ -273,3 +277,60 @@ def test_override_turn_requires_successful_workflow_tools() -> None:
         outcome="partial",
     )
     assert override_turn_eligible_for_learning(trace) is False
+
+
+def test_should_not_offer_when_assistant_admits_failure() -> None:
+    """Failed turns must not prompt skill save even with multi-step tools."""
+    trace = TurnTrace(
+        user_text="turn off dining room lights",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {"toolName": "light.dining_room", "succeeded": True},
+            {"toolName": "searchToolsForDomain", "succeeded": True},
+        ],
+        assistant_text=(
+            "I couldn't find a tool to directly control 'dining room lights'."
+        ),
+        iterations=3,
+        outcome="success",
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is False
+
+
+def test_should_not_offer_action_without_control_tool() -> None:
+    """Action route needs a real control tool or controlled entities."""
+    trace = TurnTrace(
+        user_text="turn off dining room lights",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {"toolName": "light.dining_room", "succeeded": True},
+            {"toolName": "searchToolsForDomain", "succeeded": True},
+        ],
+        assistant_text="No matching tool found.",
+        iterations=3,
+        outcome="success",
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is False
+
+
+def test_should_offer_action_with_control_tool() -> None:
+    """Successful HA control turns remain eligible for learning."""
+    trace = TurnTrace(
+        user_text="turn off dining room lights",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {"toolName": "searchToolsForDomain", "succeeded": True},
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "succeeded": True,
+            },
+        ],
+        controlled_entity_ids=["light.dining_room_lights_ceiling"],
+        assistant_text="Done — dining room lights are off.",
+        iterations=2,
+        outcome="success",
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is True

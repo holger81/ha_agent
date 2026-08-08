@@ -1440,10 +1440,10 @@ def build_failed_tools_answer_nudge(loop_state: LoopState) -> str:
     """Directive when the model answered despite failed tools."""
     return (
         "SYSTEM (internal — not from the user): One or more tools failed and no "
-        "successful control/action tool ran. Do NOT claim success. Either call "
-        "the correct tool now (prefer home_assistant__ha_call_service with "
-        "domain, service, and entity_id from Exposed entities), or tell the "
-        "user honestly that the action did not complete. "
+        "successful control/action tool ran. Do NOT claim success. Either "
+        "discover/call the correct MCP tool now (exact toolName from discovery, "
+        "using Exposed entities when they match), or tell the user honestly that "
+        "the action did not complete. "
         f"{describe_plan_next_action(loop_state)}"
     )
 

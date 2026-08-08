@@ -51,6 +51,8 @@ _OBSERVER_PROMPT = (
     "and a clear reusable procedure exists).\n"
     "- Single lookup with no durable workflow.\n"
     "- Failed or empty runs with nothing reusable.\n"
+    "- Assistant admitted failure, invalid/unknown toolName, or no successful "
+    "mutating/control tool for a device-control goal.\n"
     "When subtask_results are present, distill a multi-step orchestration "
     "procedure across domains."
 )
@@ -90,9 +92,7 @@ def build_observer_payload(
                 if isinstance(call.get("arguments"), dict)
                 else {},
                 "succeeded": bool(call.get("succeeded", True)),
-                "discovery": bool(
-                    call.get("discovery") or is_discovery_tool(name)
-                ),
+                "discovery": bool(call.get("discovery") or is_discovery_tool(name)),
                 "error": call.get("error"),
                 "error_kind": call.get("error_kind"),
                 "missing_fields": call.get("missing_fields") or [],
@@ -207,9 +207,7 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
                 str(data["parent_id"]).strip() if data.get("parent_id") else None
             ),
             route_scope=(
-                str(data["route_scope"]).strip()
-                if data.get("route_scope")
-                else None
+                str(data["route_scope"]).strip() if data.get("route_scope") else None
             ),
         ),
         explicit_tool_steps=bool(tool_steps),

@@ -16,8 +16,6 @@ _NEWS_QUERY = re.compile(
     r"\b(news|headlines|briefing|nachrichten|headline)\b",
     re.IGNORECASE,
 )
-_TURN_OFF = re.compile(r"\bturn\b(?:\s+\w+){0,6}\s+off\b", re.IGNORECASE)
-_TURN_ON = re.compile(r"\bturn\b(?:\s+\w+){0,6}\s+on\b", re.IGNORECASE)
 _DEVICE_ACTION = re.compile(
     r"\b("
     r"open|close|toggle|lock|unlock|"
@@ -55,12 +53,14 @@ _CAPABILITY_QUERY = re.compile(
 _EXPOSED_ENTITIES_HEADER = (
     "EXPOSED ENTITIES (Assist shortcuts — not a complete list):\n"
     "These are pre-matched entities for faster routing. The home may have "
-    "many more devices. When no shortcut fits, or the task needs a different "
-    "entity, discover in domain smart-home with searchToolsForDomain, then callTool."
+    "many more devices. When no shortcut fits, discover tools via MCP "
+    "(searchToolsForDomain / searchTool), then callTool with an exact "
+    "toolName from discovery. Never invent tool names."
 )
 _DEVICE_DISCOVERY_FALLBACK = (
-    "Discover in domain smart-home with searchToolsForDomain, then callTool. "
-    "For homeassistant service calls always pass domain, service, and entity_id."
+    "Discover tools with searchToolsForDomain / searchTool for the relevant "
+    "MCP domain, then callTool using an exact toolName and arguments from "
+    "that tool's schema. Never invent tool names."
 )
 
 
@@ -242,66 +242,25 @@ def entity_matches_query(entity: dict[str, Any], query: str) -> bool:
     return any(token in part for token in tokens for part in parts if part)
 
 
-def _service_hint_for_query(query: str) -> str:
-    """Return a homeassistant service hint for common device actions."""
-    if is_camera_action_query(query):
-        return "snapshot"
-    lowered = query.lower()
-    if _TURN_OFF.search(query) or "switch off" in lowered:
-        return "turn_off"
-    if _TURN_ON.search(query) or "switch on" in lowered:
-        return "turn_on"
-    if "toggle" in lowered:
-        return "toggle"
-    if "open" in lowered:
-        return "open_cover"
-    if "close" in lowered:
-        return "close_cover"
-    if "lock" in lowered:
-        return "lock"
-    if "unlock" in lowered:
-        return "unlock"
-    return "turn_on"
+def _format_entity_candidates(entities: list[dict[str, Any]]) -> list[str]:
+    """Return prompt lines for candidate exposed entities (no tool names)."""
+    lines: list[str] = []
+    for entity in entities:
+        entity_id = entity.get("entity_id")
+        if not isinstance(entity_id, str) or not entity_id.strip():
+            continue
+        name = entity.get("name") or entity_id
+        area = entity.get("area_name")
+        detail = f" ({name}"
+        if area:
+            detail += f", area={area}"
+        detail += ")"
+        lines.append(f"- entity_id {entity_id}{detail}")
+    return lines
 
 
-def _ha_service_domain_for_query(query: str) -> str:
-    """Return the homeassistant domain most likely needed for this query."""
-    if is_camera_action_query(query):
-        return "camera"
-    lowered = query.lower()
-    if any(word in lowered for word in ("cover", "blind", "shade", "garage")):
-        return "cover"
-    if "lock" in lowered:
-        return "lock"
-    return "light"
-
-
-def _ha_call_service_example(
-    *,
-    domain: str,
-    service: str,
-    entity_id: str,
-) -> str:
-    payload = {
-        "toolName": "home_assistant__ha_call_service",
-        "arguments": {
-            "domain": domain,
-            "service": service,
-            "entity_id": entity_id,
-        },
-    }
-    return json.dumps(payload, ensure_ascii=True)
-
-
-def _entity_discovery_hint(query: str) -> str:
+def _entity_discovery_hint(_query: str) -> str:
     """Return discovery guidance when no exposed-entity shortcut matches."""
-    if is_camera_action_query(query):
-        return (
-            "Find the camera with home_assistant__ha_search_entities using words "
-            "from the user request (e.g. 'front door camera'), then call "
-            "home_assistant__ha_call_service with domain camera, service snapshot, "
-            "and the matching camera entity_id."
-        )
     return _DEVICE_DISCOVERY_FALLBACK
 
 
@@ -317,7 +276,7 @@ def _device_action_hint(
     *,
     history: list[dict[str, str]] | None = None,
 ) -> str | None:
-    """Return explicit homeassistant call guidance for device actions."""
+    """Return generic device-action guidance (no hardcoded upstream tools)."""
     if not is_device_action_query(query):
         return None
 
@@ -331,55 +290,28 @@ def _device_action_hint(
         ]
         if camera_matches:
             matches = camera_matches
-    service = _service_hint_for_query(query)
-    domain = _ha_service_domain_for_query(query)
-    entity_id = f"{domain}.example"
-    call_example = _ha_call_service_example(
-        domain=domain,
-        service=service,
-        entity_id=entity_id,
-    )
 
     if matches:
         lines = [
-            "DEVICE ACTION: a matching exposed-entity shortcut was found — use it "
-            "directly with home_assistant__ha_call_service. Do NOT call "
-            "home_assistant__ha_search_entities (unavailable on most setups). "
-            "If the shortcut is wrong or insufficient, discover other entities "
-            "in domain smart-home with searchToolsForDomain before calling "
-            "home_assistant__ha_call_service. Always include domain, service, "
-            f"and entity_id in arguments. Derive domain from the entity_id "
-            f"prefix (light.* -> light). Suggested service: {service}. "
-            f"Example: {call_example}",
+            "DEVICE ACTION: matching exposed-entity shortcut(s) below. Prefer "
+            "them with the appropriate MCP tool from discovery / session tools. "
+            "If they are wrong, discover tools instead. Never invent tool names.",
+            *_format_entity_candidates(matches),
         ]
-        for entity in matches:
-            entity_id = entity.get("entity_id")
-            if not entity_id:
-                continue
-            domain = entity_id.split(".", 1)[0]
-            lines.append(
-                f"- Use entity_id {entity_id} with domain {domain} "
-                f"and service {service}"
-            )
         return "\n".join(lines)
 
     if history_ids := _history_entity_ids(prior_turns):
         lines = [
             "DEVICE ACTION: reuse entity_id values from the prior turn in this "
-            f"conversation. Suggested service: {service}.",
+            "conversation with the appropriate MCP tool. Never invent tool names.",
         ]
         for entity_id in history_ids:
-            domain = entity_id.split(".", 1)[0]
-            lines.append(
-                f"- Use entity_id {entity_id} with domain {domain} "
-                f"and service {service}"
-            )
+            lines.append(f"- entity_id {entity_id}")
         return "\n".join(lines)
 
     return (
         "DEVICE ACTION: no exposed-entity shortcut clearly matches. "
-        f"{_entity_discovery_hint(query)} "
-        f"Example: {call_example}"
+        f"{_entity_discovery_hint(query)}"
     )
 
 
@@ -437,12 +369,9 @@ def _follow_up_device_hint(
     lines = [
         "FOLLOW-UP DEVICE ACTION: the user refers to an entity from earlier in "
         "this conversation. Reuse the same entity_id from the prior successful "
-        "device command and only change the service if needed (turn_on vs turn_off). "
-        "Never pass display names as entity_id.",
+        "device command with the appropriate MCP tool. Never invent tool names "
+        "or pass display names as entity_id.",
     ]
-    if is_device_action_query(query):
-        service = _service_hint_for_query(query)
-        lines.append(f"Suggested service for this follow-up: {service}")
     history_text = " ".join(message.get("content", "") for message in history[-6:])
     if entity_ids := _entity_ids_from_text(history_text):
         lines.append(
@@ -488,8 +417,9 @@ def build_tool_context(
 
     if route == "email" or is_email_query(query):
         context_parts.append(
-            "EMAIL: follow MCP SERVER INSTRUCTIONS. Discover in domain email "
-            "with searchToolsForDomain, then callTool. Do not search HA entities."
+            "EMAIL: follow MCP SERVER INSTRUCTIONS. Discover tools in the email "
+            "domain (searchToolsForDomain / searchTool), then callTool with an "
+            "exact toolName from discovery. Never invent tool names."
         )
 
     if (
@@ -498,16 +428,15 @@ def build_tool_context(
         or (is_affirmative(query) and _recent_news_context(prior_turns))
     ):
         context_parts.append(
-            "NEWS: call callTool with toolName mcp_news__news_curate. "
-            "Use that exact toolName (underscores only, no extra server prefix). "
-            "Call it with no arguments ({}) for today's briefing. "
-            "Only use searchToolsForDomain if that call fails."
+            "NEWS: follow MCP SERVER INSTRUCTIONS. Discover tools in the news "
+            "domain (searchToolsForDomain / searchTool), then callTool with an "
+            "exact toolName from discovery. Never invent tool names."
         )
 
     if _CAPABILITY_QUERY.search(query):
         context_parts.append(
             "CAPABILITIES: explain using MCP SERVER INSTRUCTIONS and MCP SESSION "
-            "TOOLS. Mention discovery domains such as email, news, and smart-home."
+            "TOOLS. Describe discovery domains available in those instructions."
         )
 
     return "\n\n".join(context_parts)

@@ -121,17 +121,21 @@ DEFAULT_AGENT_SYSTEM_PROMPT = (
 
 DEFAULT_TOOL_INSTRUCTIONS = (
     "Follow MCP SERVER INSTRUCTIONS and use the provided session tools. "
-    "For homeassistant device actions, call callTool with toolName "
-    "home_assistant__ha_call_service and arguments containing domain, service, "
-    "and entity_id. Exposed entity shortcuts may appear in context; they are "
-    "not exhaustive — discover other entities with searchToolsForDomain in "
-    "domain smart-home when needed."
+    "Discover tools with searchToolsForDomain or searchTool, then callTool "
+    "with an exact toolName and arguments from that tool's schema. "
+    "Never invent tool names. Exposed entity shortcuts may appear in context; "
+    "they are not exhaustive — discover tools when a shortcut does not fit."
 )
 
 # Saved during setup before MCP-compliant defaults; reset on upgrade.
-LEGACY_TOOL_INSTRUCTION_MARKERS = ("mcp_call_tool",)
+LEGACY_TOOL_INSTRUCTION_MARKERS = (
+    "mcp_call_tool",
+    "home_assistant__ha_call_service",
+    "ha_search_entities",
+    "mcp_news__news_curate",
+)
 
-CONFIG_ENTRY_VERSION = 10
+CONFIG_ENTRY_VERSION = 11
 
 SUPPORTED_LANGUAGES = ["en", "en-US"]
 DEFAULT_LANGUAGE = "en-US"

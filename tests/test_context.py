@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load_module(name: str):
@@ -77,21 +75,23 @@ def test_is_casual_chat_query_matches_jokes() -> None:
 
 
 def test_build_tool_context_adds_news_hint() -> None:
-    """News queries get a direct news_curate tool hint."""
+    """News queries get generic MCP discovery guidance."""
     tool_context = context.build_tool_context("What's the news?", [])
-    assert "mcp_news__news_curate" in tool_context
+    assert "searchToolsForDomain" in tool_context
     assert "callTool" in tool_context
+    assert "mcp_news__news_curate" not in tool_context
 
 
 def test_build_tool_context_adds_device_search_hint() -> None:
-    """Device actions without exposed match get search hint."""
+    """Device actions without exposed match get discovery hint."""
     tool_context = context.build_tool_context(
         "open the patio door",
         [{"entity_id": "light.kitchen", "name": "Kitchen"}],
     )
-    assert "smart-home" in tool_context
     assert "searchToolsForDomain" in tool_context
-    assert "ha_call_service" in tool_context
+    assert "Never invent tool names" in tool_context
+    assert "ha_call_service" not in tool_context
+    assert "ha_search_entities" not in tool_context
 
 
 def test_build_tool_context_exposed_entities_are_shortcuts() -> None:
@@ -131,8 +131,8 @@ def test_route_playbook_device_mentions_discovery() -> None:
     assert "MCP definition" in playbook
 
 
-def test_build_tool_context_adds_explicit_service_hint_for_match() -> None:
-    """Matched exposed lights get domain/service/entity_id guidance."""
+def test_build_tool_context_adds_entity_candidates_for_match() -> None:
+    """Matched exposed lights list entity ids without hardcoded tool names."""
     tool_context = context.build_tool_context(
         "turn on the dining room lights",
         [
@@ -144,11 +144,9 @@ def test_build_tool_context_adds_explicit_service_hint_for_match() -> None:
         ],
     )
     assert "light.dining_room_ceiling" in tool_context
-    assert "domain light" in tool_context
-    assert "service turn_on" in tool_context
-    assert "ha_call_service" in tool_context
-    assert "Do NOT call" in tool_context
-    assert "ha_search_entities" in tool_context
+    assert "ha_call_service" not in tool_context
+    assert "ha_search_entities" not in tool_context
+    assert "Never invent tool names" in tool_context
 
 
 def test_entity_matches_query() -> None:
@@ -164,8 +162,9 @@ def test_entity_matches_query() -> None:
 def test_build_tool_context_adds_email_hint() -> None:
     """Email queries reference MCP discovery workflow."""
     tool_context = context.build_tool_context("do I have new emails", [])
-    assert "domain email" in tool_context
+    assert "email" in tool_context.lower()
     assert "searchToolsForDomain" in tool_context
+    assert "Never invent tool names" in tool_context
 
 
 def test_build_tool_context_adds_capability_hint() -> None:
@@ -225,28 +224,24 @@ def test_is_device_action_query_keyword_override() -> None:
 
 def test_is_device_action_query_matches_camera_snapshot() -> None:
     """Camera snapshot requests count as homeassistant service actions."""
-    assert context.is_device_action_query(
-        "take a snapshot from my front door cam"
-    )
-    assert context.is_camera_action_query(
-        "take a snapshot from my front door cam"
-    )
+    assert context.is_device_action_query("take a snapshot from my front door cam")
+    assert context.is_camera_action_query("take a snapshot from my front door cam")
 
 
 def test_build_tool_context_camera_snapshot_suggests_entity_search() -> None:
-    """Camera requests without a shortcut get search_entities + snapshot guidance."""
+    """Camera requests without a shortcut get generic MCP discovery guidance."""
     tool_context = context.build_tool_context(
         "take a snapshot from my front door cam",
         [],
     )
-    assert "ha_search_entities" in tool_context
-    assert "camera" in tool_context
-    assert "snapshot" in tool_context
-    assert "front door" in tool_context.lower()
+    assert "ha_search_entities" not in tool_context
+    assert "searchToolsForDomain" in tool_context
+    assert "ha_call_service" not in tool_context
+    assert "Never invent tool names" in tool_context
 
 
 def test_build_tool_context_camera_match_uses_camera_entity() -> None:
-    """Matched camera shortcuts get camera.snapshot guidance."""
+    """Matched camera shortcuts prefer the camera entity_id."""
     tool_context = context.build_tool_context(
         "take a snapshot from the front door cam",
         [
@@ -263,8 +258,7 @@ def test_build_tool_context_camera_match_uses_camera_entity() -> None:
         ],
     )
     assert "camera.front_door" in tool_context
-    assert "service snapshot" in tool_context
-    assert "domain camera" in tool_context
+    assert "ha_call_service" not in tool_context
 
 
 def test_is_device_action_query_matches_turn_them_back_off() -> None:
@@ -272,8 +266,8 @@ def test_is_device_action_query_matches_turn_them_back_off() -> None:
     assert context.is_device_action_query("turn them back off")
 
 
-def test_build_tool_context_turn_them_back_off_uses_turn_off() -> None:
-    """Follow-up off phrasing suggests turn_off, not turn_on."""
+def test_build_tool_context_turn_them_back_off_reuses_entity() -> None:
+    """Follow-up off phrasing reuses prior entity ids without tool hardcoding."""
     history = [
         {
             "role": "assistant",
@@ -291,7 +285,8 @@ def test_build_tool_context_turn_them_back_off_uses_turn_off() -> None:
         ],
         history=history,
     )
-    assert "service turn_off" in tool_context
+    assert "light.dining_room_ceiling" in tool_context
+    assert "ha_call_service" not in tool_context
 
 
 def test_build_tool_context_follow_up_hint_from_history() -> None:
@@ -340,8 +335,9 @@ def test_build_tool_context_turn_them_back_off_reuses_history_entity() -> None:
         ],
         history=history,
     )
-    assert "service turn_off" in tool_context
     assert "light.dining_room_ceiling" in tool_context
+    assert "ha_call_service" not in tool_context
+    assert "service turn_off" not in tool_context
 
 
 def test_build_messages_skips_duplicate_user() -> None:
