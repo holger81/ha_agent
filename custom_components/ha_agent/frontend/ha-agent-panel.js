@@ -41,6 +41,7 @@ class HaAgentPanel extends HTMLElement {
     this._skillRevisions = [];
     this._skillNotice = null;
     this._skillMergeClusters = null;
+    this._pendingDraftPreviewOpen = true;
     this._skillsDirectory = "";
     this._skillTemplate = "";
     this._routeKeywords = [];
@@ -3059,6 +3060,29 @@ class HaAgentPanel extends HTMLElement {
       .status-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
       .chip { padding: 6px 10px; border-radius: 999px; background: var(--secondary-background-color, #eee); font-size: 0.9em; }
       .banner { padding: 10px; border-radius: 8px; background: #fff4d6; margin-bottom: 12px; }
+      .skill-draft-preview {
+        margin-top: 10px;
+        padding: 10px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--card-background-color, #fff) 88%, #fff4d6);
+        border: 1px solid color-mix(in srgb, var(--divider-color, #ccc) 70%, transparent);
+      }
+      .skill-draft-preview h4 { margin: 0 0 6px; font-size: 1rem; }
+      .skill-draft-preview .draft-meta { margin: 0 0 8px; font-size: 0.88rem; opacity: 0.85; }
+      .skill-draft-preview .draft-body {
+        max-height: 280px;
+        overflow: auto;
+        margin-top: 8px;
+        padding: 8px;
+        border-radius: 6px;
+        background: var(--secondary-background-color, #f5f5f5);
+        font-size: 0.9rem;
+      }
+      .skill-draft-preview .draft-tools,
+      .skill-draft-preview .draft-triggers {
+        margin: 4px 0;
+        font-size: 0.88rem;
+      }
       .form-grid { display: grid; gap: 10px; }
       .form-grid label { display: grid; gap: 4px; }
       .form-grid .hint {
@@ -3326,6 +3350,89 @@ class HaAgentPanel extends HTMLElement {
     return `<div class="md"><p>${this._escape(trimmed)}</p></div>`;
   }
 
+  _renderSkillDraftPreview(draft, opts = {}) {
+    if (!draft) {
+      return `<div class="skill-draft-preview"><p class="hint">No draft content yet — the skill will be distilled when you save.</p></div>`;
+    }
+    const title = draft.title || "Untitled skill";
+    const description = draft.description || "";
+    const triggers = Array.isArray(draft.triggers) ? draft.triggers : [];
+    const tools = (draft.tool_steps || [])
+      .map((step) => step.toolName || step.name || "")
+      .filter(Boolean);
+    const slots = (draft.slots || []).map((s) => s.name).filter(Boolean);
+    const scope = draft.route_scope || "";
+    const body = draft.body || "";
+    const bodyHtml = body
+      ? this._renderAssistantBody(body)
+      : `<p class="hint">No workflow body.</p>`;
+    const notes = [];
+    if (opts.observerReason) {
+      notes.push(`Reason: ${this._escape(opts.observerReason)}`);
+    }
+    if (opts.updateSkillId) {
+      notes.push("Updates an existing skill");
+    }
+    if (scope) {
+      notes.push(`Scope: ${this._escape(scope)}`);
+    }
+    return `
+      <div class="skill-draft-preview">
+        <h4>${this._escape(title)}</h4>
+        ${description ? `<p class="draft-meta">${this._escape(description)}</p>` : ""}
+        ${notes.length ? `<p class="draft-meta">${notes.join(" · ")}</p>` : ""}
+        ${
+          triggers.length
+            ? `<p class="draft-triggers"><strong>Triggers:</strong> ${triggers
+                .map((t) => this._escape(t))
+                .join(", ")}</p>`
+            : ""
+        }
+        ${
+          tools.length
+            ? `<p class="draft-tools"><strong>Tools:</strong> ${tools
+                .map((t) => `<code>${this._escape(t)}</code>`)
+                .join(" ")}</p>`
+            : ""
+        }
+        ${
+          slots.length
+            ? `<p class="draft-tools"><strong>Slots:</strong> ${this._escape(
+                slots.join(", ")
+              )}</p>`
+            : ""
+        }
+        <div class="draft-body">${bodyHtml}</div>
+      </div>`;
+  }
+
+  _renderPendingSkillBanner() {
+    if (!this._pendingDraft) return "";
+    const draft = this._pendingDraft.skill_draft || null;
+    const title = draft?.title || "Pending skill";
+    const description = draft?.description || "from last turn";
+    const open = this._pendingDraftPreviewOpen !== false;
+    const preview = open
+      ? this._renderSkillDraftPreview(draft, {
+          observerReason: this._pendingDraft.observer_reason || "",
+          updateSkillId: this._pendingDraft.update_skill_id || null,
+        })
+      : "";
+    return `
+      <div class="banner">
+        <strong>${this._escape(title)}</strong>
+        <span class="hint"> — ${this._escape(description)}</span>
+        <div class="actions" style="margin-top:8px">
+          <button data-action="confirm-draft" ${this._streaming ? "disabled" : ""}>Save skill</button>
+          <button data-action="dismiss-draft" ${this._streaming ? "disabled" : ""}>Dismiss</button>
+          <button data-action="toggle-draft-preview" ${this._streaming ? "disabled" : ""}>
+            ${open ? "Hide preview" : "Show preview"}
+          </button>
+        </div>
+        ${preview}
+      </div>`;
+  }
+
   _renderChat() {
     const threads = this._threads
       .map((t) => {
@@ -3349,13 +3456,7 @@ class HaAgentPanel extends HTMLElement {
 
     const messageListHtml = this._renderMessageListHtml();
 
-    const draft = this._pendingDraft
-      ? `<div class="banner">Pending skill from last turn.
-         <div class="actions">
-           <button data-action="confirm-draft" ${this._streaming ? "disabled" : ""}>Save skill</button>
-           <button data-action="dismiss-draft" ${this._streaming ? "disabled" : ""}>Dismiss</button>
-         </div></div>`
-      : "";
+    const draft = this._renderPendingSkillBanner();
 
     const skillNotice = this._skillSaveNotice
       ? `<div class="banner skill-notice">${this._escape(this._skillSaveNotice)}</div>`
@@ -3487,22 +3588,13 @@ class HaAgentPanel extends HTMLElement {
         const titles = (cluster.member_titles || [])
           .map((t) => this._escape(t))
           .join(", ");
-        const tools = (cluster.tool_names || [])
-          .map((t) => `<code>${this._escape(t)}</code>`)
-          .join(" ");
-        const draft = cluster.draft || {};
-        const slots = (draft.slots || [])
-          .map((s) => s.name)
-          .join(", ");
         return `
       <div class="skill-editor" style="margin-top:12px">
         <h3>Merge proposal ${index + 1}</h3>
         <p class="hint">${this._escape(cluster.reason || "")}</p>
         <p><strong>Members:</strong> ${titles}</p>
-        <p><strong>Tools:</strong> ${tools || "—"}</p>
-        <p><strong>Proposed title:</strong> ${this._escape(draft.title || "")}</p>
-        <p><strong>Slots:</strong> ${this._escape(slots || "none")}</p>
-        <div class="actions">
+        ${this._renderSkillDraftPreview(cluster.draft || {})}
+        <div class="actions" style="margin-top:8px">
           <button data-action="skill-merge-apply" data-cluster-index="${index}">Merge &amp; archive others</button>
         </div>
       </div>`;
@@ -5259,6 +5351,7 @@ class HaAgentPanel extends HTMLElement {
           conversation_id: this._conversationId,
         });
         this._pendingDraft = null;
+        this._pendingDraftPreviewOpen = true;
         this._skillSaveNotice = `Saved skill: ${data.skill?.title || "Skill"}. Open the Skills tab to review or edit it.`;
         this._skillNotice = this._skillSaveNotice;
         await this._loadSkills();
@@ -5277,10 +5370,16 @@ class HaAgentPanel extends HTMLElement {
           conversation_id: this._conversationId,
         });
         this._pendingDraft = null;
+        this._pendingDraftPreviewOpen = true;
         this._skillSaveNotice = "Pending skill dismissed.";
       } catch (err) {
         this._skillSaveNotice = `Could not dismiss skill: ${err?.message || err}`;
       }
+      this._render();
+    });
+
+    this.shadowRoot.querySelector('[data-action="toggle-draft-preview"]')?.addEventListener("click", () => {
+      this._pendingDraftPreviewOpen = !this._pendingDraftPreviewOpen;
       this._render();
     });
 

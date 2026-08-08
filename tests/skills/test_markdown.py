@@ -56,8 +56,10 @@ def _load_markdown():
 
 markdown_mod, models_mod = _load_markdown()
 Skill = models_mod.Skill
+SkillDraft = models_mod.SkillDraft
 draft_from_markdown = markdown_mod.draft_from_markdown
 skill_to_markdown = markdown_mod.skill_to_markdown
+draft_to_markdown = markdown_mod.draft_to_markdown
 
 SAMPLE = """---
 title: Email Management
@@ -112,3 +114,21 @@ def test_round_trip_skill_markdown() -> None:
     assert draft.title == skill.title
     assert draft.triggers == skill.triggers
     assert "mail_mcp__imap_mailbox_status" in draft.body
+
+
+def test_draft_to_markdown_preview_fields() -> None:
+    draft = SkillDraft(
+        title="News briefing",
+        description="Curate headlines",
+        triggers=["today's news"],
+        body="# News\n\nCall `mcp_news__news_curate`.",
+        tool_steps=[{"toolName": "mcp_news__news_curate", "arguments": {}}],
+        slots=[models_mod.SkillSlot(name="digest_scope", default="")],
+        route_scope="news",
+    )
+    text = draft_to_markdown(draft, include_tool_steps=True)
+    assert "title: News briefing" in text
+    assert "route_scope: news" in text
+    assert "digest_scope" in text
+    assert "mcp_news__news_curate" in text
+    assert "enabled:" not in text.split("---", 2)[1]

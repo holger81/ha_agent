@@ -156,25 +156,54 @@ def draft_from_markdown(
 
 def skill_to_markdown(skill: Skill, *, include_tool_steps: bool = False) -> str:
     """Serialize a skill as a markdown file."""
+    return draft_to_markdown(
+        SkillDraft(
+            title=skill.title,
+            description=skill.description,
+            triggers=list(skill.triggers),
+            body=skill.body,
+            tool_steps=list(skill.tool_steps),
+            slots=list(skill.slots),
+            preconditions=skill.preconditions,
+            parent_id=skill.parent_id,
+            route_scope=skill.route_scope,
+            llm_model=skill.llm_model,
+            llm_base_url=skill.llm_base_url,
+        ),
+        slug=skill.slug or None,
+        enabled=bool(skill.enabled),
+        include_tool_steps=include_tool_steps,
+    )
+
+
+def draft_to_markdown(
+    draft: SkillDraft,
+    *,
+    slug: str | None = None,
+    enabled: bool | None = None,
+    include_tool_steps: bool = False,
+) -> str:
+    """Serialize a skill draft as markdown (for files or preview)."""
     meta: dict[str, Any] = {
-        "title": skill.title,
-        "description": skill.description,
-        "triggers": list(skill.triggers),
-        "enabled": bool(skill.enabled),
+        "title": draft.title,
+        "description": draft.description,
+        "triggers": list(draft.triggers),
     }
-    if skill.slug:
-        meta["slug"] = skill.slug
-    if skill.route_scope:
-        meta["route_scope"] = skill.route_scope
-    if skill.llm_model:
-        meta["llm_model"] = skill.llm_model
-    if skill.llm_base_url:
-        meta["llm_base_url"] = skill.llm_base_url
-    if skill.preconditions:
-        meta["preconditions"] = skill.preconditions
-    if skill.parent_id:
-        meta["parent_id"] = skill.parent_id
-    if skill.slots:
+    if enabled is not None:
+        meta["enabled"] = bool(enabled)
+    if slug:
+        meta["slug"] = slug
+    if draft.route_scope:
+        meta["route_scope"] = draft.route_scope
+    if draft.llm_model:
+        meta["llm_model"] = draft.llm_model
+    if draft.llm_base_url:
+        meta["llm_base_url"] = draft.llm_base_url
+    if draft.preconditions:
+        meta["preconditions"] = draft.preconditions
+    if draft.parent_id:
+        meta["parent_id"] = draft.parent_id
+    if draft.slots:
         meta["slots"] = [
             {
                 "name": slot.name,
@@ -182,11 +211,11 @@ def skill_to_markdown(skill: Skill, *, include_tool_steps: bool = False) -> str:
                 **({"default": slot.default} if slot.default is not None else {}),
                 **({"source": slot.source} if slot.source != "user" else {}),
             }
-            for slot in skill.slots
+            for slot in draft.slots
         ]
-    if include_tool_steps and skill.tool_steps:
-        meta["tool_steps"] = skill.tool_steps
-    return f"---\n{_dump_yaml(meta)}\n---\n\n{skill.body.strip()}\n"
+    if include_tool_steps and draft.tool_steps:
+        meta["tool_steps"] = draft.tool_steps
+    return f"---\n{_dump_yaml(meta)}\n---\n\n{(draft.body or '').strip()}\n"
 
 
 def apply_draft_to_skill(skill: Skill, draft: SkillDraft) -> None:

@@ -189,6 +189,8 @@ def turn_trace_to_dict(
 
 def pending_draft_to_dict(draft: PendingSkillDraft) -> dict[str, Any]:
     """Serialize a pending skill draft awaiting confirmation."""
+    from ..skills.markdown import draft_to_markdown
+
     payload: dict[str, Any] = {
         "entry_id": draft.entry_id,
         "conversation_id": draft.conversation_id,
@@ -196,12 +198,29 @@ def pending_draft_to_dict(draft: PendingSkillDraft) -> dict[str, Any]:
         "history": list(draft.history),
         "observer_reason": draft.observer_reason,
     }
+    if draft.update_skill_id:
+        payload["update_skill_id"] = draft.update_skill_id
     if draft.skill_draft is not None:
+        sd = draft.skill_draft
         payload["skill_draft"] = {
-            "title": draft.skill_draft.title,
-            "description": draft.skill_draft.description,
-            "triggers": list(draft.skill_draft.triggers),
-            "body": draft.skill_draft.body,
-            "tool_steps": list(draft.skill_draft.tool_steps),
+            "title": sd.title,
+            "description": sd.description,
+            "triggers": list(sd.triggers),
+            "body": sd.body,
+            "tool_steps": list(sd.tool_steps),
+            "slots": [
+                {
+                    "name": slot.name,
+                    "description": slot.description,
+                    "source": slot.source,
+                    "default": slot.default,
+                }
+                for slot in sd.slots
+            ],
+            "preconditions": sd.preconditions,
+            "route_scope": sd.route_scope,
+            "llm_model": sd.llm_model,
+            "llm_base_url": sd.llm_base_url,
+            "markdown": draft_to_markdown(sd, include_tool_steps=True),
         }
     return payload
