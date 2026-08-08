@@ -196,9 +196,13 @@ class RecoveryHintStore:
 
     def list_hints(self) -> list[RecoveryHint]:
         """Return built-in hints in canonical order then custom rules."""
-        rows = self._connection().execute(
-            "SELECT * FROM recovery_hints",
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT * FROM recovery_hints",
+            )
+            .fetchall()
+        )
         hints = [_row_to_hint(row) for row in rows]
         hints.sort(key=lambda h: (0 if h.is_builtin else 1, h.priority, h.updated_at))
         return hints
@@ -209,17 +213,25 @@ class RecoveryHintStore:
 
     def custom_count(self) -> int:
         """Return the number of user-added custom hints."""
-        row = self._connection().execute(
-            "SELECT COUNT(*) AS c FROM recovery_hints WHERE is_builtin = 0",
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT COUNT(*) AS c FROM recovery_hints WHERE is_builtin = 0",
+            )
+            .fetchone()
+        )
         return int(row["c"]) if row else 0
 
     def get_hint(self, rule_id: str) -> RecoveryHint | None:
         """Return one hint by id."""
-        row = self._connection().execute(
-            "SELECT * FROM recovery_hints WHERE rule_id = ?",
-            (rule_id,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT * FROM recovery_hints WHERE rule_id = ?",
+                (rule_id,),
+            )
+            .fetchone()
+        )
         return _row_to_hint(row) if row else None
 
     def create_hint(
@@ -360,9 +372,7 @@ def get_recovery_hint_store(
         RECOVERY_HINTS_STORE_KEY, {}
     )
     if entry_id not in stores:
-        store = RecoveryHintStore(
-            RecoveryHintStore.db_path_for_entry(hass, entry_id)
-        )
+        store = RecoveryHintStore(RecoveryHintStore.db_path_for_entry(hass, entry_id))
         store.connect()
         stores[entry_id] = store
     return stores[entry_id]
@@ -371,9 +381,7 @@ def get_recovery_hint_store(
 def close_recovery_hint_store(hass: HomeAssistant, entry_id: str) -> None:
     """Close and remove a recovery-hint store on unload."""
     domain_data = hass.data.get(DATA_KEY, {})
-    stores: dict[str, RecoveryHintStore] = domain_data.get(
-        RECOVERY_HINTS_STORE_KEY, {}
-    )
+    stores: dict[str, RecoveryHintStore] = domain_data.get(RECOVERY_HINTS_STORE_KEY, {})
     store = stores.pop(entry_id, None)
     if store is not None:
         store.close()

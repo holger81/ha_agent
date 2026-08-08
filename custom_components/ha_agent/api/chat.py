@@ -52,9 +52,7 @@ def _chat_turn_timeout_seconds(entry) -> float:
     mcp_timeout = get_mcp_config(entry).timeout
     max_iterations = get_agent_config(entry).max_iterations
     return (
-        mcp_timeout
-        + llm_timeout * max(max_iterations, 1)
-        + CHAT_TURN_TIMEOUT_PADDING
+        mcp_timeout + llm_timeout * max(max_iterations, 1) + CHAT_TURN_TIMEOUT_PADDING
     )
 
 

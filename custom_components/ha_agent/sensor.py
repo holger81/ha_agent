@@ -100,6 +100,7 @@ class _HaAgentDiagnosticSensor(SensorEntity):
             "identifiers": {(DOMAIN, entry.entry_id)},
         }
 
+
 class HaAgentLastRouteSensor(_HaAgentDiagnosticSensor):
     """Show the route used for the last Assist turn."""
 

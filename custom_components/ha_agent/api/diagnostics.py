@@ -26,11 +26,9 @@ async def inject_console_turn(
 ) -> dict[str, Any]:
     """Send a console chat message and wait for completion plus analysis."""
     entry = get_entry(hass, entry_id)
-    conv_id = conversation_id or (
-        f"inject-{int(time.time())}-{uuid.uuid4().hex[:6]}"
-    )
-    wait_timeout = timeout if timeout is not None else (
-        _chat_turn_timeout_seconds(entry) + 30.0
+    conv_id = conversation_id or (f"inject-{int(time.time())}-{uuid.uuid4().hex[:6]}")
+    wait_timeout = (
+        timeout if timeout is not None else (_chat_turn_timeout_seconds(entry) + 30.0)
     )
 
     loop = asyncio.get_running_loop()

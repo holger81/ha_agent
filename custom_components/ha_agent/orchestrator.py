@@ -124,14 +124,10 @@ def _parse_subtasks_payload(
                 id=str(item.get("id") or f"t{index + 1}"),
                 subgoal=str(item.get("subgoal") or user_text),
                 route=str(item.get("route") or fallback_route),
-                depends_on=[
-                    str(d) for d in (item.get("depends_on") or []) if d
-                ],
+                depends_on=[str(d) for d in (item.get("depends_on") or []) if d],
             )
         )
-    return subtasks or [
-        SubtaskSpec(id="t1", subgoal=user_text, route=fallback_route)
-    ]
+    return subtasks or [SubtaskSpec(id="t1", subgoal=user_text, route=fallback_route)]
 
 
 async def triage_complexity(
@@ -241,9 +237,7 @@ async def plan_subtasks(
         LOGGER.warning("Planner LLM failed: %s", err)
         record_llm_call(trace, role="planner", backend=backend, error=str(err))
         fallback_route = plan.routes[0] if plan.routes else "chat"
-        plan.subtasks = [
-            SubtaskSpec(id="t1", subgoal=user_text, route=fallback_route)
-        ]
+        plan.subtasks = [SubtaskSpec(id="t1", subgoal=user_text, route=fallback_route)]
         return plan
 
     fallback_route = plan.routes[0] if plan.routes else "chat"

@@ -57,8 +57,7 @@ async def get_eval_status(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
     discover_state = get_discover_state(hass, entry_id)
     eval_state = get_eval_state(hass, entry_id)
     discover_active = bool(
-        discover_state
-        and discover_state.run.status in {"running", "awaiting_approval"}
+        discover_state and discover_state.run.status in {"running", "awaiting_approval"}
     )
     eval_active = bool(eval_state and eval_state.run.status == "running")
 
@@ -67,14 +66,10 @@ async def get_eval_status(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
     return {
         "running": discover_active or eval_active,
         "pipeline": (
-            "discover"
-            if discover_active
-            else ("eval" if eval_active else None)
+            "discover" if discover_active else ("eval" if eval_active else None)
         ),
         "discover": discover_status_dict(discover_state),
-        "run": eval_run_to_dict(eval_state)
-        if eval_active and eval_state
-        else latest,
+        "run": eval_run_to_dict(eval_state) if eval_active and eval_state else latest,
     }
 
 
@@ -148,9 +143,11 @@ async def apply_eval_recommendations(
 ) -> dict[str, Any]:
     """Apply recommended model assignments to the config entry."""
     store = get_eval_store(hass, entry_id)
-    run = await hass.async_add_executor_job(
-        store.get_run, run_id
-    ) if run_id else await hass.async_add_executor_job(store.latest_run)
+    run = (
+        await hass.async_add_executor_job(store.get_run, run_id)
+        if run_id
+        else await hass.async_add_executor_job(store.latest_run)
+    )
     if not run:
         raise HomeAssistantError("No eval run with recommendations found.")
     recommendation = run.get("settings_recommendation") or {}
@@ -204,9 +201,11 @@ async def apply_server_settings(
 ) -> dict[str, Any]:
     """Apply recommended llama.cpp server settings with probe verification."""
     store = get_eval_store(hass, entry_id)
-    run = await hass.async_add_executor_job(
-        store.get_run, run_id
-    ) if run_id else await hass.async_add_executor_job(store.latest_run)
+    run = (
+        await hass.async_add_executor_job(store.get_run, run_id)
+        if run_id
+        else await hass.async_add_executor_job(store.latest_run)
+    )
     if not run:
         raise HomeAssistantError("No eval run with settings recommendations found.")
     recommendation = run.get("settings_recommendation") or {}
@@ -346,9 +345,7 @@ async def preload_eval_models(
         after = await probe_server(session, backend)
     loaded = [item for item in results if item.get("ok")]
     failed = [
-        item
-        for item in results
-        if not item.get("ok") and not item.get("skipped")
+        item for item in results if not item.get("ok") and not item.get("skipped")
     ]
     return {
         "results": results,
@@ -366,9 +363,11 @@ async def export_server_preset(
 ) -> dict[str, Any]:
     """Return a llama.cpp preset INI snippet from the latest eval run."""
     store = get_eval_store(hass, entry_id)
-    run = await hass.async_add_executor_job(
-        store.get_run, run_id
-    ) if run_id else await hass.async_add_executor_job(store.latest_run)
+    run = (
+        await hass.async_add_executor_job(store.get_run, run_id)
+        if run_id
+        else await hass.async_add_executor_job(store.latest_run)
+    )
     if not run:
         raise HomeAssistantError("No eval run found.")
     recommendation = run.get("settings_recommendation") or {}

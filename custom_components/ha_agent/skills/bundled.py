@@ -89,9 +89,7 @@ def email_skill_needs_refresh(skill: Skill) -> bool:
         for step in skill.tool_steps
     }
     return (
-        route == "email"
-        and slug in BUNDLED_SKILL_FILES
-        and not expected <= step_names
+        route == "email" and slug in BUNDLED_SKILL_FILES and not expected <= step_names
     )
 
 

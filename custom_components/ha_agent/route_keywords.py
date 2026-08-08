@@ -172,22 +172,26 @@ class RouteKeywordStore:
 
     def list_route_keywords(self) -> list[RouteKeywords]:
         """Return built-in route keyword rows in canonical order."""
-        rows = self._connection().execute(
-            "SELECT * FROM route_keywords",
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT * FROM route_keywords",
+            )
+            .fetchall()
+        )
         by_route = {row["route"]: _row_to_route_keywords(row) for row in rows}
-        return [
-            by_route[route]
-            for route in ROUTE_KEYWORD_ROUTES
-            if route in by_route
-        ]
+        return [by_route[route] for route in ROUTE_KEYWORD_ROUTES if route in by_route]
 
     def get_route_keywords(self, route: str) -> RouteKeywords | None:
         """Return one route's keyword row."""
-        row = self._connection().execute(
-            "SELECT * FROM route_keywords WHERE route = ?",
-            (route,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT * FROM route_keywords WHERE route = ?",
+                (route,),
+            )
+            .fetchone()
+        )
         return _row_to_route_keywords(row) if row else None
 
     def update_route_keywords(
@@ -282,9 +286,7 @@ def get_route_keyword_store(
         ROUTE_KEYWORDS_STORE_KEY, {}
     )
     if entry_id not in stores:
-        store = RouteKeywordStore(
-            RouteKeywordStore.db_path_for_entry(hass, entry_id)
-        )
+        store = RouteKeywordStore(RouteKeywordStore.db_path_for_entry(hass, entry_id))
         store.connect()
         stores[entry_id] = store
     return stores[entry_id]
@@ -293,9 +295,7 @@ def get_route_keyword_store(
 def close_route_keyword_store(hass: HomeAssistant, entry_id: str) -> None:
     """Close and remove a route keyword store on unload."""
     domain_data = hass.data.get(DATA_KEY, {})
-    stores: dict[str, RouteKeywordStore] = domain_data.get(
-        ROUTE_KEYWORDS_STORE_KEY, {}
-    )
+    stores: dict[str, RouteKeywordStore] = domain_data.get(ROUTE_KEYWORDS_STORE_KEY, {})
     store = stores.pop(entry_id, None)
     if store is not None:
         store.close()

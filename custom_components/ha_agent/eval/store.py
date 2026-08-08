@@ -170,18 +170,26 @@ class EvalStore:
         conn.commit()
 
     def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        rows = self._connection().execute(
-            "SELECT id, entry_id, status, started_at, finished_at, error "
-            "FROM eval_runs ORDER BY started_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT id, entry_id, status, started_at, finished_at, error "
+                "FROM eval_runs ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            )
+            .fetchall()
+        )
         return [dict(row) for row in rows]
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        row = self._connection().execute(
-            "SELECT * FROM eval_runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT * FROM eval_runs WHERE id = ?",
+                (run_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         return {
@@ -200,24 +208,36 @@ class EvalStore:
         }
 
     def latest_run(self) -> dict[str, Any] | None:
-        row = self._connection().execute(
-            "SELECT id FROM eval_runs ORDER BY started_at DESC LIMIT 1",
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT id FROM eval_runs ORDER BY started_at DESC LIMIT 1",
+            )
+            .fetchone()
+        )
         return self.get_run(row["id"]) if row else None
 
     def model_benchmark_history(self, model_id: str) -> list[dict[str, Any]]:
-        rows = self._connection().execute(
-            "SELECT task, case_id, score, passed, latency_ms, run_id, run_at "
-            "FROM model_benchmarks WHERE model_id = ? ORDER BY run_at DESC",
-            (model_id,),
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT task, case_id, score, passed, latency_ms, run_id, run_at "
+                "FROM model_benchmarks WHERE model_id = ? ORDER BY run_at DESC",
+                (model_id,),
+            )
+            .fetchall()
+        )
         return [dict(row) for row in rows]
 
     def has_benchmarked_model(self, model_id: str) -> bool:
-        row = self._connection().execute(
-            "SELECT 1 FROM model_benchmarks WHERE model_id = ? LIMIT 1",
-            (model_id,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT 1 FROM model_benchmarks WHERE model_id = ? LIMIT 1",
+                (model_id,),
+            )
+            .fetchone()
+        )
         return row is not None
 
     def record_model_download(
@@ -280,11 +300,15 @@ class EvalStore:
 
     def should_skip_download(self, model_id: str) -> bool:
         """Return True when a model was already downloaded and benchmarked."""
-        row = self._connection().execute(
-            "SELECT status, deleted_at, eval_score FROM model_downloads "
-            "WHERE model_id = ?",
-            (model_id,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT status, deleted_at, eval_score FROM model_downloads "
+                "WHERE model_id = ?",
+                (model_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return False
         if row["deleted_at"] is not None:
@@ -295,10 +319,13 @@ class EvalStore:
         """Return promoted eval cases newest-first."""
         from .case_serde import eval_case_from_dict
 
-        rows = self._connection().execute(
-            "SELECT case_json FROM custom_eval_cases "
-            "ORDER BY promoted_at DESC",
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT case_json FROM custom_eval_cases ORDER BY promoted_at DESC",
+            )
+            .fetchall()
+        )
         cases: list[EvalCase] = []
         for row in rows:
             payload = _json_loads(row["case_json"], {})
@@ -343,10 +370,14 @@ class EvalStore:
     def get_custom_case(self, case_id: str) -> EvalCase | None:
         from .case_serde import eval_case_from_dict
 
-        row = self._connection().execute(
-            "SELECT case_json FROM custom_eval_cases WHERE id = ?",
-            (case_id,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT case_json FROM custom_eval_cases WHERE id = ?",
+                (case_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         payload = _json_loads(row["case_json"], {})

@@ -117,9 +117,7 @@ def _llm_schema(
 ) -> vol.Schema:
     defaults = defaults or {}
     model_field: selector.SelectSelector | type[str] = (
-        _model_selector(defaults, model_options)
-        if model_options is not None
-        else str
+        _model_selector(defaults, model_options) if model_options is not None else str
     )
     return vol.Schema(
         {

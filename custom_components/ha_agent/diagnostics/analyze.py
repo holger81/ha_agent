@@ -123,8 +123,7 @@ def analyze_turn_dict(turn: dict[str, Any]) -> dict[str, Any]:
                     + ", ".join(discovery_calls)
                 ),
                 "suggestion": (
-                    "Ensure the skill lists concrete tool_steps and blocks "
-                    "discovery."
+                    "Ensure the skill lists concrete tool_steps and blocks discovery."
                 ),
             }
         )

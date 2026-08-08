@@ -33,9 +33,7 @@ def compact_messages_if_needed(
         return False
 
     tool_indexes = [
-        index
-        for index, message in enumerate(messages)
-        if message.get("role") == "tool"
+        index for index, message in enumerate(messages) if message.get("role") == "tool"
     ]
     if len(tool_indexes) <= keep_recent_tool_results:
         return False

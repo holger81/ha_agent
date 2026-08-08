@@ -142,8 +142,7 @@ def _resolve_task(trace: TurnTrace, *, task_override: str | None = None) -> str:
         task = task_override.strip().lower()
         if task not in EVAL_TASKS:
             raise HomeAssistantError(
-                f"Unsupported eval task {task!r}. "
-                f"Use one of: {', '.join(EVAL_TASKS)}."
+                f"Unsupported eval task {task!r}. Use one of: {', '.join(EVAL_TASKS)}."
             )
         return task
     route = (trace.route or "").strip().lower()

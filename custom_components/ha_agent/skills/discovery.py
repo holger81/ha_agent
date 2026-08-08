@@ -65,6 +65,4 @@ def build_skill_hints(
     slot_bindings: dict[str, str] | None = None,
 ) -> str:
     """Format matched skills for injection into tool context."""
-    return format_skills_for_context(
-        skills, route=route, slot_bindings=slot_bindings
-    )
+    return format_skills_for_context(skills, route=route, slot_bindings=slot_bindings)

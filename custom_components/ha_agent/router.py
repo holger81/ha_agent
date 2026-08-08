@@ -180,9 +180,7 @@ async def select_route_with_llm(
         },
     ]
     response_format = (
-        json_schema_format("route", ROUTE_SCHEMA)
-        if structured_output_enabled
-        else None
+        json_schema_format("route", ROUTE_SCHEMA) if structured_output_enabled else None
     )
     try:
         result = await llm.chat(
@@ -239,8 +237,7 @@ async def resolve_route_with_classifier(
                 route=keyword_decision.route,
                 method="keyword_fallback",
                 classifier_summary=(
-                    f"LLM wanted action (disabled) → "
-                    f"{keyword_decision.route.value}"
+                    f"LLM wanted action (disabled) → {keyword_decision.route.value}"
                 ),
                 classifier_detail=(
                     "Classifier returned action but action routing is disabled; "
@@ -301,11 +298,7 @@ def classify_route_with_detail(
     if (
         router_config.action_enabled
         and router_config.action_backend
-        and (
-            match := route_keyword_match(
-                user_text, "action", overrides.get("action")
-            )
-        )
+        and (match := route_keyword_match(user_text, "action", overrides.get("action")))
     ):
         return RouteDecision(TaskRoute.HA_ACTION, "keyword", match)
 
@@ -374,11 +367,7 @@ def backend_for_route(
     prefer_action: bool = True,
 ) -> LlmBackend:
     """Return the LLM backend for the active route."""
-    if (
-        prefer_action
-        and route == TaskRoute.HA_ACTION
-        and router_config.action_backend
-    ):
+    if prefer_action and route == TaskRoute.HA_ACTION and router_config.action_backend:
         return router_config.action_backend
     if route == TaskRoute.EMAIL and router_config.email_backend:
         return router_config.email_backend

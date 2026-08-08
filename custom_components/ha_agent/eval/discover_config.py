@@ -30,9 +30,7 @@ class DiscoverConfig:
 def get_discover_config(entry: ConfigEntry) -> DiscoverConfig:
     data = entry.data
     models_dir = str(data.get(CONF_EVAL_MODELS_DIR, "") or "").strip() or None
-    webhook = (
-        str(data.get(CONF_EVAL_DOWNLOAD_WEBHOOK_URL, "") or "").strip() or None
-    )
+    webhook = str(data.get(CONF_EVAL_DOWNLOAD_WEBHOOK_URL, "") or "").strip() or None
     return DiscoverConfig(
         models_dir=models_dir,
         download_webhook_url=webhook,

@@ -72,9 +72,7 @@ def _coerce_slots(raw: Any) -> list[SkillSlot]:
                 description=str(item.get("description", "")),
                 source=str(item.get("source", "user")),
                 default=(
-                    str(item["default"])
-                    if item.get("default") is not None
-                    else None
+                    str(item["default"]) if item.get("default") is not None else None
                 ),
             )
         )
@@ -140,15 +138,9 @@ def draft_from_markdown(
         tool_steps=_coerce_tool_steps(meta.get("tool_steps", [])),
         slots=_coerce_slots(meta.get("slots")),
         preconditions=str(meta.get("preconditions", "") or ""),
-        parent_id=(
-            str(meta["parent_id"]).strip()
-            if meta.get("parent_id")
-            else None
-        ),
+        parent_id=(str(meta["parent_id"]).strip() if meta.get("parent_id") else None),
         route_scope=(
-            str(meta["route_scope"]).strip()
-            if meta.get("route_scope")
-            else None
+            str(meta["route_scope"]).strip() if meta.get("route_scope") else None
         ),
     )
     draft = normalize_skill_draft(draft, explicit_tool_steps=explicit_tool_steps)

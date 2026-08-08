@@ -187,18 +187,14 @@ def proposal_from_model_id(
     if not hf_repo and ":" in model_id:
         hf_repo, stem = model_id.rsplit(":", 1)
         if not hf_filename:
-            hf_filename = (
-                stem if stem.lower().endswith(".gguf") else f"{stem}.gguf"
-            )
+            hf_filename = stem if stem.lower().endswith(".gguf") else f"{stem}.gguf"
     elif not hf_repo:
         hf_repo = model_id
     if not hf_filename and hf_repo:
         hf_filename = ""
     return ModelProposal(
         model_id=model_id,
-        source_url=str(
-            source.get("source_url") or f"https://huggingface.co/{hf_repo}"
-        ),
+        source_url=str(source.get("source_url") or f"https://huggingface.co/{hf_repo}"),
         reason=str(source.get("reason") or "Retry discover trial."),
         expected_benefit=str(source.get("expected_benefit") or ""),
         hf_repo=hf_repo,
@@ -360,7 +356,9 @@ async def propose_models_from_web(
         proposals.append(
             ModelProposal(
                 model_id=model_id,
-                source_url=str(item.get("source_url") or f"https://huggingface.co/{hf_repo}"),
+                source_url=str(
+                    item.get("source_url") or f"https://huggingface.co/{hf_repo}"
+                ),
                 reason=str(item.get("reason") or "Recommended by discovery agent."),
                 expected_benefit=str(item.get("expected_benefit") or ""),
                 hf_repo=hf_repo,

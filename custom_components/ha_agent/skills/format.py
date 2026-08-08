@@ -48,8 +48,7 @@ def format_skills_for_context(
         )
     else:
         header = (
-            "ACTIVE SKILLS (follow these workflows when applicable; "
-            f"{_ADAPT_GUIDANCE})"
+            f"ACTIVE SKILLS (follow these workflows when applicable; {_ADAPT_GUIDANCE})"
         )
 
     lines = [header]
@@ -80,4 +79,3 @@ def format_skills_for_context(
                 "  Follow the workflow steps above; call the named tools in order."
             )
     return "\n".join(lines)
-

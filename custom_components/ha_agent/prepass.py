@@ -325,19 +325,15 @@ async def run_turn_prepass(
     if parsed is None:
         return None
 
-    if (
-        parsed.route_resolution.route == TaskRoute.HA_ACTION
-        and not (
-            router_config.action_enabled and router_config.action_backend
-        )
+    if parsed.route_resolution.route == TaskRoute.HA_ACTION and not (
+        router_config.action_enabled and router_config.action_backend
     ):
         return TurnPrepassResult(
             route_resolution=RouteResolution(
                 route=keyword_decision.route,
                 method="keyword_fallback",
                 classifier_summary=(
-                    f"prepass wanted action (disabled) → "
-                    f"{keyword_decision.route.value}"
+                    f"prepass wanted action (disabled) → {keyword_decision.route.value}"
                 ),
                 classifier_detail=(
                     "Prepass returned action but action routing is disabled."

@@ -140,11 +140,7 @@ async def run_eval_suite(
     store = get_eval_store(hass, entry_id)
     state_store = _state_store(hass)
     existing = state_store.get(entry_id)
-    if (
-        existing
-        and existing.run.status == "running"
-        and existing.run.id != "pending"
-    ):
+    if existing and existing.run.status == "running" and existing.run.id != "pending":
         raise RuntimeError("An eval run is already in progress for this entry.")
 
     run = store.create_run(entry_id)
@@ -279,8 +275,7 @@ async def run_eval_suite(
                 run,
                 phase="benchmark",
                 message=(
-                    f"Benchmarking {model_total} model(s) across "
-                    f"{total_cases} case(s)…"
+                    f"Benchmarking {model_total} model(s) across {total_cases} case(s)…"
                 ),
                 case_total=total_cases,
                 model_total=model_total,
@@ -405,9 +400,13 @@ async def run_eval_suite(
                         continue
                     latency_ms = (time.perf_counter() - started) * 1000
                     turns, _total = list_turns(hass, entry_id, limit=1)
-                    trace = _trace_from_activity(turns[0]) if turns else TurnTrace(
-                        user_text=case.user_text,
-                        history_len=0,
+                    trace = (
+                        _trace_from_activity(turns[0])
+                        if turns
+                        else TurnTrace(
+                            user_text=case.user_text,
+                            history_len=0,
+                        )
                     )
                     run.case_scores.append(
                         score_case(
@@ -454,8 +453,7 @@ async def run_eval_suite(
                 run,
                 phase="completed",
                 message=(
-                    f"Eval finished — {passed}/{len(run.case_scores)} "
-                    "case(s) passed."
+                    f"Eval finished — {passed}/{len(run.case_scores)} case(s) passed."
                 ),
                 completed_cases=len(run.case_scores),
             )
@@ -563,8 +561,7 @@ async def benchmark_single_model(
 
             mcp = EvalMcpClient(
                 session_prompt=(
-                    "MCP SERVER INSTRUCTIONS:\n"
-                    "Use callTool with exact toolName values."
+                    "MCP SERVER INSTRUCTIONS:\nUse callTool with exact toolName values."
                 ),
                 responses=list(case.mock_mcp_responses),
             )
@@ -601,9 +598,13 @@ async def benchmark_single_model(
                 continue
             latency_ms = (time.perf_counter() - started) * 1000
             turns, _total = list_turns(hass, entry_id, limit=1)
-            trace = _trace_from_activity(turns[0]) if turns else TurnTrace(
-                user_text=case.user_text,
-                history_len=0,
+            trace = (
+                _trace_from_activity(turns[0])
+                if turns
+                else TurnTrace(
+                    user_text=case.user_text,
+                    history_len=0,
+                )
             )
             case_scores.append(
                 score_case(

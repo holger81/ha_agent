@@ -12,9 +12,7 @@ def friendly_mcp_http_error(
     """Map MCP HTTP failures to Assist-friendly messages."""
     detail = body.strip()[:200]
     if status in {401, 403}:
-        return (
-            "MCP authentication failed. Check the bearer token in HA Agent settings."
-        )
+        return "MCP authentication failed. Check the bearer token in HA Agent settings."
     if status == 404:
         return (
             f"MCP endpoint not found for {method}. "
@@ -34,9 +32,7 @@ def friendly_mcp_json_error(message: str) -> str:
     """Map MCP JSON-RPC errors to Assist-friendly messages."""
     lowered = message.lower()
     if "not authenticated" in lowered or "unauthorized" in lowered:
-        return (
-            "MCP authentication failed. Check the bearer token in HA Agent settings."
-        )
+        return "MCP authentication failed. Check the bearer token in HA Agent settings."
     if "timeout" in lowered or "timed out" in lowered:
         return "MCP Proxy timed out. Try again or increase the MCP timeout."
     return f"MCP error: {message}"

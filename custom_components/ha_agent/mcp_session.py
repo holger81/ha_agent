@@ -37,9 +37,7 @@ FALLBACK_MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "callTool",
-        "description": (
-            "Execute an upstream MCP tool using toolName from discovery."
-        ),
+        "description": ("Execute an upstream MCP tool using toolName from discovery."),
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -195,9 +195,7 @@ class ServerCapabilities:
             "server_root": self.server_root,
             "models": list(self.models),
             "loaded_models": list(self.loaded_models),
-            "model_details": [
-                model_info_to_dict(item) for item in self.model_details
-            ],
+            "model_details": [model_info_to_dict(item) for item in self.model_details],
             "router_role": self.router_role,
             "max_instances": self.max_instances,
             "models_autoload": self.models_autoload,
@@ -455,9 +453,7 @@ class LlmServerProbe:
             return
         caps.health = ServerHealth(
             status=str(
-                data.get("status")
-                or data.get("error", {}).get("message")
-                or "unknown"
+                data.get("status") or data.get("error", {}).get("message") or "unknown"
             ),
             slots_idle=_optional_int(data.get("slots_idle")),
             slots_processing=_optional_int(data.get("slots_processing")),
@@ -864,10 +860,7 @@ async def model_available_on_server(
 
 def router_supports_hf_download(capabilities: ServerCapabilities) -> bool:
     """Return True when the server can download HF models via router HTTP API."""
-    return (
-        capabilities.router_role == "router"
-        and capabilities.models_download_via_api
-    )
+    return capabilities.router_role == "router" and capabilities.models_download_via_api
 
 
 def _catalog_status_ready(status: str) -> bool:
@@ -899,10 +892,7 @@ def _sse_model_event_outcome(
 ) -> dict[str, Any] | None:
     """Parse one models/sse event for download or load waits."""
     target = str(
-        data.get("model")
-        or data.get("model_id")
-        or data.get("id")
-        or model_id
+        data.get("model") or data.get("model_id") or data.get("id") or model_id
     )
     if target not in {model_id, "*"}:
         return None

@@ -91,9 +91,10 @@ def discover_status_dict(state: DiscoverRunState | None) -> dict[str, Any]:
 def _pending_approval(state: DiscoverRunState) -> str | None:
     if state.run.status != "awaiting_approval":
         return None
-    if not state.download_approval_ready and state.run.progress.get(
-        "phase"
-    ) == "awaiting_download_approval":
+    if (
+        not state.download_approval_ready
+        and state.run.progress.get("phase") == "awaiting_download_approval"
+    ):
         return "download"
     if not state.trial_approval_ready and state.pending_trial_model_id:
         return "trial"
@@ -106,8 +107,7 @@ def _pipeline_busy(hass: HomeAssistant, entry_id: str) -> bool:
         return True
     discover_state = get_discover_state(hass, entry_id)
     return bool(
-        discover_state
-        and discover_state.run.status in {"running", "awaiting_approval"}
+        discover_state and discover_state.run.status in {"running", "awaiting_approval"}
     )
 
 
@@ -297,8 +297,7 @@ async def _ensure_model_available(
             else:
                 wait_seconds = data.get("wait_seconds")
                 message = (
-                    f"Downloading {_model_id} on llama.cpp "
-                    f"({wait_seconds or 0}s)…"
+                    f"Downloading {_model_id} on llama.cpp ({wait_seconds or 0}s)…"
                 )
             _set_progress(
                 state,
@@ -427,8 +426,7 @@ async def _ensure_model_available(
         state,
         phase="waiting_for_model",
         message=(
-            f"Download {model_id} on the llama host, then wait — "
-            f"{hints['hf_url']}"
+            f"Download {model_id} on the llama host, then wait — {hints['hf_url']}"
         ),
         model_id=model_id,
         current=index,
@@ -496,8 +494,8 @@ async def run_discover_pipeline(
     max_count = max_models if max_models is not None else config.max_models
     models_dir = (models_dir_override or config.models_dir or "").strip() or None
     webhook_url = (
-        (download_webhook_override or config.download_webhook_url or "").strip() or None
-    )
+        download_webhook_override or config.download_webhook_url or ""
+    ).strip() or None
 
     state_store = _state_store(hass)
     run = DiscoverRun(
@@ -674,8 +672,7 @@ async def run_discover_pipeline(
                     else:
                         wait_seconds = data.get("wait_seconds")
                         message = (
-                            f"Loading {_model_id} on llama.cpp "
-                            f"({wait_seconds or 0}s)…"
+                            f"Loading {_model_id} on llama.cpp ({wait_seconds or 0}s)…"
                         )
                     _set_progress(
                         state,
@@ -938,9 +935,7 @@ async def run_discover_retry(
             )
             _check_cancel(state)
             run.trial_results = [
-                item
-                for item in run.trial_results
-                if item.get("model_id") != model_id
+                item for item in run.trial_results if item.get("model_id") != model_id
             ]
             if not ready:
                 run.trial_results.append(

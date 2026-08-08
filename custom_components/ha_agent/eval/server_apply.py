@@ -47,9 +47,7 @@ def verify_settings_applied(
         before_val = probe_setting_value(before, setting)
         after_val = probe_setting_value(after, setting)
         verified = (
-            expected is not None
-            and after_val is not None
-            and after_val == expected
+            expected is not None and after_val is not None and after_val == expected
         )
         checks.append(
             {
