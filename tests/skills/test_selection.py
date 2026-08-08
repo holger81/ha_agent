@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _load(name: str):
@@ -46,15 +44,15 @@ def _load(name: str):
         sys.modules["homeassistant.core"] = ha_core
 
     deps = {
-    "skills.selection": [
-        "const",
-        "config_helpers",
-        "llm_client",
-        "skills.discovery",
-        "skills.models",
-        "skills.store",
-        "context",
-    ],
+        "skills.selection": [
+            "const",
+            "config_helpers",
+            "llm_client",
+            "skills.discovery",
+            "skills.models",
+            "skills.store",
+            "context",
+        ],
         "skills.discovery": ["skills.models", "skills.store", "skills.format"],
         "skills.store": ["skills.models", "const"],
         "skills.models": [],
@@ -310,6 +308,31 @@ def test_skill_matches_route_rejects_email_on_news() -> None:
     )
 
     assert selection.skill_matches_route(email_skill, "news") is False
+    assert selection.skill_matches_route(email_skill, "email") is True
+
+
+def test_skill_matches_route_rejects_email_tools_on_action() -> None:
+    """Email tool_steps must not match the action route even without keywords."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    email_skill = Skill(
+        id="2",
+        slug="mark-them-as-read",
+        title="mark them as read",
+        description="Workflow distilled from a successful override turn",
+        triggers=["mark them as read"],
+        body="",
+        tool_steps=[
+            {
+                "toolName": "mail_mcp__imap_search_messages",
+                "arguments": {"mailbox": "INBOX"},
+            }
+        ],
+    )
+
+    assert selection.skill_matches_route(email_skill, "action") is False
     assert selection.skill_matches_route(email_skill, "email") is True
 
 

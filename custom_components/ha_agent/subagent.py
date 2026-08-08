@@ -77,6 +77,7 @@ async def run_worker(
             user_text=subgoal,
             skill=primary_skill,
             route=route_value,
+            exposed_entities=exposed_entities,
         )
 
     yield (

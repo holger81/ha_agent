@@ -48,6 +48,7 @@ class LoopState:
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
     empty_responses: int = 0
+    failed_tool_answer_retries: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
     include_full_tool_catalog: bool = False
     preferred_tool_names: list[str] = field(default_factory=list)
@@ -1398,6 +1399,86 @@ def build_empty_response_nudge(loop_state: LoopState) -> str:
         "answer to the user in plain text now. Do not send an empty message "
         f"again. {describe_plan_next_action(loop_state)}"
     )
+
+
+_MAX_FAILED_TOOL_ANSWER_RETRIES = 1
+_CONTROL_TOOL_TAIL = re.compile(
+    r"(ha_call_service|hassturnon|hassturnoff|hasstoggle)\b",
+    re.IGNORECASE,
+)
+_SUCCESS_CLAIM = re.compile(
+    r"\b(successfully|turned on|turned off|completed|all set)\b",
+    re.IGNORECASE,
+)
+_FAILURE_ADMISSION = re.compile(
+    r"\b(couldn'?t|could not|unable|failed|error|didn'?t work|not able)\b",
+    re.IGNORECASE,
+)
+_TOOL_CRITICAL_ROUTES = frozenset({"action", "email", "news"})
+
+
+def had_successful_control_tool(tool_calls: list[dict[str, Any]]) -> bool:
+    """Return True when a mutating HA/control tool succeeded this turn."""
+    for call in tool_calls:
+        if not call.get("succeeded"):
+            continue
+        name = str(call.get("toolName") or call.get("name") or "")
+        if _CONTROL_TOOL_TAIL.search(name):
+            return True
+    return False
+
+
+def claims_action_success(text: str) -> bool:
+    """Return True when assistant text claims an action succeeded."""
+    cleaned = (text or "").strip()
+    if not cleaned or _FAILURE_ADMISSION.search(cleaned):
+        return False
+    return bool(_SUCCESS_CLAIM.search(cleaned))
+
+
+def build_failed_tools_answer_nudge(loop_state: LoopState) -> str:
+    """Directive when the model answered despite failed tools."""
+    return (
+        "SYSTEM (internal — not from the user): One or more tools failed and no "
+        "successful control/action tool ran. Do NOT claim success. Either call "
+        "the correct tool now (prefer home_assistant__ha_call_service with "
+        "domain, service, and entity_id from Exposed entities), or tell the "
+        "user honestly that the action did not complete. "
+        f"{describe_plan_next_action(loop_state)}"
+    )
+
+
+def honest_failed_tools_message() -> str:
+    """User-visible fallback when tools failed but the model claimed success."""
+    return (
+        "I couldn't complete that — a required tool call failed before the "
+        "action finished. Please try again."
+    )
+
+
+def should_retry_after_failed_tools(
+    loop_state: LoopState,
+    *,
+    tool_errors: int,
+    tool_calls: list[dict[str, Any]],
+    route: str | None,
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Return True when a final answer should be blocked after tool failures."""
+    if tool_errors <= 0:
+        return False
+    if iteration >= max_iterations - 1:
+        return False
+    route_key = (route or "").lower()
+    if route_key not in _TOOL_CRITICAL_ROUTES:
+        return False
+    if had_successful_control_tool(tool_calls):
+        return False
+    if loop_state.failed_tool_answer_retries >= _MAX_FAILED_TOOL_ANSWER_RETRIES:
+        return False
+    loop_state.failed_tool_answer_retries += 1
+    return True
 
 
 def should_retry_empty_response(

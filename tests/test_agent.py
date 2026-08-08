@@ -431,8 +431,8 @@ async def test_run_agent_streams_chunks_as_they_arrive() -> None:
 async def test_run_agent_executes_embedded_stream_tool_call() -> None:
     """Embedded tool markup in a stream is executed, not shown to the user."""
     tool_markup = (
-        '<|tool_call|>call:home_assistant__ha_search_entities'
-        '{query:<|"|>camera snapshot<|"|>}<tool_call|>'
+        '<|tool_call|>call:home_assistant__ha_get_state'
+        '{entity_id:<|"|>camera.front_door<|"|>}<tool_call|>'
     )
     stream_texts = iter([tool_markup, "Found the camera."])
 
@@ -442,7 +442,7 @@ async def test_run_agent_executes_embedded_stream_tool_call() -> None:
     )
 
     mock_mcp = MagicMock()
-    mock_mcp.call_tool = AsyncMock(return_value='{"entities": []}')
+    mock_mcp.call_tool = AsyncMock(return_value='{"state": "idle"}')
     mock_mcp.get_session_prompt = AsyncMock(return_value="")
     mock_mcp.get_llm_tools = AsyncMock(return_value=[])
 

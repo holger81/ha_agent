@@ -89,3 +89,27 @@ def test_missing_required_bindings_detects_unbound_slot() -> None:
 
     bound = missing_required_bindings(skill, {"mailbox": "INBOX"})
     assert bound == []
+
+
+def test_bind_tool_steps_fills_entity_and_service_slots() -> None:
+    """Universal on/off plans render entity_id/service from bindings."""
+    bind_tool_steps = mods["params"].bind_tool_steps
+    steps = bind_tool_steps(
+        [
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "service": "{{service}}",
+                    "entity_id": "{{entity_id}}",
+                },
+            }
+        ],
+        {
+            "service": "turn_on",
+            "entity_id": "light.dining_room_lights_ceiling",
+        },
+    )
+    assert steps[0]["arguments"] == {
+        "service": "turn_on",
+        "entity_id": "light.dining_room_lights_ceiling",
+    }

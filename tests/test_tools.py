@@ -7,10 +7,11 @@ import json
 import sys
 import types
 from pathlib import Path
+from unittest.mock import AsyncMock
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+import pytest
+
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _ensure_ha_stubs() -> None:
@@ -301,3 +302,26 @@ def test_classify_tool_output_marks_deserialize_failures() -> None:
     )
     assert output.startswith("Tool error:")
     assert "mailbox" in output
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_blocks_deprecated_ha_search_entities() -> None:
+    """ha_search_entities is rejected locally without calling MCP."""
+    call = llm_client.ToolCall(
+        id="call_dep",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_search_entities",
+                "arguments": {"query": "dining"},
+            }
+        ),
+    )
+    mcp = types.SimpleNamespace(call_tool=AsyncMock())
+
+    output = await tools.execute_tool(mcp, call)
+
+    assert output.startswith("Tool error:")
+    assert "ha_search_entities" in output
+    assert "ha_call_service" in output
+    mcp.call_tool.assert_not_called()

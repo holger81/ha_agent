@@ -133,6 +133,18 @@ def skill_matches_route(skill: Skill, route: str | None) -> bool:
     if route_key not in _SPECIALIZED_ROUTES:
         return True
 
+    step_names = [
+        str(step.get("toolName") or "")
+        for step in (skill.tool_steps or [])
+        if step.get("toolName")
+    ]
+    # Structured tools win over vague title/trigger text: drop email/news
+    # workflows on action (and vice versa) even when FTS ranked them highly.
+    if step_names and any(
+        not tool_step_matches_route(name, route_key) for name in step_names
+    ):
+        return False
+
     target = _ROUTE_DOMAIN_MARKERS[route_key]
     text = _skill_text(skill)
     if target.search(text):
@@ -144,7 +156,10 @@ def skill_matches_route(skill: Skill, route: str | None) -> bool:
         if other_pattern.search(text):
             return False
 
-    return False
+    return bool(
+        step_names
+        and any(_ROUTE_TOOL_MARKERS[route_key].search(name) for name in step_names)
+    )
 
 
 def _filter_by_route(skills: list[Skill], route: str | None) -> list[Skill]:
@@ -474,9 +489,7 @@ async def resolve_skills_for_turn(
         )
 
     # Weak FTS matches must not pin an active skill plan after LLM said none.
-    strong_fts = [
-        skill for skill in fts_matches if _strong_fts_match(user_text, skill)
-    ]
+    strong_fts = [skill for skill in fts_matches if _strong_fts_match(user_text, skill)]
     if strong_fts:
         skill = strong_fts[0]
         return SkillSelectionResult(

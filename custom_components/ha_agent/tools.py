@@ -238,11 +238,7 @@ def _normalize_tool_call(
         if isinstance(args.get("arguments"), dict):
             nested = dict(args["arguments"])
         else:
-            nested = {
-                key: value
-                for key, value in args.items()
-                if key != "toolName"
-            }
+            nested = {key: value for key, value in args.items() if key != "toolName"}
         return tool_name, _normalize_call_tool_payload(
             {"toolName": upstream, "arguments": nested},
             exposed_entities=exposed_entities,
@@ -294,6 +290,15 @@ def memory_assistant_text(text: str, entity_ids: list[str]) -> str:
     return cleaned + suffix
 
 
+_DEPRECATED_UPSTREAM_TAILS = frozenset({"ha_search_entities"})
+
+
+def _is_deprecated_upstream_tool(name: str | None) -> bool:
+    if not isinstance(name, str) or not name.strip():
+        return False
+    return name.strip().split("__")[-1].lower() in _DEPRECATED_UPSTREAM_TAILS
+
+
 async def execute_tool(
     mcp_client: McpProxyClient,
     call: ToolCall,
@@ -308,6 +313,19 @@ async def execute_tool(
         )
     except ValueError as err:
         return f"Tool error: {err}"
+
+    upstream = None
+    if tool_name == "callTool" and isinstance(tool_args, dict):
+        upstream = tool_args.get("toolName")
+    elif isinstance(tool_name, str):
+        upstream = tool_name
+    if _is_deprecated_upstream_tool(upstream if isinstance(upstream, str) else None):
+        return (
+            "Tool error: Unknown tool: 'ha_search_entities' "
+            "(deprecated/unavailable). Use Exposed entities from context, then "
+            "call home_assistant__ha_call_service with domain, service, and "
+            "entity_id. Do not claim success until that call succeeds."
+        )
 
     try:
         result = await mcp_client.call_tool(tool_name, tool_args)

@@ -83,3 +83,60 @@ def test_stick_action_helper_via_agent_module() -> None:
     assert stick_action_or_chat(TaskRoute.HA_ACTION) is False
     assert stick_action_or_chat(TaskRoute.CHAT) is True
     assert stick_action_or_chat(TaskRoute.EMAIL) is True
+
+
+def test_should_retry_after_failed_tools_once() -> None:
+    """Action turns with tool errors and no control success get one retry."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    failed = [
+        {
+            "toolName": "home_assistant__ha_search_entities",
+            "succeeded": False,
+        }
+    ]
+    assert (
+        policy.should_retry_after_failed_tools(
+            state,
+            tool_errors=1,
+            tool_calls=failed,
+            route="action",
+            iteration=0,
+            max_iterations=6,
+        )
+        is True
+    )
+    assert (
+        policy.should_retry_after_failed_tools(
+            state,
+            tool_errors=1,
+            tool_calls=failed,
+            route="action",
+            iteration=1,
+            max_iterations=6,
+        )
+        is False
+    )
+
+
+def test_claims_action_success_and_honest_message() -> None:
+    """Success claims are detected; failure admissions are not rewritten."""
+    policy = _load_loop_policy()
+    assert policy.claims_action_success(
+        "The dining room lights have been turned on successfully."
+    )
+    assert not policy.claims_action_success(
+        "I couldn't turn on the lights because the tool failed."
+    )
+    assert "couldn't complete" in policy.honest_failed_tools_message().lower()
+
+
+def test_had_successful_control_tool() -> None:
+    """Only successful ha_call_service counts as control progress."""
+    policy = _load_loop_policy()
+    assert not policy.had_successful_control_tool(
+        [{"toolName": "home_assistant__ha_call_service", "succeeded": False}]
+    )
+    assert policy.had_successful_control_tool(
+        [{"toolName": "home_assistant__ha_call_service", "succeeded": True}]
+    )

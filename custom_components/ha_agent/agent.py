@@ -52,11 +52,15 @@ from .loop_policy import (
     analyze_discovery_tool_result,
     analyze_search_tool_result,
     build_empty_response_nudge,
+    build_failed_tools_answer_nudge,
     build_mcp_tool_adherence_hint,
     build_pending_failure_summary,
     cache_mcp_tools_from_schemas,
     check_stuck,
+    claims_action_success,
     finalize_output,
+    had_successful_control_tool,
+    honest_failed_tools_message,
     initialize_loop_plan,
     inject_loop_context,
     mark_iteration_after_tools,
@@ -75,6 +79,7 @@ from .loop_policy import (
     redundant_override_tool_block,
     reset_iteration_flags,
     should_block_reasoning_execution_mismatch,
+    should_retry_after_failed_tools,
     should_retry_empty_response,
     skill_plan_blocks_discovery,
     suspend_skill_plan,
@@ -1590,18 +1595,27 @@ async def run_agent(
         )
         matched_skills = merge_route_and_learned_skills(route_skill, learned_only)
         primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
-        if primary_learned and not slot_bindings:
-            slot_bindings = await infer_slot_bindings(
+        if primary_learned and (
+            not slot_bindings
+            or missing_required_bindings(primary_learned, slot_bindings)
+        ):
+            inferred = await infer_slot_bindings(
                 llm,
                 role_registry.backend_for(ModelRole.ROUTER),
                 user_text=user_text,
                 skill=primary_learned,
                 route=route.value,
+                exposed_entities=exposed_entities,
                 structured_output_enabled=structured,
                 trace=trace,
             )
+            merged = dict(slot_bindings)
+            for key, value in inferred.items():
+                cleaned = str(value).strip()
+                if cleaned and not str(merged.get(key, "")).strip():
+                    merged[key] = cleaned
             slot_bindings = apply_slot_defaults(
-                slot_bindings,
+                merged,
                 primary_learned,
                 route=route.value,
             )
@@ -1839,7 +1853,15 @@ async def run_agent(
         turn_meta.update(iteration_meta)
         yield AgentDelta(meta=iteration_meta)
 
-        if agent_config.enable_streaming:
+        # After tool failures, buffer the next answer so Assist/console never
+        # hears a streamed success claim that we later have to retract.
+        stream_this_iteration = agent_config.enable_streaming and not (
+            trace.tool_errors > 0
+            and not had_successful_control_tool(trace.tool_calls)
+            and str(route) in {"action", "email", "news"}
+        )
+
+        if stream_this_iteration:
             session = StreamChatSession()
             async for delta, active_session in _yield_streamed_assistant_text(
                 llm,
@@ -1946,6 +1968,7 @@ async def run_agent(
             assistant_text = strip_embedded_tool_markup(raw_buffer)
             if not assistant_text and is_tool_call_only_text(raw_buffer):
                 assistant_text = ""
+            streamed_answer = bool(assistant_text)
         else:
             result = await llm.chat(messages, active_backend, tools=tools)
             record_llm_call(
@@ -2037,10 +2060,43 @@ async def run_agent(
             assistant_text = (result.content or "").strip()
             if agent_config.show_reasoning_in_chat and result.reasoning_content:
                 yield AgentDelta(thinking=result.reasoning_content)
-            if assistant_text and not is_tool_call_only_text(assistant_text):
-                yield AgentDelta(content=assistant_text)
-            elif assistant_text:
+            if assistant_text and is_tool_call_only_text(assistant_text):
                 assistant_text = ""
+            streamed_answer = False
+
+        if assistant_text and should_retry_after_failed_tools(
+            loop_state,
+            tool_errors=trace.tool_errors,
+            tool_calls=trace.tool_calls,
+            route=str(route),
+            iteration=iteration,
+            max_iterations=agent_config.max_iterations,
+        ):
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            messages.append(
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_failed_tools_answer_nudge(loop_state),
+                }
+            )
+            _prepare_next_loop_iteration(loop_state)
+            mark_iteration_preserve_stream(loop_state)
+            use_chat_backend = _stick_action_or_chat(route)
+            continue
+
+        if (
+            assistant_text
+            and trace.tool_errors > 0
+            and not had_successful_control_tool(trace.tool_calls)
+            and claims_action_success(assistant_text)
+        ):
+            assistant_text = honest_failed_tools_message()
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            yield AgentDelta(content=assistant_text)
+        elif assistant_text and not streamed_answer:
+            yield AgentDelta(content=assistant_text)
 
         if not assistant_text and should_retry_empty_response(
             loop_state, iteration, agent_config.max_iterations
@@ -2079,7 +2135,9 @@ async def run_agent(
         trace.skill_plan_override = loop_state.skill_plan_override
         trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
         # Tentative outcome; verifier may soft-downgrade to PARTIAL.
-        if failed_ha_verify:
+        if failed_ha_verify or (
+            trace.tool_errors and not had_successful_control_tool(trace.tool_calls)
+        ):
             trace.outcome = TurnOutcome.PARTIAL
         elif trace.tool_errors and not assistant_text:
             trace.outcome = TurnOutcome.FAILED

@@ -105,6 +105,7 @@ async def infer_slot_bindings(
     user_text: str,
     skill: Skill,
     route: str | None = None,
+    exposed_entities: list[dict[str, Any]] | None = None,
     structured_output_enabled: bool = True,
     trace: Any | None = None,
 ) -> dict[str, str]:
@@ -124,26 +125,46 @@ async def infer_slot_bindings(
         {"name": s.name, "description": s.description, "default": s.default or ""}
         for s in slots
     ]
+    entities_compact: list[dict[str, str]] = []
+    for entity in exposed_entities or []:
+        entity_id = str(entity.get("entity_id") or "").strip()
+        if not entity_id:
+            continue
+        entry: dict[str, str] = {"entity_id": entity_id}
+        name = str(entity.get("name") or "").strip()
+        if name:
+            entry["name"] = name
+        area = str(entity.get("area") or "").strip()
+        if area:
+            entry["area"] = area
+        entities_compact.append(entry)
+        if len(entities_compact) >= 40:
+            break
+
+    payload: dict[str, Any] = {
+        "user_text": user_text,
+        "route": route or "chat",
+        "skill_title": skill.title,
+        "slots": slot_specs,
+    }
+    if entities_compact:
+        payload["exposed_entities"] = entities_compact
+
     messages = [
         {
             "role": "system",
             "content": (
                 "Fill workflow parameter slots from the user's request.\n"
                 'Return ONLY JSON: {"bindings": {"slot_name": "value", ...}}.\n'
-                "Use empty string when a slot cannot be inferred."
+                "Use empty string when a slot cannot be inferred.\n"
+                "For entity_id, prefer an exact entity_id from exposed_entities "
+                "(match on name/area/aliases). For service, use turn_on, "
+                "turn_off, or toggle."
             ),
         },
         {
             "role": "user",
-            "content": json.dumps(
-                {
-                    "user_text": user_text,
-                    "route": route or "chat",
-                    "skill_title": skill.title,
-                    "slots": slot_specs,
-                },
-                ensure_ascii=True,
-            ),
+            "content": json.dumps(payload, ensure_ascii=True),
         },
     ]
     response_format = (
