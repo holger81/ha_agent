@@ -6,7 +6,9 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from ..config_helpers import LlmBackend, get_llm_backend
 from ..const import (
     CONF_ACTION_LLM_BASE_URL,
     CONF_ACTION_LLM_MODEL,
@@ -52,7 +54,9 @@ from ..const import (
     CONF_VERIFIER_LLM_MODEL,
     CONF_VERIFIER_MODEL_ENABLED,
 )
+from ..llm_client import LlmClient
 from ..memory import async_load_memory, async_save_memory
+from ..thinking import DEFAULT_THINKING_LEVEL
 from .helpers import config_snapshot, get_entry
 
 _CONFIG_KEYS = {
@@ -146,3 +150,33 @@ async def reload_integration(
     await hass.config_entries.async_reload(entry_id)
     reloaded = get_entry(hass, entry_id)
     return config_snapshot(hass, reloaded)
+
+
+async def list_available_models(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    base_url: str | None = None,
+) -> dict[str, Any]:
+    """Return model ids from the entry's LLM server (GET /v1/models)."""
+    entry = get_entry(hass, entry_id)
+    chat = get_llm_backend(entry)
+    url = (base_url or chat.base_url or "").strip().rstrip("/")
+    if not url:
+        raise HomeAssistantError("LLM base URL is not configured")
+    backend = LlmBackend(
+        base_url=url,
+        model=chat.model,
+        api_key=chat.api_key,
+        max_tokens=64,
+        temperature=0.0,
+        timeout=min(chat.timeout, 30),
+        thinking_level=DEFAULT_THINKING_LEVEL,
+    )
+    session = async_get_clientsession(hass)
+    llm = LlmClient(session)
+    models = await llm.list_models(backend)
+    # Keep currently configured chat model visible even if temporarily unloaded.
+    if chat.model and chat.model not in models and url == chat.base_url.rstrip("/"):
+        models = [chat.model, *models]
+    return {"base_url": url, "models": models}

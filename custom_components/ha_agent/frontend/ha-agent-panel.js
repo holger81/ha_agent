@@ -13,6 +13,10 @@ class HaAgentPanel extends HTMLElement {
     this._threads = [];
     this._config = null;
     this._status = {};
+    this._llmModels = [];
+    this._llmModelsError = null;
+    this._llmModelsLoading = false;
+    this._llmModelsBaseUrl = "";
     this._pendingDraft = null;
     this._streaming = false;
     this._msgId = 1;
@@ -4072,10 +4076,56 @@ class HaAgentPanel extends HTMLElement {
         <div class="role-editor-title">${this._escape(title)}</div>
         <div class="role-editor-fields">
           <label class="role-enable"><input type="checkbox" data-config-bool="${enabledKey}" ${enabled ? "checked" : ""}/> Dedicated</label>
-          <label>Model<input data-config="${modelKey}" value="${this._escape(model || "")}" placeholder="${this._escape(inheritHint)}" /></label>
+          <label>Model${this._renderModelPicker(modelKey, model, { allowEmpty: true, emptyLabel: inheritHint })}</label>
           <label>Base URL<input data-config="${urlKey}" value="${this._escape(baseUrl || "")}" placeholder="defaults to chat base URL" /></label>
         </div>
       </div>`;
+  }
+
+  _renderModelPicker(configKey, selected, { allowEmpty = false, emptyLabel = "Inherit" } = {}) {
+    const models = [...(this._llmModels || [])];
+    if (selected && !models.includes(selected)) {
+      models.unshift(selected);
+    }
+    const options = [];
+    if (allowEmpty) {
+      options.push(
+        `<option value="" ${!selected ? "selected" : ""}>${this._escape(emptyLabel)}</option>`
+      );
+    }
+    for (const id of models) {
+      options.push(
+        `<option value="${this._escape(id)}" ${selected === id ? "selected" : ""}>${this._escape(id)}</option>`
+      );
+    }
+    if (!models.length && !allowEmpty) {
+      options.push(
+        `<option value="${this._escape(selected || "")}" selected>${this._escape(selected || "No models loaded")}</option>`
+      );
+    }
+    return `<select data-config="${configKey}">${options.join("")}</select>`;
+  }
+
+  async _loadLlmModels({ force = false } = {}) {
+    if (!this._entryId) return;
+    if (this._llmModelsLoading) return;
+    if (!force && this._llmModels.length && !this._llmModelsError) return;
+    this._llmModelsLoading = true;
+    this._llmModelsError = null;
+    this._render();
+    try {
+      const data = await this._call("ha_agent/config/models", {
+        entry_id: this._entryId,
+      });
+      this._llmModels = Array.isArray(data.models) ? data.models : [];
+      this._llmModelsBaseUrl = data.base_url || "";
+      this._llmModelsError = null;
+    } catch (err) {
+      this._llmModelsError = err?.message || String(err);
+    } finally {
+      this._llmModelsLoading = false;
+      this._render();
+    }
   }
 
   _renderResolvedRoles(roleModels) {
@@ -4125,7 +4175,17 @@ class HaAgentPanel extends HTMLElement {
         <span class="chip">Skills: ${s.skills_enabled || 0}/${s.skills_total || 0}</span>
       </div>
       <div class="form-grid">
-        <label>Chat model<input data-config="llm_model" value="${this._escape(c.llm_model || "")}" /></label>
+        <label>Chat model${this._renderModelPicker("llm_model", c.llm_model, { allowEmpty: false })}</label>
+        <div class="actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button type="button" data-action="refresh-llm-models">${this._llmModelsLoading ? "Loading…" : "Refresh models"}</button>
+          <span class="hint" style="margin:0">${
+            this._llmModelsError
+              ? this._escape(this._llmModelsError)
+              : this._llmModels.length
+                ? `${this._llmModels.length} models from ${this._escape(this._llmModelsBaseUrl || "LLM server")}`
+                : "Loads available models from the llama.cpp / OpenAI-compatible server."
+          }</span>
+        </div>
         <label>Thinking level
           <select data-config="thinking_level">
             ${["off", "low", "medium", "high", "infinite"]
@@ -4138,7 +4198,7 @@ class HaAgentPanel extends HTMLElement {
         </label>
 
         <h3 class="settings-section-title">Orchestration roles</h3>
-        <p class="hint">Router classifies/routes. Planner, verifier, and observer inherit from Router when unset; Router inherits from Chat.</p>
+        <p class="hint">Router classifies/routes. Planner, verifier, and observer inherit from Router when unset; Router inherits from Chat. Pick a model from the server list, or leave Inherit.</p>
         <div class="role-editor">
           ${this._renderRoleModelRow({
             title: "Router",
@@ -4148,7 +4208,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.classifier_model_enabled,
             model: c.classifier_model,
             baseUrl: c.classifier_llm_base_url,
-            inheritHint: "defaults to chat model",
+            inheritHint: "Inherit chat model",
           })}
           ${this._renderRoleModelRow({
             title: "Planner",
@@ -4158,7 +4218,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.planner_model_enabled,
             model: c.planner_model,
             baseUrl: c.planner_llm_base_url,
-            inheritHint: "defaults to router / chat",
+            inheritHint: "Inherit router / chat",
           })}
           ${this._renderRoleModelRow({
             title: "Verifier",
@@ -4168,7 +4228,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.verifier_model_enabled,
             model: c.verifier_model,
             baseUrl: c.verifier_llm_base_url,
-            inheritHint: "defaults to router / chat",
+            inheritHint: "Inherit router / chat",
           })}
           ${this._renderRoleModelRow({
             title: "Observer",
@@ -4178,12 +4238,12 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.observer_model_enabled,
             model: c.observer_model,
             baseUrl: c.observer_llm_base_url,
-            inheritHint: "defaults to router / chat",
+            inheritHint: "Inherit router / chat",
           })}
         </div>
 
-        <h3 class="settings-section-title">Route models</h3>
-        <p class="hint">Optional overrides for specific routes. Unset routes use the Chat model.</p>
+        <h3 class="settings-section-title">Route models (optional)</h3>
+        <p class="hint">Routes are how a turn is classified (action / email / news / chat) so the right playbook and tools apply. You only need a dedicated route model if that route should use a different LLM than Chat — e.g. a small Action model. Leave Email/News on Inherit unless you want a special mail/news model.</p>
         <div class="role-editor">
           ${this._renderRoleModelRow({
             title: "Action",
@@ -4193,7 +4253,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.action_model_enabled,
             model: c.action_model,
             baseUrl: c.action_llm_base_url,
-            inheritHint: "defaults to chat model",
+            inheritHint: "Inherit chat model",
           })}
           ${this._renderRoleModelRow({
             title: "Email",
@@ -4203,7 +4263,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.email_model_enabled,
             model: c.email_model,
             baseUrl: c.email_llm_base_url,
-            inheritHint: "defaults to chat model",
+            inheritHint: "Inherit chat model",
           })}
           ${this._renderRoleModelRow({
             title: "News",
@@ -4213,7 +4273,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.news_model_enabled,
             model: c.news_model,
             baseUrl: c.news_llm_base_url,
-            inheritHint: "defaults to chat model",
+            inheritHint: "Inherit chat model",
           })}
         </div>
         ${this._renderResolvedRoles(c.role_models)}
@@ -5084,7 +5144,10 @@ class HaAgentPanel extends HTMLElement {
           if (this._tab === "routes") await this._loadRouteKeywords();
           if (this._tab === "recovery") await this._loadRecoveryHints();
           if (this._tab === "users") await this._loadIdentityUsers();
-          if (this._tab === "settings") await this._loadSystemMemory();
+          if (this._tab === "settings") {
+            await this._loadSystemMemory();
+            await this._loadLlmModels();
+          }
           if (this._tab === "eval") await this._loadEvalStatus();
         } catch (err) {
           const message = err?.message || String(err);
@@ -5677,6 +5740,10 @@ class HaAgentPanel extends HTMLElement {
       };
     });
 
+    this.shadowRoot.querySelector('[data-action="refresh-llm-models"]')?.addEventListener("click", () => {
+      void this._loadLlmModels({ force: true });
+    });
+
     this.shadowRoot.querySelector('[data-action="save-config"]')?.addEventListener("click", async () => {
       const updates = {};
       this.shadowRoot.querySelectorAll("[data-config]").forEach((el) => {
@@ -5685,6 +5752,20 @@ class HaAgentPanel extends HTMLElement {
       this.shadowRoot.querySelectorAll("[data-config-bool]").forEach((el) => {
         updates[el.getAttribute("data-config-bool")] = el.checked;
       });
+      // Dedicated flags follow the picker: empty = inherit, non-empty = override.
+      const rolePairs = [
+        ["classifier_llm_model", "classifier_model_enabled"],
+        ["planner_llm_model", "planner_model_enabled"],
+        ["verifier_llm_model", "verifier_model_enabled"],
+        ["observer_llm_model", "observer_model_enabled"],
+        ["action_llm_model", "action_model_enabled"],
+        ["email_llm_model", "email_model_enabled"],
+        ["news_llm_model", "news_model_enabled"],
+      ];
+      for (const [modelKey, enabledKey] of rolePairs) {
+        if (!(modelKey in updates)) continue;
+        updates[enabledKey] = Boolean(String(updates[modelKey] || "").trim());
+      }
       const data = await this._call("ha_agent/config/set", {
         entry_id: this._entryId,
         updates,
