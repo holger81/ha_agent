@@ -1,0 +1,26 @@
+---
+description: Prefer generic skill/route/domain logic over hardcoded domains
+alwaysApply: true
+---
+
+# Generic skill and route behavior
+
+When changing routing, skills, prepass, backends, or tool plans:
+
+- **Matched skills own behavior.** A selected skill's `route_scope` and `tool_steps` are authoritative. Do not strip or ignore them because the turn route disagrees.
+- **Prefer mechanism over domain lists.** Use `route_scope`, `domain_hint`, and shared helpers (e.g. `align_route_to_skill`) instead of branching on `email` / `news` / other named domains.
+- **Map scopes generically.** `action` → action route; any other non-empty scope → chat (+ optional domain hint from that scope). New domains must work without new special cases.
+- **Soft domain hints are chat workflows**, regardless of the hint string—not device-control/action.
+
+```python
+# ❌ BAD — domain-specific coerce
+if domain in {"email", "news"} and route == TaskRoute.HA_ACTION:
+    route = TaskRoute.CHAT
+
+# ✅ GOOD — skill/hint mechanism
+route, hint, _ = align_route_to_skill(
+    route, skill_scope=skill.route_scope, domain_hint=domain_hint
+)
+```
+
+Do not add one-off fixes for a single domain when the same rule should apply to any skill scope.

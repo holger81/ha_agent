@@ -40,6 +40,7 @@ class HaAgentPanel extends HTMLElement {
     this._viewingSkill = null;
     this._skillRevisions = [];
     this._skillNotice = null;
+    this._skillMergeClusters = null;
     this._skillsDirectory = "";
     this._skillTemplate = "";
     this._routeKeywords = [];
@@ -3475,6 +3476,46 @@ class HaAgentPanel extends HTMLElement {
       </div>`;
   }
 
+  _renderSkillMergeProposals() {
+    if (!this._skillMergeClusters) return "";
+    const clusters = this._skillMergeClusters;
+    if (!clusters.length) {
+      return `<p class="hint">No merge candidates found (need 2+ enabled learned skills with the same route scope and tool fingerprint).</p>`;
+    }
+    const cards = clusters
+      .map((cluster, index) => {
+        const titles = (cluster.member_titles || [])
+          .map((t) => this._escape(t))
+          .join(", ");
+        const tools = (cluster.tool_names || [])
+          .map((t) => `<code>${this._escape(t)}</code>`)
+          .join(" ");
+        const draft = cluster.draft || {};
+        const slots = (draft.slots || [])
+          .map((s) => s.name)
+          .join(", ");
+        return `
+      <div class="skill-editor" style="margin-top:12px">
+        <h3>Merge proposal ${index + 1}</h3>
+        <p class="hint">${this._escape(cluster.reason || "")}</p>
+        <p><strong>Members:</strong> ${titles}</p>
+        <p><strong>Tools:</strong> ${tools || "—"}</p>
+        <p><strong>Proposed title:</strong> ${this._escape(draft.title || "")}</p>
+        <p><strong>Slots:</strong> ${this._escape(slots || "none")}</p>
+        <div class="actions">
+          <button data-action="skill-merge-apply" data-cluster-index="${index}">Merge &amp; archive others</button>
+        </div>
+      </div>`;
+      })
+      .join("");
+    return `
+      <div style="margin-top:16px">
+        <h3>Generalize / merge</h3>
+        <p class="hint">Similar skills collapse into one slotted parent; siblings are disabled and linked via parent_id.</p>
+        ${cards}
+      </div>`;
+  }
+
   _renderSkills() {
     const notice = this._skillNotice
       ? `<div class="skill-notice">${this._escape(this._skillNotice)}</div>`
@@ -3502,6 +3543,7 @@ class HaAgentPanel extends HTMLElement {
         <input id="skill-search" placeholder="Search skills..." />
         <button data-action="skill-search">Search</button>
         <button data-action="skill-new">New skill</button>
+        <button data-action="skill-find-merges">Find merges</button>
         <button data-action="skill-sync">Sync from disk</button>
         <button data-action="skill-export-md">Export MD</button>
         <button data-action="skill-export">Export JSON</button>
@@ -3512,6 +3554,7 @@ class HaAgentPanel extends HTMLElement {
         <thead><tr><th>Title</th><th>Enabled</th><th>Uses</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="4">No skills yet.</td></tr>'}</tbody>
       </table>
+      ${this._renderSkillMergeProposals()}
       ${this._renderSkillDetail()}
       ${this._renderSkillEditor()}`;
   }
@@ -5257,6 +5300,58 @@ class HaAgentPanel extends HTMLElement {
 
     this.shadowRoot.querySelector('[data-action="skill-new"]')?.addEventListener("click", () => {
       this._openSkillEditor();
+    });
+
+    this.shadowRoot.querySelector('[data-action="skill-find-merges"]')?.addEventListener("click", async () => {
+      try {
+        const data = await this._call("ha_agent/skills/generalize/propose", {
+          entry_id: this._entryId,
+        });
+        this._skillMergeClusters = data.clusters || [];
+        this._skillNotice =
+          this._skillMergeClusters.length === 0
+            ? "No merge candidates found."
+            : `Found ${this._skillMergeClusters.length} merge candidate(s).`;
+        this._render();
+      } catch (err) {
+        this._skillNotice = `Find merges failed: ${err?.message || err}`;
+        this._render();
+      }
+    });
+
+    this.shadowRoot.querySelectorAll('[data-action="skill-merge-apply"]').forEach((el) => {
+      el.addEventListener("click", async () => {
+        const index = Number(el.getAttribute("data-cluster-index"));
+        const cluster = this._skillMergeClusters?.[index];
+        if (!cluster) return;
+        const titles = (cluster.member_titles || []).join(", ");
+        if (
+          !confirm(
+            `Merge these skills into one slotted parent and disable the others?\n\n${titles}`
+          )
+        ) {
+          return;
+        }
+        try {
+          const data = await this._call("ha_agent/skills/generalize/apply", {
+            entry_id: this._entryId,
+            skill_ids: cluster.skill_ids || [],
+            survivor_id: cluster.survivor_id,
+            archive_others: true,
+          });
+          const archived = (data.archived_skill_ids || []).length;
+          this._skillNotice = `Merged into "${data.survivor?.title || "skill"}"${
+            archived ? ` · archived ${archived} sibling(s)` : ""
+          }.`;
+          this._skillMergeClusters = null;
+          this._viewingSkill = data.survivor || null;
+          await this._loadSkills();
+          this._render();
+        } catch (err) {
+          this._skillNotice = `Merge failed: ${err?.message || err}`;
+          this._render();
+        }
+      });
     });
 
     this.shadowRoot.querySelector('[data-action="skill-sync"]')?.addEventListener("click", async () => {

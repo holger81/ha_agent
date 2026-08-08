@@ -18,6 +18,7 @@ from .router import (
     _ROUTE_VALUE_TO_TASK,
     RouteResolution,
     TaskRoute,
+    align_route_to_skill,
     classify_route_with_detail,
 )
 from .skills.models import Skill
@@ -116,6 +117,7 @@ def _parse_prepass_payload(
         selected_skills = [catalog_by_slug[skill_slug]]
 
     skill_selection = None
+    skill: Skill | None = None
     if selected_skills:
         skill = selected_skills[0]
         skill_selection = SkillSelectionResult(
@@ -125,6 +127,19 @@ def _parse_prepass_payload(
             detail=f"Prepass selected skill {skill.title!r}.",
             candidate_count=len(catalog_by_slug),
         )
+
+    if domain_hint not in {"email", "news"}:
+        domain_hint = getattr(keyword_decision, "domain_hint", None)
+
+    route, domain_hint, align_reason = align_route_to_skill(
+        route,
+        skill_scope=skill.route_scope if skill is not None else None,
+        domain_hint=domain_hint,
+    )
+    if align_reason:
+        reason = (reason + "; ").lstrip("; ") + align_reason
+
+    if skill is not None:
         slot_bindings = apply_slot_defaults(
             bindings,
             skill,
@@ -132,9 +147,6 @@ def _parse_prepass_payload(
         )
     else:
         slot_bindings = {}
-
-    if domain_hint not in {"email", "news"}:
-        domain_hint = getattr(keyword_decision, "domain_hint", None)
 
     # Device control always needs tools — never treat action as "simple".
     if route == TaskRoute.HA_ACTION and complexity == Complexity.SIMPLE:

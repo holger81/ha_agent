@@ -100,6 +100,51 @@ class RouteResolution:
     domain_hint: str | None = None
 
 
+def task_route_for_skill_scope(scope: str | None) -> TaskRoute | None:
+    """Map a skill ``route_scope`` to the turn TaskRoute.
+
+    - ``action`` → action backend
+    - any other non-empty scope (email, news, custom domains) → chat
+    - empty/None → does not decide (caller keeps classifier route)
+    """
+    key = (scope or "").strip().lower()
+    if not key:
+        return None
+    if key == TaskRoute.HA_ACTION.value:
+        return TaskRoute.HA_ACTION
+    return TaskRoute.CHAT
+
+
+def align_route_to_skill(
+    route: TaskRoute,
+    *,
+    skill_scope: str | None = None,
+    domain_hint: str | None = None,
+) -> tuple[TaskRoute, str | None, str | None]:
+    """Align turn route with a matched skill / soft domain hint.
+
+    Returns ``(route, domain_hint, reason_suffix)``. Selected skills own the
+    route via ``route_scope``; soft domain hints always run on chat.
+    """
+    reason: str | None = None
+    hint = (domain_hint or "").strip().lower() or None
+    scope = (skill_scope or "").strip().lower() or None
+
+    skill_route = task_route_for_skill_scope(scope)
+    if skill_route is not None:
+        if scope and scope != TaskRoute.HA_ACTION.value:
+            hint = hint or scope
+        if skill_route != route:
+            reason = f"aligned route to skill scope {scope!r}"
+            route = skill_route
+    elif hint and route == TaskRoute.HA_ACTION:
+        # Soft domain hints (any value) are chat workflows, not device control.
+        route = TaskRoute.CHAT
+        reason = f"aligned action→chat for domain hint {hint!r}"
+
+    return route, hint, reason
+
+
 def parse_route_classifier_response(content: str) -> str | None:
     """Parse the route value from a classifier LLM response."""
     text = (content or "").strip()

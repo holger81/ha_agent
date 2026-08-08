@@ -119,7 +119,12 @@ from .role_registry import (
     collapse_identical_roles,
 )
 from .route_keywords import async_route_keyword_map
-from .router import TaskRoute, resolve_route_with_classifier
+from .router import (
+    RouteResolution,
+    TaskRoute,
+    align_route_to_skill,
+    resolve_route_with_classifier,
+)
 from .skills.backend import backend_for_skill
 from .skills.commands import (
     _MANUAL_SAVE,
@@ -155,7 +160,7 @@ from .skills.runtime import (
     override_turn_eligible_for_learning,
     should_offer_skill_creation,
 )
-from .skills.selection import filter_tool_steps_for_route, resolve_skills_for_turn
+from .skills.selection import resolve_skills_for_turn
 from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
 from .subagent import WorkerResult, run_worker
@@ -1554,6 +1559,53 @@ async def run_agent(
             structured_output_enabled=structured,
             trace=trace,
         )
+
+    # Resolve skills before route alignment so any matched skill can own the route.
+    if skills_config.use_enabled and (
+        prepass_result is None
+        or (not matched_skills and prepass_result.method == "prepass")
+    ):
+        skill_selection = await resolve_skills_for_turn(
+            hass,
+            entry_id,
+            llm,
+            classifier_backend,
+            user_text,
+            history=history,
+            route=route.value,
+            domain_hint=route_resolution.domain_hint,
+            max_inject=skills_config.max_inject,
+            structured_output_enabled=structured,
+            trace=trace,
+        )
+        matched_skills = skill_selection.skills
+
+    # Selected skill owns route via route_scope; soft domain hints run on chat.
+    primary_scope = matched_skills[0].route_scope if matched_skills else None
+    route, aligned_hint, align_reason = align_route_to_skill(
+        route,
+        skill_scope=primary_scope,
+        domain_hint=route_resolution.domain_hint,
+    )
+    if align_reason or aligned_hint != route_resolution.domain_hint:
+        route_resolution = RouteResolution(
+            route=route,
+            method=route_resolution.method,
+            classifier_summary=(
+                f"{route_resolution.method} → {route.value}"
+                if align_reason
+                else route_resolution.classifier_summary
+            ),
+            classifier_detail=(
+                f"{route_resolution.classifier_detail} "
+                f"{align_reason[0].upper() + align_reason[1:]}."
+                if align_reason
+                else route_resolution.classifier_detail
+            ),
+            keyword_hint=route_resolution.keyword_hint,
+            classifier_raw=route_resolution.classifier_raw,
+            domain_hint=aligned_hint,
+        )
     record_route(hass, entry_id, route)
     merged_memory, memory_context = await async_load_memory_context(
         hass,
@@ -1590,23 +1642,6 @@ async def run_agent(
 
     skill_hints = ""
     if skills_config.use_enabled:
-        if prepass_result is None or (
-            not matched_skills and prepass_result.method == "prepass"
-        ):
-            skill_selection = await resolve_skills_for_turn(
-                hass,
-                entry_id,
-                llm,
-                classifier_backend,
-                user_text,
-                history=history,
-                route=route.value,
-                domain_hint=route_resolution.domain_hint,
-                max_inject=skills_config.max_inject,
-                structured_output_enabled=structured,
-                trace=trace,
-            )
-            matched_skills = skill_selection.skills
         primary_learned = next((s for s in matched_skills if not s.is_builtin), None)
         if primary_learned and (
             not slot_bindings
@@ -1756,7 +1791,8 @@ async def run_agent(
             (s for s in matched_skills if not s.is_builtin),
             matched_skills[0],
         )
-        raw_steps = filter_tool_steps_for_route(primary_skill.tool_steps, route.value)
+        # Selected skill owns its tool plan — do not strip steps by turn route.
+        raw_steps = primary_skill.tool_steps or None
         if raw_steps:
             skill_steps = bind_tool_steps(raw_steps, slot_bindings)
     initialize_loop_plan(

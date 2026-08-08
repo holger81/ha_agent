@@ -470,3 +470,112 @@ async def get_skills_directory(hass: HomeAssistant, entry_id: str) -> dict[str, 
         "directory": str(directory),
         "template": new_skill_markdown(),
     }
+
+
+async def propose_skill_generalize(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    min_cluster: int = 2,
+) -> dict[str, Any]:
+    """Return merge clusters for similar learned skills (preview only)."""
+    from ..skills.generalize import cluster_skills_for_generalize, cluster_to_dict
+
+    store = get_skill_store(hass, entry_id)
+
+    def _load() -> list[Skill]:
+        total = max(store.count_skills(), 1)
+        return store.list_recent(limit=total)
+
+    skills = await hass.async_add_executor_job(_load)
+    clusters = cluster_skills_for_generalize(skills, min_cluster=min_cluster)
+    return {
+        "clusters": [cluster_to_dict(cluster) for cluster in clusters],
+        "count": len(clusters),
+    }
+
+
+async def apply_skill_generalize(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    skill_ids: list[str],
+    survivor_id: str | None = None,
+    archive_others: bool = True,
+) -> dict[str, Any]:
+    """Merge similar skills into one survivor and optionally disable the rest."""
+    from ..skills.generalize import build_generalized_draft
+
+    if len(skill_ids) < 2:
+        raise HomeAssistantError("Need at least two skill ids to generalize.")
+
+    store = get_skill_store(hass, entry_id)
+
+    def _load_members() -> list[Skill]:
+        members: list[Skill] = []
+        for skill_id in skill_ids:
+            skill = store.get_skill(skill_id)
+            if skill is None:
+                raise HomeAssistantError(f"Skill not found: {skill_id}")
+            if skill.is_builtin:
+                raise HomeAssistantError(
+                    f"Cannot merge built-in skill: {skill.slug}"
+                )
+            members.append(skill)
+        return members
+
+    members = await hass.async_add_executor_job(_load_members)
+    by_id = {skill.id: skill for skill in members}
+    if survivor_id and survivor_id not in by_id:
+        raise HomeAssistantError(f"Survivor not in skill_ids: {survivor_id}")
+    survivor = by_id[survivor_id] if survivor_id else max(
+        members,
+        key=lambda skill: (
+            int(skill.use_count or 0),
+            float(skill.score or 0.0),
+            float(skill.created_at or 0.0),
+        ),
+    )
+
+    draft = normalize_skill_draft(
+        build_generalized_draft(members),
+        explicit_tool_steps=True,
+    )
+    updated = await save_skill_from_draft(
+        hass,
+        entry_id,
+        draft,
+        update_existing=survivor,
+        revision_reason="Skill generalization merge",
+    )
+
+    archived: list[str] = []
+    if archive_others:
+
+        def _archive() -> list[str]:
+            done: list[str] = []
+            for skill in members:
+                if skill.id == updated.id:
+                    continue
+                skill.parent_id = updated.id
+                skill.enabled = False
+                store.update_skill(skill)
+                done.append(skill.id)
+            return done
+
+        archived = await hass.async_add_executor_job(_archive)
+        for skill_id in archived:
+            child = await hass.async_add_executor_job(store.get_skill, skill_id)
+            if child is not None:
+                await async_mirror_skill_to_file(hass, entry_id, child)
+
+    result = skill_to_dict(updated)
+    result["markdown"] = skill_to_markdown(updated)
+    result["file_path"] = str(
+        skill_file_path(skills_directory(hass, entry_id), updated.slug)
+    )
+    return {
+        "survivor": result,
+        "archived_skill_ids": archived,
+        "merged_count": len(members),
+    }

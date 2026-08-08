@@ -79,6 +79,8 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_skills_directory)
     websocket_api.async_register_command(hass, ws_skills_revisions_list)
     websocket_api.async_register_command(hass, ws_skills_revisions_restore)
+    websocket_api.async_register_command(hass, ws_skills_generalize_propose)
+    websocket_api.async_register_command(hass, ws_skills_generalize_apply)
     websocket_api.async_register_command(hass, ws_route_keywords_list)
     websocket_api.async_register_command(hass, ws_route_keywords_update)
     websocket_api.async_register_command(hass, ws_route_keywords_set_enabled)
@@ -887,6 +889,50 @@ async def ws_skills_revisions_restore(
         msg["revision_id"],
     )
     connection.send_message(websocket_api.result_message(msg["id"], {"skill": skill}))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/generalize/propose",
+        vol.Required("entry_id"): str,
+        vol.Optional("min_cluster", default=2): int,
+    }
+)
+@websocket_api.async_response
+async def ws_skills_generalize_propose(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await skills_api.propose_skill_generalize(
+        hass,
+        msg["entry_id"],
+        min_cluster=int(msg.get("min_cluster", 2)),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/generalize/apply",
+        vol.Required("entry_id"): str,
+        vol.Required("skill_ids"): [str],
+        vol.Optional("survivor_id"): str,
+        vol.Optional("archive_others", default=True): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_skills_generalize_apply(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await skills_api.apply_skill_generalize(
+        hass,
+        msg["entry_id"],
+        skill_ids=list(msg["skill_ids"]),
+        survivor_id=msg.get("survivor_id"),
+        archive_others=bool(msg.get("archive_others", True)),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
 
 
 @websocket_api.websocket_command(

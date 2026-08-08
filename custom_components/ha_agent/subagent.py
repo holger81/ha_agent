@@ -25,7 +25,6 @@ from .skills.backend import backend_for_skill
 from .skills.discovery import build_skill_hints
 from .skills.models import Skill, TurnTrace
 from .skills.params import bind_tool_steps, infer_slot_bindings
-from .skills.selection import filter_tool_steps_for_route
 from .tool_pruning import prune_loop_tools
 
 if TYPE_CHECKING:
@@ -131,7 +130,8 @@ async def run_worker(
     loop_state = LoopState()
     skill_steps = None
     if primary_skill:
-        raw_steps = filter_tool_steps_for_route(primary_skill.tool_steps, route_value)
+        # Selected skill owns its tool plan — do not strip steps by turn route.
+        raw_steps = primary_skill.tool_steps or None
         if raw_steps:
             skill_steps = bind_tool_steps(raw_steps, slot_bindings)
     discovery = (
