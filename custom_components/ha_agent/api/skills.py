@@ -15,7 +15,11 @@ from ..skills.body import (
     normalize_skill,
     normalize_skill_draft,
 )
-from ..skills.creator import create_skill_from_trace, save_skill_from_draft
+from ..skills.creator import (
+    create_skill_from_trace,
+    persist_skill_draft,
+    save_skill_from_draft,
+)
 from ..skills.files import (
     async_mirror_skill_to_file,
     async_sync_skill_files,
@@ -309,20 +313,30 @@ async def confirm_pending_draft(
     draft = runtime_get_pending_draft(hass, conversation_id)
     if draft is None or draft.entry_id != entry_id:
         raise HomeAssistantError("No pending skill draft for this conversation")
-    session = async_get_clientsession(hass)
-    llm = LlmClient(session)
-    entry = get_entry(hass, entry_id)
-    backend = get_llm_backend(entry)
-    skill = await create_skill_from_trace(
-        hass,
-        entry_id,
-        llm,
-        backend,
-        trace=draft.trace,
-        history=draft.history,
-        manual_save=True,
-        draft=draft.skill_draft,
-    )
+
+    if draft.skill_draft is not None:
+        skill = await persist_skill_draft(
+            hass,
+            entry_id,
+            draft.skill_draft,
+            trace=draft.trace,
+            update_skill_id=draft.update_skill_id,
+        )
+    else:
+        session = async_get_clientsession(hass)
+        llm = LlmClient(session)
+        entry = get_entry(hass, entry_id)
+        backend = get_llm_backend(entry)
+        skill = await create_skill_from_trace(
+            hass,
+            entry_id,
+            llm,
+            backend,
+            trace=draft.trace,
+            history=draft.history,
+            manual_save=True,
+            update_skill_id=draft.update_skill_id,
+        )
     if skill is None:
         raise HomeAssistantError(
             "Failed to save skill from draft. Check HA Agent logs and LLM connectivity."

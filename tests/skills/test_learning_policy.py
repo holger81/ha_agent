@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 _MODULE_DEPS: dict[str, list[str]] = {
     "const": [],
@@ -276,3 +274,59 @@ def test_build_deterministic_override_result_forks_child() -> None:
         step["toolName"] == "mail_mcp__imap_bulk_update_flags"
         for step in result.draft.tool_steps
     )
+
+
+def test_prepare_learned_draft_rejects_discovery_only_turn() -> None:
+    """Prose or discovery-only turns cannot become skills."""
+    draft = SkillDraft(
+        title="Turn off dining room light",
+        description="I have turned off the dining room lights.",
+        triggers=["turn off dining room light"],
+        body="1. Open the smart home app.",
+        tool_steps=[],
+    )
+    trace = TurnTrace(
+        user_text="turn off dining room light",
+        history_len=0,
+        tool_calls=[
+            {
+                "toolName": "searchToolsForDomain",
+                "succeeded": True,
+                "arguments": {"domain": "smart-home"},
+            }
+        ],
+    )
+    assert policy.prepare_learned_draft(draft, trace) is None
+
+
+def test_prepare_learned_draft_grounds_and_slotifies_action() -> None:
+    """Successful control tools become slotted tool_steps."""
+    draft = SkillDraft(
+        title="Turn off dining room light",
+        description="Turn off dining room lights with MCP.",
+        triggers=["turn off dining room light"],
+        body="Use `home_assistant__ha_call_service`.",
+        tool_steps=[],
+    )
+    trace = TurnTrace(
+        user_text="turn off dining room light",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "succeeded": True,
+                "arguments": {
+                    "domain": "light",
+                    "service": "turn_off",
+                    "entity_id": "light.dining_room",
+                },
+            }
+        ],
+        controlled_entity_ids=["light.dining_room"],
+    )
+    prepared = policy.prepare_learned_draft(draft, trace)
+    assert prepared is not None
+    assert prepared.tool_steps
+    assert prepared.tool_steps[0]["arguments"]["entity_id"] == "{{entity_id}}"
+    assert any(slot.name == "entity_id" for slot in prepared.slots)

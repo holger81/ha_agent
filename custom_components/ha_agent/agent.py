@@ -123,11 +123,12 @@ from .skills.commands import (
     try_confirm_pending_save,
     try_handle_skill_command,
 )
-from .skills.creator import save_skill_from_draft
+from .skills.creator import persist_skill_draft
 from .skills.discovery import build_skill_hints
 from .skills.evaluator import evaluate_skill_use
 from .skills.learning_policy import (
     build_deterministic_override_result,
+    prepare_learned_draft,
     resolve_override_observer_result,
 )
 from .skills.models import TurnTrace
@@ -1130,31 +1131,36 @@ async def _post_turn_skills(
                 )
                 update_target = primary_learned if override_obs.update_parent else None
                 draft = override_obs.draft
-                action = "update" if update_target else "create"
+                prepared = prepare_learned_draft(draft, trace)
+                if prepared is None:
+                    return suffix, meta_patch
+                draft = prepared
+                action = "update" if update_target is not None else "create"
 
                 async def _save_override(
                     *,
                     _draft=draft,
-                    _update=update_target,
-                    _action=action,
+                    _update_id=update_target.id if update_target is not None else None,
                 ) -> None:
                     try:
-                        await save_skill_from_draft(
+                        await persist_skill_draft(
                             hass,
                             entry_id,
                             _draft,
-                            update_existing=_update,
+                            trace=trace,
+                            update_skill_id=_update_id,
                             revision_reason=(
                                 "Override workflow merge"
-                                if _update is not None
+                                if _update_id is not None
                                 else "Override workflow child skill"
                             ),
+                            apply_quality_gate=False,
                         )
                         await _update_skill_status(hass, entry_id)
                     except Exception as err:
                         LOGGER.warning("Skill override save failed: %s", err)
 
-                if skills_config.learning_enabled:
+                if skills_config.auto_save:
                     from_version = (
                         update_target.version if update_target is not None else None
                     )
@@ -1249,15 +1255,19 @@ async def _post_turn_skills(
                 history=history,
             )
             if forked and forked.learn and forked.draft is not None:
+                prepared_fork = prepare_learned_draft(forked.draft, trace)
+                if prepared_fork is None:
+                    return suffix, meta_patch
                 if skills_config.auto_save:
 
-                    async def _save_fork() -> None:
+                    async def _save_fork(*, _draft=prepared_fork) -> None:
                         try:
-                            await save_skill_from_draft(
+                            await persist_skill_draft(
                                 hass,
                                 entry_id,
-                                forked.draft,
-                                update_existing=None,
+                                _draft,
+                                trace=trace,
+                                apply_quality_gate=False,
                             )
                             await _update_skill_status(hass, entry_id)
                         except Exception as err:
@@ -1265,7 +1275,7 @@ async def _post_turn_skills(
 
                     hass.async_create_task(_save_fork())
                     return (
-                        f" Saving skill variant: {forked.draft.title}.",
+                        f" Saving skill variant: {prepared_fork.title}.",
                         meta_patch,
                     )
                 queue_pending_save(
@@ -1274,11 +1284,11 @@ async def _post_turn_skills(
                     trace.conversation_id,
                     trace=trace,
                     history=history,
-                    skill_draft=forked.draft,
+                    skill_draft=prepared_fork,
                     observer_reason=forked.reason,
                 )
                 return (
-                    f" I can save a variant skill: {forked.draft.title}. "
+                    f" I can save a variant skill: {prepared_fork.title}. "
                     "Reply yes to confirm.",
                     meta_patch,
                 )
@@ -1319,28 +1329,32 @@ async def _post_turn_skills(
             )
         return suffix, meta_patch
 
+    prepared = prepare_learned_draft(observed.draft, trace)
+    if prepared is None:
+        if manual_save:
+            return (
+                " I couldn't save that — this turn has no executable tool workflow.",
+                meta_patch,
+            )
+        return suffix, meta_patch
+
     if manual_save or skills_config.auto_save:
 
-        async def _save() -> None:
+        async def _save(*, _draft=prepared) -> None:
             try:
-                store = get_skill_store(hass, entry_id)
-
-                def _find_dup():
-                    return store.find_duplicate(observed.draft.triggers)
-
-                duplicate = await hass.async_add_executor_job(_find_dup)
-                await save_skill_from_draft(
+                await persist_skill_draft(
                     hass,
                     entry_id,
-                    observed.draft,
-                    update_existing=duplicate,
+                    _draft,
+                    trace=trace,
+                    apply_quality_gate=False,
                 )
                 await _update_skill_status(hass, entry_id)
             except Exception as err:
                 LOGGER.warning("Skill creation failed: %s", err)
 
         hass.async_create_task(_save())
-        return f" Saving skill: {observed.draft.title}.", meta_patch
+        return f" Saving skill: {prepared.title}.", meta_patch
 
     queue_pending_save(
         hass,
@@ -1348,10 +1362,10 @@ async def _post_turn_skills(
         trace.conversation_id,
         trace=trace,
         history=history,
-        skill_draft=observed.draft,
+        skill_draft=prepared,
         observer_reason=observed.reason,
     )
-    return f" Save skill “{observed.draft.title}”?", meta_patch
+    return f" Save skill “{prepared.title}”?", meta_patch
 
 
 async def run_agent(

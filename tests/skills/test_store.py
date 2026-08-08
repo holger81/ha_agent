@@ -9,9 +9,7 @@ from pathlib import Path
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _load_store_module():
@@ -109,6 +107,38 @@ def test_find_duplicate(store: SkillStore) -> None:
     duplicate = store.find_duplicate(["open the patio cover"])
     assert duplicate is not None
     assert duplicate.title == "Patio cover"
+
+
+def test_find_duplicate_rejects_weak_cross_domain_token(store: SkillStore) -> None:
+    """A shared description token must not overwrite an unrelated skill."""
+    store.insert_skill(
+        title="Email digest",
+        description="Summarize inbox and highlight light reading.",
+        triggers=["email digest", "summarize inbox"],
+        body="workflow",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages"}],
+    )
+    duplicate = store.find_duplicate(
+        ["turn off dining room light", "turn off light"],
+        tool_steps=[{"toolName": "home_assistant__ha_call_service"}],
+    )
+    assert duplicate is None
+
+
+def test_find_duplicate_requires_compatible_tools(store: SkillStore) -> None:
+    """Different concrete tool fingerprints are not treated as duplicates."""
+    store.insert_skill(
+        title="Mark emails read",
+        description="Mark unread mail as read.",
+        triggers=["mark them as read", "mark unread as read"],
+        body="workflow",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages"}],
+    )
+    duplicate = store.find_duplicate(
+        ["mark them as read"],
+        tool_steps=[{"toolName": "home_assistant__ha_call_service"}],
+    )
+    assert duplicate is None
 
 
 def test_record_use_and_improvement_cooldown(store: SkillStore) -> None:

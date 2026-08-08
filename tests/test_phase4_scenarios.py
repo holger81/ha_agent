@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 MODULE_DEPS: dict[str, list[str]] = {
     "config_helpers": ["const"],
@@ -100,8 +98,6 @@ def _load_skills_modules() -> None:
 
 def _load_module(name: str):
     module_name = f"ha_agent.{name}"
-    if name == "agent":
-        _load_skills_modules()
     if module_name in sys.modules:
         return sys.modules[module_name]
 
@@ -565,6 +561,130 @@ async def test_phase4_email_param_error_repairs_skill(tmp_path) -> None:
         (step.get("arguments") or {}).get("mailbox") == "{{mailbox}}"
         for step in updated.tool_steps
     )
+
+
+@pytest.mark.asyncio
+async def test_override_learning_respects_auto_save_false(tmp_path) -> None:
+    """Override learning queues pending when auto_save is off."""
+    from unittest.mock import patch
+
+    _load_skills_modules()
+    store = _skill_store(tmp_path)
+    models_mod = sys.modules["ha_agent.skills.models"]
+    observer_mod = sys.modules.get("ha_agent.skills.observer")
+    if observer_mod is None:
+        path = COMPONENT / "skills" / "observer.py"
+        spec = importlib.util.spec_from_file_location("ha_agent.skills.observer", path)
+        assert spec is not None and spec.loader is not None
+        observer_mod = importlib.util.module_from_spec(spec)
+        sys.modules["ha_agent.skills.observer"] = observer_mod
+        spec.loader.exec_module(observer_mod)
+
+    parent = store.insert_skill(
+        title="Turn off lights",
+        description="Turn off lights via MCP.",
+        triggers=["turn off lights"],
+        body="Use `home_assistant__ha_call_service`.",
+        tool_steps=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "domain": "light",
+                    "service": "turn_off",
+                    "entity_id": "{{entity_id}}",
+                },
+            }
+        ],
+        route_scope="action",
+    )
+    draft = models_mod.SkillDraft(
+        title="Turn off dining room light",
+        description="Turn off dining room lights via MCP.",
+        triggers=["turn off dining room light"],
+        body="Use `home_assistant__ha_call_service`.",
+        tool_steps=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "domain": "light",
+                    "service": "turn_off",
+                    "entity_id": "light.dining_room",
+                },
+            }
+        ],
+        route_scope="action",
+    )
+    observed = observer_mod.SkillObserverResult(
+        learn=True,
+        reason="New dining-room workflow",
+        draft=draft,
+        update_parent=True,
+    )
+    trace = models_mod.TurnTrace(
+        user_text="turn off dining room light",
+        history_len=0,
+        route="action",
+        conversation_id="conv-override",
+        skill_plan_override=True,
+        outcome="success",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "succeeded": True,
+                "arguments": {
+                    "domain": "light",
+                    "service": "turn_off",
+                    "entity_id": "light.dining_room",
+                },
+            }
+        ],
+        controlled_entity_ids=["light.dining_room"],
+        assistant_text="Done.",
+        iterations=1,
+    )
+    hass = _hass()
+    hass.data = {"ha_agent": {"skill_stores": {"phase4-entry": store}}}
+    queued: list[dict] = []
+
+    def _queue(*args, **kwargs):
+        queued.append({"args": args, "kwargs": kwargs})
+
+    with (
+        patch.object(
+            agent_mod,
+            "observe_skill_override",
+            AsyncMock(return_value=observed),
+        ),
+        patch.object(agent_mod, "queue_pending_save", side_effect=_queue),
+        patch.object(agent_mod, "persist_skill_draft", AsyncMock()) as persist,
+        patch.object(
+            agent_mod,
+            "auto_repair_skill",
+            MagicMock(return_value=None),
+        ),
+        patch.object(agent_mod, "detect_repairable_issues", MagicMock(return_value=[])),
+    ):
+        suffix, _meta = await agent_mod._post_turn_skills(
+            hass,
+            entry_id="phase4-entry",
+            llm=MagicMock(),
+            backend=_backend(),
+            observer_backend=_backend(),
+            skills_config=config_helpers.SkillsConfig(
+                learning_enabled=True,
+                auto_save=False,
+                use_enabled=True,
+                max_inject=3,
+            ),
+            trace=trace,
+            history=[],
+            matched_skills=[parent],
+        )
+
+    persist.assert_not_called()
+    assert queued
+    assert queued[0]["kwargs"].get("update_skill_id") == parent.id
+    assert "Reply yes" in suffix
 
 
 def test_merge_learned_skills_for_post_turn_deduplicates() -> None:

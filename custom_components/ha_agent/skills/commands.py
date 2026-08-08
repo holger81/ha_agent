@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, cal
 from ..const import DATA_KEY, DOMAIN, LOGGER
 from ..context import is_affirmative
 from .creator import create_skill_from_trace
-from .models import PendingSkillDraft, Skill
+from .models import PendingSkillDraft
 from .runtime import pop_pending_draft, set_pending_draft
 from .store import get_skill_store
 
@@ -113,22 +113,14 @@ async def try_confirm_pending_save(
     if draft is None or draft.entry_id != entry_id:
         return None
     if draft.skill_draft is not None:
-        from .creator import save_skill_from_draft
-        from .store import get_skill_store
+        from .creator import persist_skill_draft
 
-        update_existing = None
-        if draft.update_skill_id:
-
-            def _load() -> Skill | None:
-                return get_skill_store(hass, entry_id).get_skill(draft.update_skill_id)
-
-            update_existing = await hass.async_add_executor_job(_load)
-
-        skill = await save_skill_from_draft(
+        skill = await persist_skill_draft(
             hass,
             entry_id,
             draft.skill_draft,
-            update_existing=update_existing,
+            trace=draft.trace,
+            update_skill_id=draft.update_skill_id,
         )
     else:
         skill = await create_skill_from_trace(
@@ -139,6 +131,7 @@ async def try_confirm_pending_save(
             trace=draft.trace,
             history=draft.history,
             manual_save=True,
+            update_skill_id=draft.update_skill_id,
         )
     if skill is None:
         set_pending_draft(hass, draft)

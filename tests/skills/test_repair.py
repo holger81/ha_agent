@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _load_repair():
@@ -152,3 +150,46 @@ def test_repair_adds_mailbox_to_imap_steps() -> None:
     for step in updated.tool_steps:
         args = step.get("arguments") or {}
         assert args.get("mailbox") == "{{mailbox}}"
+
+
+def test_repair_does_not_bake_entity_id_into_steps() -> None:
+    """Successful retries must not copy concrete entity_id into templates."""
+    skill = Skill(
+        id="s2",
+        slug="lights",
+        title="Lights",
+        description="Control lights",
+        triggers=["lights"],
+        body="Call service",
+        tool_steps=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {"domain": "light", "service": "turn_off"},
+            }
+        ],
+        route_scope="action",
+    )
+    trace = TurnTrace(
+        user_text="turn off dining lights",
+        history_len=0,
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "succeeded": True,
+                "arguments": {
+                    "domain": "light",
+                    "service": "turn_off",
+                    "entity_id": "light.dining_room",
+                },
+            }
+        ],
+    )
+    result = repair_skill_from_trace(skill, trace)
+    if result is None:
+        args = skill.tool_steps[0].get("arguments") or {}
+        assert "entity_id" not in args
+        return
+    updated, _reason = result
+    for step in updated.tool_steps:
+        args = step.get("arguments") or {}
+        assert args.get("entity_id") != "light.dining_room"

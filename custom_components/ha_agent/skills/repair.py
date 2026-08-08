@@ -180,7 +180,13 @@ def _merge_successful_retry_args(
                 existing = {}
             merged = {**existing}
             for key, value in retry_args.items():
+                if key in _VOLATILE_REPAIR_KEYS:
+                    continue
                 if key not in merged or merged[key] in ("", "{{" + key + "}}"):
+                    if isinstance(value, str) and re.fullmatch(
+                        r"[a-z_]+\.[a-z0-9_]+", value, re.IGNORECASE
+                    ):
+                        continue
                     merged[key] = value
                     changed = True
             step_copy["arguments"] = merged
@@ -189,6 +195,19 @@ def _merge_successful_retry_args(
     if not changed:
         return skill, None
     return skill, "merged successful retry arguments into tool steps"
+
+
+_VOLATILE_REPAIR_KEYS = frozenset(
+    {
+        "entity_id",
+        "message_id",
+        "message_ids",
+        "uid",
+        "uids",
+        "id",
+        "ids",
+    }
+)
 
 
 def _strip_discovery_from_steps(skill: Skill) -> tuple[Skill, str | None]:

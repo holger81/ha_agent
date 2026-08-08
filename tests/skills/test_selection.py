@@ -479,3 +479,49 @@ async def test_joke_on_chat_route_skips_learned_skills(monkeypatch) -> None:
     assert result.skills == []
     assert result.method == "skipped"
     llm.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chat_route_weak_fts_hit_does_not_pin(monkeypatch) -> None:
+    """Single FTS hit on chat must still require strong trigger overlap."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    email_skill = Skill(
+        id="email-1",
+        slug="email-digest",
+        title="Email digest",
+        description="Summarize unread mail with a light touch",
+        triggers=["email digest", "unread email summary"],
+        body="",
+        tool_steps=[],
+    )
+
+    store = MagicMock()
+    store.search.return_value = [MagicMock(id=email_skill.id)]
+    store.load_skills_by_ids.return_value = [email_skill]
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+
+    llm = MagicMock()
+    llm.chat = AsyncMock()
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        MagicMock(),
+        "turn off dining room light",
+        route="chat",
+    )
+
+    assert result.skills == []
+    assert result.method == "skipped"
+    assert "weak" in result.detail.lower()
+    llm.chat.assert_not_called()

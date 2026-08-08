@@ -10,9 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 _MODULE_DEPS: dict[str, list[str]] = {
     "const": [],
@@ -20,11 +18,24 @@ _MODULE_DEPS: dict[str, list[str]] = {
     "embedded_tools": [],
     "llm_client": ["const", "config_helpers", "embedded_tools"],
     "skills.models": [],
+    "skills.defaults": ["skills.models"],
+    "skills.tool_names": ["const", "skills.models"],
+    "skills.body": [
+        "skills.models",
+        "skills.tool_names",
+        "skills.defaults",
+    ],
+    "skills.learning_policy": [
+        "skills.models",
+        "skills.body",
+    ],
     "skills.observer": [
         "const",
         "config_helpers",
         "llm_client",
         "skills.models",
+        "skills.body",
+        "skills.learning_policy",
     ],
     "skills.store": ["const", "skills.models"],
     "skills.creator": [
@@ -34,6 +45,8 @@ _MODULE_DEPS: dict[str, list[str]] = {
         "skills.models",
         "skills.store",
         "skills.observer",
+        "skills.body",
+        "skills.learning_policy",
     ],
 }
 
@@ -145,13 +158,13 @@ async def test_create_skill_from_trace_uses_provided_draft() -> None:
         title="Evening lights",
         description="Turns off dining lights.",
         triggers=["turn off dining lights"],
-        body="Call ha_call_service.",
+        body="Call `home_assistant__ha_call_service`.",
         tool_steps=[],
     )
     fake_skill = MagicMock(title="Evening lights")
 
     class FakeStore:
-        def find_duplicate(self, _triggers):
+        def find_duplicate(self, _triggers, **_kwargs):
             return None
 
         def insert_skill(self, **_kwargs):
@@ -161,16 +174,143 @@ async def test_create_skill_from_trace_uses_provided_draft() -> None:
     hass.async_add_executor_job = AsyncMock(
         side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)
     )
+    trace = _turn_trace(
+        user_text="turn off dining lights",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "succeeded": True,
+                "arguments": {
+                    "domain": "light",
+                    "service": "turn_off",
+                    "entity_id": "light.dining_room",
+                },
+            }
+        ],
+        controlled_entity_ids=["light.dining_room"],
+    )
 
-    with patch.object(creator, "get_skill_store", lambda _h, _e: FakeStore()):
+    with (
+        patch.object(creator, "get_skill_store", lambda _h, _e: FakeStore()),
+        patch.object(creator, "async_mirror_skill_to_file", AsyncMock()),
+    ):
         result = await creator.create_skill_from_trace(
             hass,
             "entry",
             MagicMock(),
             MagicMock(),
-            trace=_turn_trace(user_text="x", history_len=0),
+            trace=trace,
             history=[],
             draft=draft,
         )
 
     assert result is fake_skill
+
+
+@pytest.mark.asyncio
+async def test_persist_skill_draft_rejects_prose_only() -> None:
+    creator = _load_module("skills.creator")
+    models = _load_module("skills.models")
+    SkillDraft = models.SkillDraft
+
+    draft = SkillDraft(
+        title="Turn off dining room light",
+        description="I have turned off the dining room lights.",
+        triggers=["turn off dining room light"],
+        body="1. Open the smart home app.\n2. Select Lights.",
+        tool_steps=[],
+    )
+    hass = MagicMock()
+    result = await creator.persist_skill_draft(
+        hass,
+        "entry",
+        draft,
+        trace=_turn_trace(
+            user_text="turn off dining room light",
+            history_len=0,
+            tool_calls=[
+                {
+                    "toolName": "searchToolsForDomain",
+                    "succeeded": True,
+                    "arguments": {},
+                }
+            ],
+        ),
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_skill_draft_honors_update_skill_id() -> None:
+    creator = _load_module("skills.creator")
+    models = _load_module("skills.models")
+    SkillDraft = models.SkillDraft
+    Skill = models.Skill
+
+    existing = Skill(
+        id="email-1",
+        slug="mark-them-as-read",
+        title="mark them as read",
+        description="Mark mail read",
+        triggers=["mark them as read"],
+        body="old",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages"}],
+        version=1,
+    )
+    draft = SkillDraft(
+        title="Evening lights",
+        description="Turn off lights",
+        triggers=["turn off dining lights"],
+        body="Call `home_assistant__ha_call_service`.",
+        tool_steps=[],
+    )
+
+    class FakeStore:
+        def get_skill(self, skill_id):
+            assert skill_id == "email-1"
+            return existing
+
+        def find_duplicate(self, *_a, **_k):
+            raise AssertionError("find_duplicate must not run when update_skill_id set")
+
+        def save_revision(self, *_a, **_k):
+            return "rev"
+
+        def update_skill(self, skill):
+            return skill
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(
+        side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)
+    )
+    trace = _turn_trace(
+        user_text="turn off dining lights",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "succeeded": True,
+                "arguments": {"entity_id": "light.dining_room"},
+            }
+        ],
+        controlled_entity_ids=["light.dining_room"],
+    )
+
+    with (
+        patch.object(creator, "get_skill_store", lambda _h, _e: FakeStore()),
+        patch.object(creator, "async_mirror_skill_to_file", AsyncMock()),
+    ):
+        result = await creator.persist_skill_draft(
+            hass,
+            "entry",
+            draft,
+            trace=trace,
+            update_skill_id="email-1",
+        )
+
+    assert result is existing
+    assert result.title == "Evening lights"
+    assert result.version == 2

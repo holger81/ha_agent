@@ -46,6 +46,7 @@ def revision_snapshot_summary(snapshot_json: str) -> dict[str, Any]:
         "trigger_count": len(triggers) if isinstance(triggers, list) else 0,
     }
 
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS skills (
     id TEXT PRIMARY KEY,
@@ -175,8 +176,7 @@ class SkillStore:
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
         existing = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(skills)").fetchall()
+            row[1] for row in conn.execute("PRAGMA table_info(skills)").fetchall()
         }
         for column, ddl in _ADDED_COLUMNS.items():
             if column not in existing:
@@ -350,18 +350,26 @@ class SkillStore:
 
     def get_skill(self, skill_id: str) -> Skill | None:
         """Return a skill by id."""
-        row = self._connection().execute(
-            "SELECT * FROM skills WHERE id = ?",
-            (skill_id,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT * FROM skills WHERE id = ?",
+                (skill_id,),
+            )
+            .fetchone()
+        )
         return _row_to_skill(row) if row else None
 
     def get_skill_by_slug(self, slug: str) -> Skill | None:
         """Return a skill by slug."""
-        row = self._connection().execute(
-            "SELECT * FROM skills WHERE slug = ?",
-            (slug,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT * FROM skills WHERE slug = ?",
+                (slug,),
+            )
+            .fetchone()
+        )
         return _row_to_skill(row) if row else None
 
     def delete_skill(self, skill_id: str) -> bool:
@@ -383,31 +391,47 @@ class SkillStore:
     def count_skills(self, *, enabled_only: bool = False) -> int:
         """Return total skill count."""
         if enabled_only:
-            row = self._connection().execute(
-                "SELECT COUNT(*) AS c FROM skills WHERE enabled = 1",
-            ).fetchone()
+            row = (
+                self._connection()
+                .execute(
+                    "SELECT COUNT(*) AS c FROM skills WHERE enabled = 1",
+                )
+                .fetchone()
+            )
         else:
-            row = self._connection().execute(
-                "SELECT COUNT(*) AS c FROM skills",
-            ).fetchone()
+            row = (
+                self._connection()
+                .execute(
+                    "SELECT COUNT(*) AS c FROM skills",
+                )
+                .fetchone()
+            )
         return int(row["c"]) if row else 0
 
     def list_recent(self, *, limit: int = 10) -> list[Skill]:
         """Return recently used skills."""
-        rows = self._connection().execute(
-            "SELECT * FROM skills ORDER BY "
-            "COALESCE(last_used_at, created_at) DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT * FROM skills ORDER BY "
+                "COALESCE(last_used_at, created_at) DESC LIMIT ?",
+                (limit,),
+            )
+            .fetchall()
+        )
         return [_row_to_skill(row) for row in rows]
 
     def list_enabled(self, *, limit: int = 50) -> list[Skill]:
         """Return enabled skills ordered by recent use."""
-        rows = self._connection().execute(
-            "SELECT * FROM skills WHERE enabled = 1 ORDER BY "
-            "COALESCE(last_used_at, created_at) DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT * FROM skills WHERE enabled = 1 ORDER BY "
+                "COALESCE(last_used_at, created_at) DESC LIMIT ?",
+                (limit,),
+            )
+            .fetchall()
+        )
         return [_row_to_skill(row) for row in rows]
 
     def search(
@@ -463,10 +487,14 @@ class SkillStore:
         if not skill_ids:
             return []
         placeholders = ",".join("?" for _ in skill_ids)
-        rows = self._connection().execute(
-            f"SELECT * FROM skills WHERE id IN ({placeholders})",
-            skill_ids,
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                f"SELECT * FROM skills WHERE id IN ({placeholders})",
+                skill_ids,
+            )
+            .fetchall()
+        )
         by_id = {row["id"]: _row_to_skill(row) for row in rows}
         return [by_id[sid] for sid in skill_ids if sid in by_id]
 
@@ -556,11 +584,15 @@ class SkillStore:
 
     def list_revisions(self, skill_id: str, *, limit: int = 20) -> list[SkillRevision]:
         """Return revision history for one skill, newest first."""
-        rows = self._connection().execute(
-            "SELECT * FROM skill_revisions WHERE skill_id = ? "
-            "ORDER BY created_at DESC LIMIT ?",
-            (skill_id, limit),
-        ).fetchall()
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT * FROM skill_revisions WHERE skill_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (skill_id, limit),
+            )
+            .fetchall()
+        )
         return [
             SkillRevision(
                 id=row["id"],
@@ -575,10 +607,14 @@ class SkillStore:
 
     def restore_revision(self, revision_id: str) -> Skill | None:
         """Restore a skill from a revision snapshot."""
-        row = self._connection().execute(
-            "SELECT * FROM skill_revisions WHERE id = ?",
-            (revision_id,),
-        ).fetchone()
+        row = (
+            self._connection()
+            .execute(
+                "SELECT * FROM skill_revisions WHERE id = ?",
+                (revision_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         try:
@@ -611,16 +647,93 @@ class SkillStore:
         self,
         triggers: list[str],
         *,
-        rank_threshold: float = 100.0,
+        tool_steps: list[dict[str, Any]] | None = None,
+        route_scope: str | None = None,
+        candidate_limit: int = 5,
+        min_trigger_overlap: float = 0.5,
     ) -> Skill | None:
-        """Return an existing skill that closely matches trigger phrases."""
+        """Return an existing skill that closely matches trigger phrases.
+
+        FTS only proposes candidates. A hit must also clear trigger-token overlap
+        and optional tool/route compatibility so weak token matches cannot
+        overwrite unrelated skills.
+        """
         combined = " ".join(triggers)
-        matches = self.search(combined, limit=1, enabled_only=False)
+        matches = self.search(combined, limit=candidate_limit, enabled_only=False)
         if not matches:
             return None
-        if matches[0].rank > rank_threshold:
-            return None
-        return self.get_skill(matches[0].id)
+        draft_tools = _non_discovery_tool_names(tool_steps)
+        for match in matches:
+            skill = self.get_skill(match.id)
+            if skill is None:
+                continue
+            if (
+                route_scope
+                and skill.route_scope
+                and str(skill.route_scope).lower() != str(route_scope).lower()
+            ):
+                continue
+            overlap = _trigger_token_overlap(
+                triggers,
+                [*skill.triggers, skill.title],
+            )
+            if overlap < min_trigger_overlap:
+                continue
+            if not _tool_steps_compatible(draft_tools, skill.tool_steps):
+                continue
+            return skill
+        return None
+
+
+def _trigger_token_overlap(left: list[str], right: list[str]) -> float:
+    """Return Jaccard similarity of normalized word sets (len > 2)."""
+
+    def tokens(items: list[str]) -> set[str]:
+        words: set[str] = set()
+        for item in items:
+            for word in re.findall(r"[a-z0-9]+", str(item).lower()):
+                if len(word) > 2:
+                    words.add(word)
+        return words
+
+    a = tokens(left)
+    b = tokens(right)
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _non_discovery_tool_names(tool_steps: list[dict[str, Any]] | None) -> set[str]:
+    names: set[str] = set()
+    for step in tool_steps or []:
+        if not isinstance(step, dict):
+            continue
+        name = str(step.get("toolName") or step.get("name") or "").strip()
+        if not name:
+            continue
+        if re.search(
+            r"(searchToolsForDomain|searchTool|tools/list|tools_list)",
+            name,
+            re.IGNORECASE,
+        ):
+            continue
+        names.add(name.lower())
+    return names
+
+
+def _tool_steps_compatible(
+    draft_tools: set[str],
+    skill_tool_steps: list[dict[str, Any]] | None,
+) -> bool:
+    """Return True when tool fingerprints are compatible for dedupe."""
+    skill_tools = _non_discovery_tool_names(skill_tool_steps)
+    if not draft_tools and not skill_tools:
+        return True
+    if not draft_tools or not skill_tools:
+        return False
+    return bool(draft_tools & skill_tools)
 
 
 def _build_fts_query(text: str) -> str:

@@ -377,6 +377,14 @@ def _resolve_chat_route_skills(
             summary="no skill (chat route)",
             detail="Chat turns skip learned skills unless one clearly matches.",
         )
+    if not _strong_fts_match(user_text, skill):
+        return SkillSelectionResult(
+            skills=[],
+            method="skipped",
+            summary="no skill (chat route)",
+            detail="Chat FTS hit was too weak to pin without stronger overlap.",
+            candidate_count=1,
+        )
     return SkillSelectionResult(
         skills=[skill][:max_inject],
         method="fts_only",

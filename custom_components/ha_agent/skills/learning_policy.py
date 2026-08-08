@@ -99,6 +99,7 @@ def _effect_set(tool_names: list[str]) -> frozenset[str]:
 
 def trigger_overlap(left: list[str], right: list[str]) -> float:
     """Return Jaccard similarity of normalized trigger word sets."""
+
     def tokens(items: list[str]) -> set[str]:
         words: set[str] = set()
         for item in items:
@@ -154,11 +155,7 @@ def analyze_workflow_delta(parent: Skill, trace: TurnTrace) -> WorkflowDelta:
             + ", ".join(new_tools[:4])
             + ("…" if len(new_tools) > 4 else "")
         )
-    if (
-        "mutate" in added_effects
-        and parent_effects
-        and "mutate" not in parent_effects
-    ):
+    if "mutate" in added_effects and parent_effects and "mutate" not in parent_effects:
         recommendation = "fork"
         reason = (
             "Turn adds mutating tools while the parent workflow is read/query-only."
@@ -186,11 +183,7 @@ def recommend_override_save_mode(
     if draft_would_regress_parent(parent, draft):
         return "fork"
     overlap = trigger_overlap(parent.triggers, draft.triggers)
-    if (
-        delta.recommendation == "update"
-        and overlap < 0.15
-        and delta.new_tools
-    ):
+    if delta.recommendation == "update" and overlap < 0.15 and delta.new_tools:
         return "fork"
     return delta.recommendation
 
@@ -207,10 +200,7 @@ def tool_steps_from_trace(trace: TurnTrace) -> list[dict[str, Any]]:
         args = call.get("arguments")
         if name not in by_tool and isinstance(args, dict):
             by_tool[name] = dict(args)
-    return [
-        {"toolName": name, "arguments": args}
-        for name, args in by_tool.items()
-    ]
+    return [{"toolName": name, "arguments": args} for name, args in by_tool.items()]
 
 
 def enrich_draft_from_trace(draft: SkillDraft, trace: TurnTrace) -> SkillDraft:
@@ -244,6 +234,136 @@ def enrich_draft_from_trace(draft: SkillDraft, trace: TurnTrace) -> SkillDraft:
         parent_id=draft.parent_id,
         route_scope=draft.route_scope,
     )
+
+
+_MCP_TOOL_NAME = re.compile(
+    r"\b([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)\b",
+    re.IGNORECASE,
+)
+_VOLATILE_ARG_KEYS = frozenset(
+    {
+        "entity_id",
+        "message_id",
+        "message_ids",
+        "uid",
+        "uids",
+        "id",
+        "ids",
+    }
+)
+
+
+def draft_has_executable_tools(draft: SkillDraft) -> bool:
+    """Return True when draft tool_steps or body name concrete MCP tools."""
+    names = concrete_tool_names_from_steps(draft.tool_steps)
+    if names:
+        return True
+    return bool(_MCP_TOOL_NAME.search(draft.body or ""))
+
+
+def prepare_learned_draft(draft: SkillDraft, trace: TurnTrace) -> SkillDraft | None:
+    """Ground a draft in successful trace tools or reject prose-only skills.
+
+    Returns None when the turn has no reusable non-discovery workflow.
+    """
+    trace_steps = tool_steps_from_trace(trace)
+    if not trace_steps:
+        return None
+
+    grounded = SkillDraft(
+        title=draft.title,
+        description=draft.description,
+        triggers=draft.triggers,
+        body=draft.body,
+        tool_steps=trace_steps,
+        slots=list(draft.slots),
+        preconditions=draft.preconditions,
+        parent_id=draft.parent_id,
+        route_scope=draft.route_scope or (str(trace.route).strip() or None),
+    )
+    grounded = _slotify_action_entity_ids(grounded, trace)
+    if not draft_has_executable_tools(grounded):
+        return None
+    return grounded
+
+
+def _slotify_action_entity_ids(draft: SkillDraft, trace: TurnTrace) -> SkillDraft:
+    """Prefer {{entity_id}} slots over baking one-off entity ids for action turns."""
+    route = (trace.route or draft.route_scope or "").lower()
+    if route not in {"action", "ha_action"} and not trace.controlled_entity_ids:
+        return draft
+
+    entity_ids = [
+        str(eid).strip()
+        for eid in trace.controlled_entity_ids
+        if isinstance(eid, str) and eid.strip()
+    ]
+    if not entity_ids:
+        for step in draft.tool_steps:
+            args = step.get("arguments") if isinstance(step, dict) else None
+            if not isinstance(args, dict):
+                continue
+            value = args.get("entity_id")
+            if isinstance(value, str) and "." in value:
+                entity_ids.append(value)
+            elif isinstance(value, list):
+                entity_ids.extend(
+                    str(item) for item in value if isinstance(item, str) and "." in item
+                )
+    if not entity_ids:
+        return draft
+
+    slots = list(draft.slots)
+    if not any(slot.name == "entity_id" for slot in slots):
+        from .models import SkillSlot
+
+        slots.append(
+            SkillSlot(
+                name="entity_id",
+                description="Home Assistant entity to control",
+                source="user",
+                default=None,
+            )
+        )
+
+    new_steps: list[dict[str, Any]] = []
+    for step in draft.tool_steps:
+        if not isinstance(step, dict):
+            continue
+        step_copy = dict(step)
+        args = step_copy.get("arguments")
+        if isinstance(args, dict) and "entity_id" in args:
+            merged = dict(args)
+            merged["entity_id"] = "{{entity_id}}"
+            step_copy["arguments"] = merged
+        new_steps.append(step_copy)
+
+    return SkillDraft(
+        title=draft.title,
+        description=draft.description,
+        triggers=draft.triggers,
+        body=draft.body,
+        tool_steps=new_steps,
+        slots=slots,
+        preconditions=draft.preconditions,
+        parent_id=draft.parent_id,
+        route_scope=draft.route_scope,
+    )
+
+
+def sanitize_repair_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Drop volatile one-off argument values from repair merges."""
+    cleaned: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if key in _VOLATILE_ARG_KEYS:
+            continue
+        if isinstance(value, str) and re.fullmatch(
+            r"[a-z_]+\.[a-z0-9_]+", value, re.IGNORECASE
+        ):
+            # Likely a concrete entity_id stored under another key.
+            continue
+        cleaned[key] = value
+    return cleaned
 
 
 def merge_parent_skill_draft(
