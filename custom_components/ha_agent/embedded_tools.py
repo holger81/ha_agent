@@ -20,6 +20,32 @@ _COMPACT_CALL = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _GEMMA_STRING_QUOTE = re.compile(r'<\|"\|>')
+# Small models often emit: [searchToolsForDomain domain="smart-home", query="..."]
+# or [home_assistant__ha_call_service service="turn_off", entity_id="light.x"]
+_BRACKET_TOOL_NAMES = (
+    r"searchToolsForDomain|searchTool|callTool|"
+    r"[a-z][a-z0-9_]*(?:__[a-z0-9_]+)+"
+)
+_BRACKET_TOOL_CALL = re.compile(
+    rf"\[(?P<name>{_BRACKET_TOOL_NAMES})(?P<body>[^\]]*)\]",
+    re.IGNORECASE,
+)
+_BRACKET_KV = re.compile(
+    r"""
+    (?P<key>[A-Za-z_][A-Za-z0-9_]*)
+    \s*=\s*
+    (?:
+        "(?P<dq>[^"]*)"
+        |'(?P<sq>[^']*)'
+        |(?P<bare>[^\s,\]]+)
+    )
+    """,
+    re.VERBOSE,
+)
+_TRAILING_TOOL_JUNK = re.compile(
+    r"(?:\]+)?(?:\s*<\|/?tool_call(?:_end)?\|>)*\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -61,6 +87,22 @@ def _parse_compact_call_body(body: str) -> dict[str, Any]:
     if not normalized.startswith("{"):
         normalized = f"{{{normalized}}}"
     return _parse_js_like_object(normalized)
+
+
+def _parse_bracket_kv_body(body: str) -> dict[str, Any]:
+    """Parse key="value" pairs from bracket-style tool markup."""
+    cleaned = _TRAILING_TOOL_JUNK.sub("", body.strip())
+    args: dict[str, Any] = {}
+    for match in _BRACKET_KV.finditer(cleaned):
+        key = match.group("key")
+        value = match.group("dq")
+        if value is None:
+            value = match.group("sq")
+        if value is None:
+            value = (match.group("bare") or "").strip().rstrip("]")
+        if key:
+            args[key] = value
+    return args
 
 
 def _tool_call_from_name_and_args(
@@ -156,14 +198,44 @@ def _parse_tool_call_block(block: str, *, call_id: str) -> ParsedToolCall | None
 
 def parse_embedded_tool_calls(content: str | None) -> list[ParsedToolCall]:
     """Extract tool calls written as text instead of API tool_calls."""
-    if not content or "<|tool_call|>" not in content.lower():
+    if not content:
         return []
 
     calls: list[ParsedToolCall] = []
-    for index, match in enumerate(_TOOL_CALL_BLOCK.finditer(content)):
-        call = _parse_tool_call_block(match.group(1), call_id=f"call_embedded_{index}")
-        if call:
-            calls.append(call)
+    lowered = content.lower()
+    if "<|tool_call|>" in lowered:
+        for index, match in enumerate(_TOOL_CALL_BLOCK.finditer(content)):
+            call = _parse_tool_call_block(
+                match.group(1), call_id=f"call_embedded_{index}"
+            )
+            if call:
+                calls.append(call)
+
+    # Prefer classic markup when both forms appear; otherwise recover LFM
+    # bracket-style invocations that never used <|tool_call|> wrappers.
+    if calls:
+        return calls
+
+    for index, match in enumerate(_BRACKET_TOOL_CALL.finditer(content)):
+        name = match.group("name")
+        args = _parse_bracket_kv_body(match.group("body") or "")
+        if not name:
+            continue
+        # Require at least one argument for bare session tools to avoid
+        # treating prose like "[searchTool]" mentions as calls.
+        if not args and name.lower() in {
+            "searchtoolsfordomain",
+            "searchtool",
+            "calltool",
+        }:
+            continue
+        calls.append(
+            _tool_call_from_name_and_args(
+                name,
+                args,
+                call_id=f"call_bracket_{index}",
+            )
+        )
     return calls
 
 
@@ -171,7 +243,10 @@ def strip_embedded_tool_markup(content: str | None) -> str:
     """Remove embedded tool-call markup from assistant text."""
     if not content:
         return ""
-    return _TOOL_CALL_BLOCK.sub("", content).strip()
+    text = _TOOL_CALL_BLOCK.sub("", content)
+    text = _BRACKET_TOOL_CALL.sub("", text)
+    text = re.sub(r"<\|/?tool_call(?:_end)?\|>", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def is_tool_call_only_text(content: str | None) -> bool:
@@ -203,5 +278,12 @@ def safe_stream_display_text(text: str) -> str:
     tool_start = candidate.lower().find(_TOOL_CALL_MARKER.lower())
     if tool_start != -1:
         candidate = candidate[:tool_start]
+
+    # Hold back a trailing open bracket tool call while streaming.
+    open_bracket = candidate.rfind("[")
+    if open_bracket != -1 and "]" not in candidate[open_bracket:]:
+        maybe = candidate[open_bracket + 1 :]
+        if re.match(rf"(?:{_BRACKET_TOOL_NAMES})\b", maybe, re.IGNORECASE):
+            candidate = candidate[:open_bracket]
 
     return strip_embedded_tool_markup(candidate)

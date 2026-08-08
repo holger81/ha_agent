@@ -207,6 +207,36 @@ def test_normalize_ha_call_service_resolves_display_name() -> None:
     assert tool_args["arguments"]["domain"] == "light"
 
 
+def test_normalize_ha_call_service_replaces_smart_home_domain() -> None:
+    """MCP route domains like smart-home are replaced from entity_id."""
+    call = llm_client.ToolCall(
+        id="call_smart_home",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "domain": "smart-home",
+                    "service": "turn_off",
+                    "entity_id": "light.dining_room",
+                },
+            }
+        ),
+    )
+    exposed = [
+        {
+            "entity_id": "light.dining_room_lights_ceiling",
+            "name": "Dining Room Ceiling Lights",
+            "aliases": ["dining room lights"],
+        }
+    ]
+
+    _, tool_args = tools._normalize_tool_call(call, exposed_entities=exposed)
+
+    assert tool_args["arguments"]["domain"] == "light"
+    assert tool_args["arguments"]["entity_id"] == "light.dining_room_lights_ceiling"
+
+
 def test_normalize_doubled_mcp_tool_prefix() -> None:
     """Duplicate MCP server prefixes are collapsed before callTool."""
     call = llm_client.ToolCall(

@@ -8,9 +8,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load_module(name: str):
@@ -38,7 +36,7 @@ embedded_tools = _load_module("embedded_tools")
 def test_parse_compact_gemma_tool_call_from_screenshot() -> None:
     """Gemma compact call:TOOL{query:<|"|>...} blocks are parsed."""
     content = (
-        '<|tool_call|>call:home_assistant__ha_search_entities'
+        "<|tool_call|>call:home_assistant__ha_search_entities"
         '{query:<|"|>camera snapshot<|"|>}<tool_call|>'
     )
     calls = embedded_tools.parse_embedded_tool_calls(content)
@@ -53,7 +51,7 @@ def test_parse_compact_gemma_tool_call_from_screenshot() -> None:
 def test_parse_direct_mcp_tool_call_from_screenshot() -> None:
     """Gemma-style call:TOOL{arguments:{...}} blocks are parsed."""
     content = (
-        '<|tool_call|>call:home_assistant__ha_search_entities'
+        "<|tool_call|>call:home_assistant__ha_search_entities"
         '{arguments: {domain_filter:"sensor",query:"email"}}<tool_call|>'
     )
     calls = embedded_tools.parse_embedded_tool_calls(content)
@@ -73,6 +71,40 @@ def test_strip_embedded_tool_markup() -> None:
 
 def test_is_tool_call_only_text() -> None:
     """Detect responses that contain only tool-call markup."""
-    content = '<|tool_call|>call:test{arguments:{}}<tool_call|>'
+    content = "<|tool_call|>call:test{arguments:{}}<tool_call|>"
     assert embedded_tools.is_tool_call_only_text(content)
     assert not embedded_tools.is_tool_call_only_text("Here you go.")
+
+
+def test_parse_bracket_search_tools_for_domain() -> None:
+    """LFM bracket-style discovery calls are executed, not left as prose."""
+    content = (
+        "Let's search for the appropriate smart-home control tool.\n\n"
+        '[searchToolsForDomain domain="smart-home", '
+        'query="turn off dining room lights"]'
+    )
+    calls = embedded_tools.parse_embedded_tool_calls(content)
+    assert len(calls) == 1
+    assert calls[0].name == "searchToolsForDomain"
+    args = json.loads(calls[0].arguments)
+    assert args["domain"] == "smart-home"
+    assert args["query"] == "turn off dining room lights"
+    stripped = embedded_tools.strip_embedded_tool_markup(content)
+    assert "searchToolsForDomain" not in stripped
+    assert "Let's search" in stripped
+
+
+def test_parse_bracket_ha_call_service() -> None:
+    """Bracket-style upstream tool calls map to callTool."""
+    content = (
+        '[home_assistant__ha_call_service domain="smart-home", '
+        'service="turn_off", entity_id="light.dining_room"]]'
+        "<|tool_call_end|>"
+    )
+    calls = embedded_tools.parse_embedded_tool_calls(content)
+    assert len(calls) == 1
+    assert calls[0].name == "callTool"
+    args = json.loads(calls[0].arguments)
+    assert args["toolName"] == "home_assistant__ha_call_service"
+    assert args["arguments"]["service"] == "turn_off"
+    assert args["arguments"]["entity_id"] == "light.dining_room"

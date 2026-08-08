@@ -80,13 +80,11 @@ def _resolve_entity_id(
         return value
 
     candidate = value.strip()
-    if _looks_like_entity_id(candidate):
-        return candidate
-
     if not exposed_entities:
         return candidate
 
     lowered = candidate.lower()
+    exact_ids: list[str] = []
     for entity in exposed_entities:
         entity_id = entity.get("entity_id")
         if not isinstance(entity_id, str):
@@ -95,16 +93,41 @@ def _resolve_entity_id(
             return entity_id
         name = entity.get("name")
         if isinstance(name, str) and lowered == name.lower():
-            return entity_id
+            exact_ids.append(entity_id)
+            continue
         area = entity.get("area_name")
         if isinstance(area, str) and lowered == area.lower():
-            return entity_id
+            exact_ids.append(entity_id)
+            continue
         aliases = entity.get("aliases")
         if isinstance(aliases, list) and any(
             isinstance(alias, str) and lowered == alias.lower() for alias in aliases
         ):
-            return entity_id
+            exact_ids.append(entity_id)
+    if len(exact_ids) == 1:
+        return exact_ids[0]
+    if exact_ids:
+        return exact_ids[0]
+
+    # Partial entity_id prefixes from small models, e.g. light.dining_room →
+    # light.dining_room_lights_ceiling when uniquely matched.
+    if _looks_like_entity_id(candidate):
+        prefix_hits = [
+            entity_id
+            for entity in exposed_entities
+            if isinstance((entity_id := entity.get("entity_id")), str)
+            and entity_id.lower().startswith(lowered)
+        ]
+        if len(prefix_hits) == 1:
+            return prefix_hits[0]
+        return candidate
+
     return candidate
+
+
+_MCP_ROUTE_DOMAINS = frozenset(
+    {"smart-home", "smart_home", "email", "news", "mcp", "home"}
+)
 
 
 def _domain_from_entity_id(entity_id: Any) -> str | None:
@@ -156,10 +179,15 @@ def _normalize_ha_call_service_arguments(
             normalized["entity_id"],
             exposed_entities,
         )
-    if not normalized.get("domain") and (
-        domain := _domain_from_entity_id(normalized.get("entity_id"))
-    ):
-        normalized["domain"] = domain
+    entity_domain = _domain_from_entity_id(normalized.get("entity_id"))
+    raw_domain = normalized.get("domain")
+    domain_key = (
+        str(raw_domain).strip().lower().replace("_", "-")
+        if raw_domain is not None
+        else ""
+    )
+    if entity_domain and (not domain_key or domain_key in _MCP_ROUTE_DOMAINS):
+        normalized["domain"] = entity_domain
     return normalized
 
 
