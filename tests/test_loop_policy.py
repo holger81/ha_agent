@@ -9,9 +9,7 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load_loop_policy():
@@ -69,9 +67,7 @@ def test_check_stuck_allows_repeat_when_pagination_pending() -> None:
         {"messages": [{"uid": 1}], "hasMore": True, "offset": 0, "limit": 10}
     )
 
-    assert (
-        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
-    )
+    assert policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
     policy.record_pagination_state(
         state,
         "mail_mcp__imap_search_messages",
@@ -79,9 +75,7 @@ def test_check_stuck_allows_repeat_when_pagination_pending() -> None:
         args,
     )
 
-    assert (
-        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
-    )
+    assert policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
     assert state.stuck is False
     assert state.duplicate_blocks == {}
 
@@ -96,18 +90,14 @@ def test_check_stuck_blocks_duplicate_after_pagination_completes() -> None:
     )
     final = json.dumps({"messages": [{"uid": 2}], "hasMore": False})
 
-    assert (
-        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
-    )
+    assert policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
     policy.record_pagination_state(
         state,
         "mail_mcp__imap_search_messages",
         paged,
         args,
     )
-    assert (
-        policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
-    )
+    assert policy.check_stuck(state, "mail_mcp__imap_search_messages", args) is None
     policy.record_pagination_state(
         state,
         "mail_mcp__imap_search_messages",
@@ -133,16 +123,14 @@ def test_reasoning_stream_stuck_on_alternating_paraphrases() -> None:
     policy = _load_loop_policy()
     cycle = (
         "Let's try 'home_assistant__ha_search' with \"jonathan sensor\".\n"
-        "Wait, I'll try to search for \"jonathan\" and look for \"sensor\" "
+        'Wait, I\'ll try to search for "jonathan" and look for "sensor" '
         "in the 'entity_id'.\n"
-        "Actually, I'll try to search for \"jonathan\" and look for \"sensor\" "
+        'Actually, I\'ll try to search for "jonathan" and look for "sensor" '
         "in the 'entity_id'.\n"
         "Let's try 'home_assistant__ha_search' with \"jonathan sensor\".\n"
     )
     assert policy.reasoning_stream_stuck(cycle) is True
-    assert (
-        policy.is_reasoning_loop(cycle, has_tools=False, content="") is True
-    )
+    assert policy.is_reasoning_loop(cycle, has_tools=False, content="") is True
 
 
 def test_is_reasoning_loop_ignores_tools_and_answers() -> None:
@@ -150,12 +138,8 @@ def test_is_reasoning_loop_ignores_tools_and_answers() -> None:
     policy = _load_loop_policy()
     phrase = "Wait, I'll try mail_mcp__imap_search_messages with mailbox INBOX. "
     stuck = phrase * 6
-    assert (
-        policy.is_reasoning_loop(stuck, has_tools=False, content="") is True
-    )
-    assert (
-        policy.is_reasoning_loop(stuck, has_tools=True, content="") is False
-    )
+    assert policy.is_reasoning_loop(stuck, has_tools=False, content="") is True
+    assert policy.is_reasoning_loop(stuck, has_tools=True, content="") is False
     assert (
         policy.is_reasoning_loop(
             stuck,
@@ -322,9 +306,7 @@ def test_inject_loop_context_includes_plan_and_failures() -> None:
     policy = _load_loop_policy()
     state = policy.LoopState()
     policy.initialize_loop_plan(state, goal="news briefing", route="news")
-    state.pending_failure_summary = (
-        "TURN PROGRESS SUMMARY\n- news_curate failed"
-    )
+    state.pending_failure_summary = "TURN PROGRESS SUMMARY\n- news_curate failed"
     messages: list[dict[str, str]] = []
 
     policy.inject_loop_context(messages, state)
@@ -803,6 +785,71 @@ def test_reasoning_skill_override_marker() -> None:
     assert state.skill_plan_override is True
     assert state.plan_steps == []
     assert not policy.skill_plan_blocks_discovery(state)
+
+
+def test_skill_plan_seeds_calltool_not_discovery() -> None:
+    """Skill tool_steps should steer to callTool, not searchTool."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="what is the outdoor air quality",
+        route="action",
+        tool_steps=[
+            {
+                "toolName": "home_assistant__ha_get_state",
+                "arguments": {"entity_id": "sensor.home_outdoor_aqi_5min_mean"},
+            },
+            {"toolName": "home_assistant__ha_search"},
+        ],
+        skill_title="Look up sensor or entity status",
+    )
+    assert policy.skill_plan_blocks_discovery(state)
+    assert any("callTool" in hint for hint in state.mcp_guidance)
+    assert any("home_assistant__ha_get_state" in hint for hint in state.mcp_guidance)
+    assert not any(
+        "Discover this tool with searchTool" in hint for hint in state.mcp_guidance
+    )
+    next_action = policy.describe_plan_next_action(state)
+    assert "callTool" in next_action
+    assert "home_assistant__ha_get_state" in next_action
+
+
+def test_skill_discovery_block_steers_to_calltool() -> None:
+    """Blocked searchTool must nudge callTool and count as unproductive."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="what is the outdoor air quality",
+        route="action",
+        tool_steps=[
+            {"toolName": "home_assistant__ha_get_state"},
+            {"toolName": "home_assistant__ha_search"},
+        ],
+        skill_title="Look up sensor or entity status",
+    )
+    blocked = policy.build_skill_discovery_block_message(state)
+    assert "callTool" in blocked
+    assert "home_assistant__ha_get_state" in blocked
+    assert "searchTool" in blocked.lower() or "discovery" in blocked.lower()
+
+    policy.record_skill_discovery_block_guidance(state, "searchTool", blocked)
+    assert state.iteration_had_duplicate_block is True
+    assert state.discovery_streak == 1
+    assert any("DISCOVERY BLOCKED" in hint for hint in state.mcp_guidance)
+    assert any(
+        "do not run searchTool" in hint.lower() or "Call callTool" in hint
+        for hint in state.mcp_guidance
+    )
+
+    adherence = policy.build_mcp_tool_adherence_hint(
+        state,
+        "home_assistant__ha_get_state",
+        lead_in="Required next skill-plan tool:",
+    )
+    assert "Call callTool" in adherence
+    assert "Discover this tool with searchTool" not in adherence
 
 
 def test_reasoning_declares_skill_mismatch_without_marker() -> None:
@@ -1311,31 +1358,207 @@ def test_analyze_entity_lookup_unavailable_state_nudges_search() -> None:
     assert any("comparable" in hint for hint in state.mcp_guidance)
 
 
+def test_analyze_entity_lookup_validation_failed_nudges_search() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "temperature in Jonathans room"
+    output = json.dumps(
+        {
+            "success": False,
+            "error": {
+                "code": "VALIDATION_FAILED",
+                "message": "Invalid entity_id",
+            },
+        }
+    )
+    assert (
+        policy.analyze_entity_lookup_result(
+            state,
+            "home_assistant__ha_get_state",
+            output,
+            {"entity_id": "sensor.emilias_room_temperature"},
+        )
+        is True
+    )
+    assert any("ENTITY LOOKUP FAILED" in hint for hint in state.mcp_guidance)
+
+
 def test_analyze_search_tool_result_counts_ha_search_entities() -> None:
     """ha_search entity lists are counted (not treated as empty)."""
     policy = _load_loop_policy()
     state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans room"
     output = json.dumps(
         {
             "success": True,
             "query": "jonathan",
             "entities": [
-                {"entity_id": "sensor.jonathans_bedroom_9b3a_temperature"},
+                {
+                    "entity_id": "sensor.jonathan_s_lights_energy",
+                    "friendly_name": "Jonathan's Lights Energy",
+                    "state": "2.82",
+                },
+                {
+                    "entity_id": "sensor.jonathans_bedroom_9b3a_temperature",
+                    "friendly_name": "Jonathans Bedroom-9b3a Temperature",
+                    "state": "22.9",
+                    "unit_of_measurement": "°C",
+                    "device_class": "temperature",
+                },
+                {
+                    "entity_id": "sensor.jonathans_bedroom_9b3a_voltage",
+                    "friendly_name": "Jonathans Bedroom-9b3a Voltage",
+                    "state": "2.76",
+                    "unit_of_measurement": "V",
+                    "device_class": "voltage",
+                },
             ],
-            "entity_total_matches": 1,
+            "entity_total_matches": 3,
         }
     )
 
-    policy.analyze_search_tool_result(
+    unproductive = policy.analyze_search_tool_result(
         state,
         "home_assistant__ha_search",
         output,
         {"query": "jonathan", "domain_filter": "sensor"},
     )
 
-    assert any("returned 1 item(s)" in hint for hint in state.mcp_guidance)
-    assert any("device_class" in hint for hint in state.mcp_guidance)
-    assert any("temperature ≠ voltage" in hint for hint in state.mcp_guidance)
+    assert unproductive is False
+    assert any(
+        "READING CANDIDATES (temperature)" in hint for hint in state.mcp_guidance
+    )
+    assert any(
+        "sensor.jonathans_bedroom_9b3a_temperature" in hint
+        for hint in state.mcp_guidance
+    )
+    assert not any(
+        "sensor.jonathan_s_lights_energy" in hint for hint in state.mcp_guidance
+    )
+
+
+def test_analyze_search_misses_reading_kind_keeps_searching() -> None:
+    """Hits without the asked reading type are unproductive."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans room"
+    output = json.dumps(
+        {
+            "success": True,
+            "query": "jonathan",
+            "entities": [
+                {
+                    "entity_id": "sensor.jonathan_s_lights_energy",
+                    "friendly_name": "Jonathan's Lights Energy",
+                    "state": "2.82",
+                }
+            ],
+            "entity_total_matches": 1,
+        }
+    )
+    assert (
+        policy.analyze_search_tool_result(
+            state,
+            "home_assistant__ha_search",
+            output,
+            {"query": "jonathan", "domain_filter": "sensor"},
+        )
+        is True
+    )
+    assert any("No temperature sensors" in hint for hint in state.mcp_guidance)
+    assert any("query=`temperature`" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_entity_lookup_rejects_wrong_reading_type() -> None:
+    """Voltage get_state is unproductive when the goal is temperature."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Emilias room"
+    policy.initialize_loop_plan(
+        state,
+        goal=state.plan_goal,
+        route="action",
+        tool_steps=[{"toolName": "home_assistant__ha_get_state"}],
+    )
+    state.plan_step_statuses[0] = "done"
+    state.plan_completed_tools.append("home_assistant__ha_get_state")
+
+    output = json.dumps(
+        {
+            "success": True,
+            "data": {
+                "entity_id": "sensor.emilias_room_2733_voltage",
+                "state": "2.83",
+                "attributes": {
+                    "unit_of_measurement": "V",
+                    "device_class": "voltage",
+                    "friendly_name": "Emilia's Room-2733 Voltage",
+                },
+            },
+        }
+    )
+    assert (
+        policy.analyze_entity_lookup_result(
+            state,
+            "home_assistant__ha_get_state",
+            output,
+            {"entity_id": "sensor.emilias_room_2733_voltage"},
+        )
+        is True
+    )
+    assert state.confirmed_reading_entity_id is None
+    assert state.plan_step_statuses[0] == "needs_work"
+    assert any("STATE MISMATCH" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_entity_lookup_confirms_matching_temperature() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Emilias room"
+    output = json.dumps(
+        {
+            "success": True,
+            "data": {
+                "entity_id": "sensor.emilias_room_2733_temperature",
+                "state": "22.83",
+                "attributes": {
+                    "unit_of_measurement": "°C",
+                    "device_class": "temperature",
+                    "friendly_name": "Emilia's Room-2733 Temperature",
+                },
+            },
+        }
+    )
+    assert (
+        policy.analyze_entity_lookup_result(
+            state,
+            "home_assistant__ha_get_state",
+            output,
+            {"entity_id": "sensor.emilias_room_2733_temperature"},
+        )
+        is False
+    )
+    assert state.confirmed_reading_entity_id == "sensor.emilias_room_2733_temperature"
+
+
+def test_should_retry_missing_reading_without_confirmed_state() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Emilias room"
+    claim = "The temperature in Emilia's room is 2.83°C."
+    assert policy.needs_confirmed_reading(state, claim) is True
+    assert (
+        policy.should_retry_missing_reading(
+            state,
+            assistant_text=claim,
+            iteration=0,
+            max_iterations=6,
+        )
+        is True
+    )
+    assert "haven't confirmed" in policy.honest_missing_reading_message(state).lower()
+    state.confirmed_reading_entity_id = "sensor.emilias_room_2733_temperature"
+    assert policy.needs_confirmed_reading(state, claim) is False
 
 
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:

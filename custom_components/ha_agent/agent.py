@@ -56,8 +56,10 @@ from .loop_policy import (
     build_failed_tools_answer_nudge,
     build_mcp_tool_adherence_hint,
     build_missing_control_nudge,
+    build_missing_reading_nudge,
     build_pending_failure_summary,
     build_reasoning_stuck_nudge,
+    build_skill_discovery_block_message,
     cache_mcp_tools_from_schemas,
     check_stuck,
     claims_action_success,
@@ -65,6 +67,7 @@ from .loop_policy import (
     had_successful_control_tool,
     honest_failed_tools_message,
     honest_missing_control_message,
+    honest_missing_reading_message,
     initialize_loop_plan,
     inject_loop_context,
     is_reasoning_loop,
@@ -74,6 +77,7 @@ from .loop_policy import (
     mark_reasoning_stuck,
     maybe_omit_plan_steps_from_reasoning,
     maybe_suspend_skill_plan_from_reasoning,
+    needs_confirmed_reading,
     note_executed_tool,
     reasoning_execution_mismatch,
     reconcile_plan_after_tools,
@@ -83,12 +87,14 @@ from .loop_policy import (
     record_override_block_guidance,
     record_pagination_state,
     record_plan_tool_result,
+    record_skill_discovery_block_guidance,
     redundant_override_tool_block,
     reset_iteration_flags,
     should_block_reasoning_execution_mismatch,
     should_retry_after_failed_tools,
     should_retry_empty_response,
     should_retry_missing_control,
+    should_retry_missing_reading,
     should_retry_reasoning_stuck,
     skill_plan_blocks_discovery,
     suspend_skill_plan,
@@ -717,12 +723,8 @@ async def _process_tool_calls(
         if is_discovery_tool_name(tool_name) and skill_plan_blocks_discovery(
             loop_state
         ):
-            blocked = (
-                "Tool error: Active skill lists concrete tool steps; "
-                "do not run discovery while following that workflow. "
-                "If the skill does not fit the user's goal, declare "
-                "SKILL_OVERRIDE: <reason> in your reasoning, then retry."
-            )
+            blocked = build_skill_discovery_block_message(loop_state)
+            record_skill_discovery_block_guidance(loop_state, tool_name, blocked)
             record_iteration_failure(loop_state, tool_name, arguments, blocked)
             record_plan_tool_result(
                 loop_state,
@@ -2358,6 +2360,25 @@ async def run_agent(
             use_chat_backend = _stick_action_or_chat(route)
             continue
 
+        if assistant_text and should_retry_missing_reading(
+            loop_state,
+            assistant_text=assistant_text,
+            iteration=iteration,
+            max_iterations=agent_config.max_iterations,
+        ):
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            messages.append(
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_missing_reading_nudge(loop_state),
+                }
+            )
+            _prepare_next_loop_iteration(loop_state)
+            mark_iteration_preserve_stream(loop_state)
+            use_chat_backend = _stick_action_or_chat(route)
+            continue
+
         if (
             assistant_text
             and route == TaskRoute.HA_ACTION
@@ -2369,6 +2390,12 @@ async def run_agent(
                 if trace.tool_errors > 0
                 else honest_missing_control_message()
             )
+            false_action_success = True
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            yield AgentDelta(content=assistant_text)
+        elif assistant_text and needs_confirmed_reading(loop_state, assistant_text):
+            assistant_text = honest_missing_reading_message(loop_state)
             false_action_success = True
             if streamed_answer:
                 yield AgentDelta(content_clear=True)

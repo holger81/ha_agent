@@ -60,6 +60,8 @@ class LoopState:
     override_block_count: int = 0
     discovery_streak: int = 0
     empty_entity_search_attempts: int = 0
+    confirmed_reading_entity_id: str | None = None
+    missing_reading_retries: int = 0
     mcp_tool_catalog: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
@@ -102,6 +104,17 @@ _REASONING_TOOL_MENTION = re.compile(
 )
 _MAX_UNPRODUCTIVE_ITERATIONS = 4
 _MAX_EMPTY_ENTITY_SEARCH_TRIES = 3
+# Goal keyword → substrings that identify the right sensor in search hits.
+_READING_KIND_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "temperature",
+        ("temperature", "temp", "°c", "°f", "celsius", "fahrenheit"),
+    ),
+    ("humidity", ("humidity",)),
+    ("pressure", ("pressure", "hpa", "mbar")),
+    ("aqi", ("aqi", "air_quality", "airquality", "pm2", "pm_2", "pm25")),
+    ("co2", ("co2", "co₂")),
+)
 _REASONING_WILL_CALL = re.compile(
     r"\b(?:will|should|i'?ll|going to)\s+call\s+`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?",
     re.IGNORECASE,
@@ -854,13 +867,104 @@ def build_mcp_tool_adherence_hint(
         parts.append(entry["serverLlmContext"])
     if entry.get("parameters"):
         parts.append(entry["parameters"])
-    if len(parts) == 1:
-        parts.append(
-            "Discover this tool with searchTool or searchToolsForDomain to load "
-            "its MCP description, required parameters, and serverLlmContext "
-            "before calling it."
-        )
+    has_meta = bool(
+        entry.get("description")
+        or entry.get("serverLlmContext")
+        or entry.get("parameters")
+    )
+    if not has_meta:
+        if skill_plan_blocks_discovery(loop_state):
+            parts.append(_call_tool_plan_directive(loop_state, tool_name))
+        else:
+            parts.append(
+                "Discover this tool with searchTool or searchToolsForDomain to load "
+                "its MCP description, required parameters, and serverLlmContext "
+                "before calling it."
+            )
     return "\n".join(parts)
+
+
+def _plan_step_for_tool(
+    loop_state: LoopState,
+    tool_name: str,
+) -> dict[str, Any] | None:
+    for step in loop_state.plan_steps:
+        name = str(step.get("toolName") or "").strip()
+        if name and _tool_names_match(name, tool_name):
+            return step
+    return None
+
+
+def _call_tool_plan_directive(
+    loop_state: LoopState,
+    tool_name: str,
+) -> str:
+    """Tell the model to callTool a skill-plan tool without discovery."""
+    step = _plan_step_for_tool(loop_state, tool_name)
+    args = step.get("arguments") if isinstance(step, dict) else None
+    if isinstance(args, dict) and args:
+        try:
+            args_text = json.dumps(args, ensure_ascii=True, sort_keys=True)
+        except (TypeError, ValueError):
+            args_text = str(args)
+        return (
+            f"Call callTool with toolName=`{tool_name}` and arguments={args_text}. "
+            "The active skill already names this tool — do not run searchTool."
+        )
+    return (
+        f"Call callTool with toolName=`{tool_name}` now. "
+        "The active skill already names this tool — do not run searchTool first."
+    )
+
+
+def build_skill_discovery_block_message(loop_state: LoopState) -> str:
+    """User-facing tool error when discovery is blocked by a concrete skill plan."""
+    next_tool = _next_plan_tool_name(loop_state)
+    if next_tool:
+        directive = _call_tool_plan_directive(loop_state, next_tool)
+        return (
+            "Tool error: Active skill lists concrete tool steps; do not run "
+            f"discovery while following that workflow. {directive}"
+        )
+    return (
+        "Tool error: Active skill lists concrete tool steps; "
+        "do not run discovery while following that workflow. "
+        "If the skill does not fit the user's goal, declare "
+        "SKILL_OVERRIDE: <reason> in your reasoning, then retry."
+    )
+
+
+def record_skill_discovery_block_guidance(
+    loop_state: LoopState,
+    tool_name: str,
+    block_message: str,
+) -> None:
+    """Steer away from blocked discovery toward the next skill-plan callTool."""
+    loop_state.iteration_had_duplicate_block = True
+    loop_state.discovery_streak += 1
+    cleaned = block_message.removeprefix("Tool error:").strip()
+    next_tool = _next_plan_tool_name(loop_state)
+    hint = (
+        "DISCOVERY BLOCKED — follow the skill plan with callTool:\n"
+        f"{cleaned}\n"
+        f"Do not call `{tool_name}` again. {describe_plan_next_action(loop_state)}"
+    )
+    if loop_state.discovery_streak >= 2:
+        hint += (
+            "\nYou already tried discovery while a skill plan is active. "
+            "STOP using searchTool/searchToolsForDomain. Use callTool with the "
+            "exact toolName from the next plan step."
+        )
+    if hint not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(0, hint)
+    if next_tool:
+        adherence = build_mcp_tool_adherence_hint(
+            loop_state,
+            next_tool,
+            lead_in="Required next skill-plan tool:",
+        )
+        if adherence not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, adherence)
 
 
 def _next_plan_tool_name(loop_state: LoopState) -> str | None:
@@ -956,6 +1060,89 @@ def _is_entity_search_result(tool_name: str, data: dict[str, Any]) -> bool:
     return "ha_search" in lowered and "searchtool" not in lowered
 
 
+def _infer_reading_kind(goal: str) -> str | None:
+    """Infer a sensor reading kind from the user goal, if any."""
+    text = (goal or "").strip().lower()
+    if not text:
+        return None
+    if re.search(r"\b(?:air\s*quality|aqi)\b", text):
+        return "aqi"
+    if re.search(r"\b(?:how\s+warm|how\s+cold|temps?)\b", text):
+        return "temperature"
+    for kind, _markers in _READING_KIND_MARKERS:
+        if re.search(rf"\b{re.escape(kind)}\b", text):
+            return kind
+    return None
+
+
+def _entity_text_blob(entity: dict[str, Any]) -> str:
+    return " ".join(
+        str(entity.get(key) or "")
+        for key in (
+            "entity_id",
+            "friendly_name",
+            "name",
+            "device_class",
+            "unit_of_measurement",
+            "state",
+        )
+    ).lower()
+
+
+def _entity_matches_reading_kind(entity: dict[str, Any], kind: str) -> bool:
+    """True when a search hit looks like the requested reading type."""
+    blob = _entity_text_blob(entity)
+    if not blob:
+        return False
+    # Skip schedule/helper hangers that mention the kind in the name.
+    if any(
+        noise in blob
+        for noise in ("holding_until", "setpoint", "target", "offset", "calibration")
+    ):
+        return False
+    markers = dict(_READING_KIND_MARKERS).get(kind, (kind,))
+    if kind == "temperature":
+        # Prefer true temperature sensors; exclude voltage/energy lookalikes.
+        bad_tokens = ("voltage", "energy", "power", "rssi", "battery")
+        if any(bad in blob for bad in bad_tokens) and (
+            "temperature" not in blob and "temp" not in blob
+        ):
+            return False
+    return any(marker in blob for marker in markers)
+
+
+def _reading_matches_from_entries(
+    entries: list[Any],
+    kind: str,
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if not _entity_matches_reading_kind(entry, kind):
+            continue
+        entity_id = str(entry.get("entity_id") or "").strip()
+        if not entity_id:
+            continue
+        matches.append(entry)
+        if len(matches) >= 5:
+            break
+    return matches
+
+
+def _format_reading_candidate(entry: dict[str, Any]) -> str:
+    entity_id = str(entry.get("entity_id") or "").strip()
+    state = str(entry.get("state") or "").strip()
+    unit = str(entry.get("unit_of_measurement") or "").strip()
+    name = str(entry.get("friendly_name") or entry.get("name") or "").strip()
+    bits = [f"`{entity_id}`"]
+    if state and state.lower() not in {"unknown", "unavailable"}:
+        bits.append(state + (unit if unit else ""))
+    if name:
+        bits.append(f"({name})")
+    return " ".join(bits)
+
+
 def _empty_entity_search_hint(
     loop_state: LoopState,
     tool_name: str,
@@ -967,12 +1154,23 @@ def _empty_entity_search_hint(
     has_domain = bool(str(domain or "").strip())
     tokens = [tok for tok in re.findall(r"[a-z0-9]{3,}", query.lower()) if tok]
     attempt = loop_state.empty_entity_search_attempts
+    reading_kind = _infer_reading_kind(loop_state.plan_goal) or _infer_reading_kind(
+        query
+    )
     parts = [
         f"SEARCH RESULT: no matching entities (retry {attempt}/"
         f"{_MAX_EMPTY_ENTITY_SEARCH_TRIES})."
     ]
     if attempt < _MAX_EMPTY_ENTITY_SEARCH_TRIES:
-        if not has_domain:
+        if reading_kind and (
+            not has_domain or len(tokens) > 1 or reading_kind not in query.lower()
+        ):
+            parts.append(
+                f"Retry with single-token query=`{reading_kind}` and "
+                "domain_filter=`sensor`, then pick the place match from the list "
+                f"(do not invent a {reading_kind} value)."
+            )
+        elif not has_domain:
             parts.append(
                 "Retry with a shorter single-token query and set "
                 "`domain_filter` to the entity domain that matches the goal "
@@ -1058,6 +1256,44 @@ def analyze_search_tool_result(
         summary += " Results reflect the active query filters."
     if has_more:
         summary += " More pages are available per the tool result metadata."
+
+    reading_kind = _infer_reading_kind(loop_state.plan_goal) or _infer_reading_kind(
+        str(arguments.get("query") or "")
+    )
+    if _is_entity_search_result(tool_name, data) and reading_kind:
+        matches = _reading_matches_from_entries(entries, reading_kind)
+        if matches:
+            listed = "; ".join(_format_reading_candidate(item) for item in matches)
+            hint = (
+                f"READING CANDIDATES ({reading_kind}): {listed}. "
+                f"Call ha_get_state on the best place match. Do not use "
+                f"energy/voltage/rssi/power sensors as {reading_kind}."
+            )
+            if hint not in loop_state.mcp_guidance:
+                loop_state.mcp_guidance.insert(0, hint)
+            _inject_next_tool_adherence(
+                loop_state, lead_in=summary, after_tool=tool_name
+            )
+            return False
+        # Hits exist but none match the asked reading — keep searching.
+        next_query = reading_kind
+        hint = (
+            f"No {reading_kind} sensors in these results "
+            f"({len(entries)} unrelated hits). Retry ha_search with "
+            f"query=`{next_query}` and domain_filter=`sensor`"
+            + (", or paginate has_more" if has_more else "")
+            + f". Do not answer a {reading_kind} value from energy/voltage/"
+            "other sensors."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        mark_plan_tool_unproductive(
+            loop_state,
+            tool_name,
+            f"search missed {reading_kind} sensors",
+        )
+        return True
+
     if _is_entity_search_result(tool_name, data) and entries:
         summary += (
             " For a reading/status question, pick the entity whose "
@@ -1096,24 +1332,43 @@ def _entity_lookup_failed_id(
 ) -> str | None:
     """Return entity_id when a state/entity lookup missed or is unusable."""
     entity_id = _entity_id_from_arguments(arguments)
-    if not entity_id:
-        return None
     lowered = tool_name.lower()
     if not any(
-        marker in lowered
-        for marker in ("get_state", "ha_get_entity", "get_entity")
+        marker in lowered for marker in ("get_state", "ha_get_entity", "get_entity")
     ):
         return None
 
     if output.startswith("Tool error:"):
         err = output.lower()
-        if "not found" in err or "unavailable" in err or "unknown entity" in err:
-            return entity_id
+        if any(
+            token in err
+            for token in (
+                "not found",
+                "unavailable",
+                "unknown entity",
+                "validation",
+            )
+        ):
+            return entity_id or "unknown"
         return None
 
     data = _parse_tool_result_json(output)
     if not data:
         return None
+
+    def _failure_blob(code: str, message: str) -> bool:
+        blob = f"{code} {message}".lower()
+        return any(
+            token in blob
+            for token in (
+                "not_found",
+                "not found",
+                "unavailable",
+                "unknown entity",
+                "validation_failed",
+                "validation",
+            )
+        )
 
     if data.get("success") is False:
         error = data.get("error")
@@ -1124,19 +1379,33 @@ def _entity_lookup_failed_id(
             message = str(error.get("message") or "")
         else:
             message = str(error or "")
-        blob = f"{code} {message}".lower()
-        if (
-            "not_found" in code.lower()
-            or "not found" in blob
-            or "unavailable" in blob
-            or "unknown entity" in blob
-        ):
-            return entity_id
+        if _failure_blob(code, message):
+            return entity_id or str(data.get("entity_id") or "unknown")
 
-    state_payload = data.get("data") if isinstance(data.get("data"), dict) else data
-    if isinstance(state_payload, dict):
-        state = str(state_payload.get("state") or "").strip().lower()
-        if state in {"unavailable", "unknown"}:
+    # Batch / partial shapes: {"data":{"errors":[{"entity_id":...,"error":...}]}}
+    nested = data.get("data") if isinstance(data.get("data"), dict) else data
+    if isinstance(nested, dict):
+        errors = nested.get("errors")
+        if isinstance(errors, list):
+            for item in errors:
+                if not isinstance(item, dict):
+                    continue
+                err = item.get("error")
+                code = ""
+                message = ""
+                if isinstance(err, dict):
+                    code = str(err.get("code") or "")
+                    message = str(err.get("message") or "")
+                elif isinstance(err, str):
+                    message = err
+                if _failure_blob(code, message):
+                    return (
+                        str(item.get("entity_id") or "").strip()
+                        or entity_id
+                        or "unknown"
+                    )
+        state = str(nested.get("state") or "").strip().lower()
+        if state in {"unavailable", "unknown"} and entity_id:
             return entity_id
     return None
 
@@ -1188,19 +1457,145 @@ def analyze_entity_lookup_result(
     output: str,
     arguments: dict[str, Any],
 ) -> bool:
-    """Detect failed entity lookups and nudge a comparable-entity search."""
+    """Detect failed or wrong-type entity lookups; confirm matching readings."""
     entity_id = _entity_lookup_failed_id(tool_name, output, arguments)
-    if not entity_id:
+    if entity_id:
+        hint = _comparable_entity_search_hint(entity_id, loop_state.plan_goal)
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        mark_plan_tool_unproductive(
+            loop_state,
+            tool_name,
+            f"entity lookup failed for {entity_id}",
+        )
+        return True
+
+    lowered = tool_name.lower()
+    if not any(
+        marker in lowered for marker in ("get_state", "ha_get_entity", "get_entity")
+    ):
         return False
-    hint = _comparable_entity_search_hint(entity_id, loop_state.plan_goal)
-    if hint not in loop_state.mcp_guidance:
-        loop_state.mcp_guidance.insert(0, hint)
-    mark_plan_tool_unproductive(
-        loop_state,
-        tool_name,
-        f"entity lookup failed for {entity_id}",
+    if output.startswith("Tool error:"):
+        return False
+
+    looked_up = _entity_id_from_arguments(arguments)
+    kind = _infer_reading_kind(loop_state.plan_goal)
+    if not looked_up or not kind:
+        return False
+
+    probe = {"entity_id": looked_up}
+    data = _parse_tool_result_json(output) or {}
+    nested = data.get("data") if isinstance(data.get("data"), dict) else data
+    if isinstance(nested, dict):
+        for key in ("device_class", "unit_of_measurement", "friendly_name", "state"):
+            attrs = nested.get("attributes")
+            if key == "state" and nested.get("state") is not None:
+                probe["state"] = nested.get("state")
+            elif isinstance(attrs, dict) and attrs.get(key) is not None:
+                probe[key] = attrs.get(key)
+            elif nested.get(key) is not None:
+                probe[key] = nested.get(key)
+
+    if not _entity_matches_reading_kind(probe, kind):
+        hint = (
+            f"STATE MISMATCH: `{looked_up}` is not a {kind} sensor. "
+            f"ha_search for query=`{kind}` with domain_filter=`sensor`, pick a "
+            f"{kind} entity for the place, then ha_get_state that id. Do not "
+            f"report this value as {kind}."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        mark_plan_tool_unproductive(
+            loop_state,
+            tool_name,
+            f"state mismatch for {kind}: {looked_up}",
+        )
+        return True
+
+    state = str(probe.get("state") or "").strip().lower()
+    if state in {"", "unavailable", "unknown"}:
+        hint = (
+            f"STATE UNUSABLE: `{looked_up}` has state `{state or 'empty'}`. "
+            f"Find another {kind} entity for the place and ha_get_state it. "
+            "Do not invent a value."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        mark_plan_tool_unproductive(
+            loop_state,
+            tool_name,
+            f"unusable {kind} state for {looked_up}",
+        )
+        return True
+
+    loop_state.confirmed_reading_entity_id = looked_up
+    return False
+
+
+_READING_VALUE_CLAIM = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:°\s*[cf]|degrees?(?:\s+[cf])?|%|aqi|ppm|hpa|mbar)?\b",
+    re.IGNORECASE,
+)
+_MAX_MISSING_READING_RETRIES = 2
+
+
+def claims_reading_answer(text: str) -> bool:
+    """Return True when the assistant states a numeric reading value."""
+    cleaned = (text or "").strip()
+    if not cleaned or _FAILURE_ADMISSION.search(cleaned):
+        return False
+    return bool(_READING_VALUE_CLAIM.search(cleaned))
+
+
+def build_missing_reading_nudge(loop_state: LoopState) -> str:
+    """Directive when a reading was claimed without a confirmed matching state."""
+    kind = _infer_reading_kind(loop_state.plan_goal) or "sensor"
+    return (
+        "SYSTEM (internal — not from the user): You stated a "
+        f"{kind} value but have no confirmed ha_get_state on a matching "
+        f"{kind} entity this turn. Search for query=`{kind}` "
+        "(domain_filter=`sensor`), pick the place match from READING "
+        "CANDIDATES / results, ha_get_state that entity_id, then answer from "
+        f"that state only. Do not invent {kind} from energy/voltage/other "
+        f"sensors. {describe_plan_next_action(loop_state)}"
     )
+
+
+def honest_missing_reading_message(loop_state: LoopState) -> str:
+    """User-visible fallback when a reading was claimed without confirmation."""
+    kind = _infer_reading_kind(loop_state.plan_goal) or "reading"
+    return (
+        f"I haven't confirmed a {kind} sensor state with a tool call yet, so I "
+        "can't report that value. Please try again."
+    )
+
+
+def should_retry_missing_reading(
+    loop_state: LoopState,
+    *,
+    assistant_text: str,
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Block answers that invent a reading without a matching get_state."""
+    if not needs_confirmed_reading(loop_state, assistant_text):
+        return False
+    if iteration >= max_iterations - 1:
+        return False
+    if loop_state.missing_reading_retries >= _MAX_MISSING_READING_RETRIES:
+        return False
+    loop_state.missing_reading_retries += 1
     return True
+
+
+def needs_confirmed_reading(loop_state: LoopState, assistant_text: str) -> bool:
+    """True when the goal is a reading and the answer claims a value without proof."""
+    kind = _infer_reading_kind(loop_state.plan_goal)
+    if not kind:
+        return False
+    if loop_state.confirmed_reading_entity_id:
+        return False
+    return claims_reading_answer(assistant_text)
 
 
 def mark_plan_tool_unproductive(
@@ -1469,6 +1864,16 @@ def initialize_loop_plan(
     loop_state.plan_step_notes = [""] * len(steps)
     loop_state.plan_current_step_index = 0 if steps else None
     loop_state.plan_completed_tools = []
+    if steps:
+        first_name = str(steps[0].get("toolName") or "").strip()
+        if first_name and skill_title:
+            loop_state.mcp_guidance.insert(
+                0,
+                (
+                    "Active skill names concrete MCP tools. Start with "
+                    f"{_call_tool_plan_directive(loop_state, first_name)}"
+                ),
+            )
     if not steps:
         domain = discovery_domain or _ROUTE_DISCOVERY_DOMAINS.get(route)
         if domain:
@@ -1545,12 +1950,16 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
             name = str(step.get("toolName", "tool"))
             status = loop_state.plan_step_statuses[index]
             if status == "needs_work":
+                directive = _call_tool_plan_directive(loop_state, name)
                 return (
-                    f"Fix step {index + 1} ({name}) — use different arguments "
-                    "or prior tool output."
+                    f"Fix step {index + 1}: {directive} "
+                    "Use different arguments or prior tool output if needed."
                 )
             if status == "pending":
-                return f"Execute step {index + 1}: {name}"
+                return (
+                    f"Execute step {index + 1}: "
+                    f"{_call_tool_plan_directive(loop_state, name)}"
+                )
     if (
         loop_state.plan_steps
         and loop_state.plan_step_statuses
