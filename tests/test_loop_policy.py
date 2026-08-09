@@ -128,6 +128,62 @@ def test_reasoning_stream_stuck_on_repeat() -> None:
     assert policy.reasoning_stream_stuck(chunk) is True
 
 
+def test_reasoning_stream_stuck_on_alternating_paraphrases() -> None:
+    """Wait/Actually/Let's thrashing on one tool is treated as stuck."""
+    policy = _load_loop_policy()
+    cycle = (
+        "Let's try 'home_assistant__ha_search' with \"jonathan sensor\".\n"
+        "Wait, I'll try to search for \"jonathan\" and look for \"sensor\" "
+        "in the 'entity_id'.\n"
+        "Actually, I'll try to search for \"jonathan\" and look for \"sensor\" "
+        "in the 'entity_id'.\n"
+        "Let's try 'home_assistant__ha_search' with \"jonathan sensor\".\n"
+    )
+    assert policy.reasoning_stream_stuck(cycle) is True
+    assert (
+        policy.is_reasoning_loop(cycle, has_tools=False, content="") is True
+    )
+
+
+def test_is_reasoning_loop_ignores_tools_and_answers() -> None:
+    """Tool calls or a real answer cancel reasoning-loop detection."""
+    policy = _load_loop_policy()
+    phrase = "Wait, I'll try mail_mcp__imap_search_messages with mailbox INBOX. "
+    stuck = phrase * 6
+    assert (
+        policy.is_reasoning_loop(stuck, has_tools=False, content="") is True
+    )
+    assert (
+        policy.is_reasoning_loop(stuck, has_tools=True, content="") is False
+    )
+    assert (
+        policy.is_reasoning_loop(
+            stuck,
+            has_tools=False,
+            content="The temperature in Jonathan's room is 25 C.",
+        )
+        is False
+    )
+
+
+def test_should_retry_reasoning_stuck_caps_attempts() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    assert policy.should_retry_reasoning_stuck(state, 0, 10) is True
+    assert policy.should_retry_reasoning_stuck(state, 1, 10) is True
+    assert policy.should_retry_reasoning_stuck(state, 2, 10) is False
+    fresh = policy.LoopState()
+    assert policy.should_retry_reasoning_stuck(fresh, 9, 10) is False
+
+
+def test_mark_reasoning_stuck_sets_message() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.mark_reasoning_stuck(state)
+    assert state.stuck is True
+    assert "reasoning" in state.stuck_message.lower()
+
+
 def test_mark_iteration_outcome_stops_after_repeated_blocks() -> None:
     """Two unproductive duplicate-block iterations force stuck."""
     policy = _load_loop_policy()

@@ -95,6 +95,7 @@ class StreamChatSession:
     content: str = ""
     reasoning_content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    aborted_reasoning_loop: bool = False
     _tool_call_builders: dict[int, dict[str, str]] = field(
         default_factory=dict,
         repr=False,

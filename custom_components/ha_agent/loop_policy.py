@@ -48,6 +48,7 @@ class LoopState:
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
     empty_responses: int = 0
+    reasoning_stalls: int = 0
     failed_tool_answer_retries: int = 0
     missing_control_retries: int = 0
     mcp_guidance: list[str] = field(default_factory=list)
@@ -71,6 +72,8 @@ INTERNAL_GUIDANCE_ROLE = "system"
 
 _MAX_REASONING_CHARS = 8000
 _MAX_EMPTY_RESPONSES = 2
+_MAX_REASONING_STALLS = 2
+_MIN_ANSWER_CHARS_TO_IGNORE_REASONING_STALL = 40
 _MAX_MCP_GUIDANCE_CHARS = 600
 _MAX_LOOP_GUIDANCE_CHARS = 500
 # Route → MCP discovery domain when no skill tool_steps are seeded.
@@ -85,6 +88,16 @@ _GENERIC_NEXT_HINT = (
     "Use prior tool results before answering."
 )
 _REASONING_REPEAT_MARKER = 60
+_REASONING_MIN_BUFFER = 160
+_REASONING_FILLER_PREFIX = re.compile(
+    r"^(?:wait,?|actually,?|ok,?|okay,?|hmm,?|let'?s|i'?ll|i will|"
+    r"try to|trying to|going to)\s+",
+    re.IGNORECASE,
+)
+_REASONING_TOOL_MENTION = re.compile(
+    r"\b([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)\b",
+    re.IGNORECASE,
+)
 _MAX_UNPRODUCTIVE_ITERATIONS = 2
 _REASONING_WILL_CALL = re.compile(
     r"\b(?:will|should|i'?ll|going to)\s+call\s+`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?",
@@ -155,16 +168,109 @@ def normalize_tool_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _normalized_reasoning_lines(buffer: str) -> list[str]:
+    """Collapse filler-prefixed paraphrases into comparable lines."""
+    lines: list[str] = []
+    for part in re.split(r"[\n.!?]+", buffer.lower()):
+        cleaned = re.sub(r"[`'\"]+", "", part)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:;,")
+        while True:
+            updated = _REASONING_FILLER_PREFIX.sub("", cleaned).strip()
+            if updated == cleaned:
+                break
+            cleaned = updated
+        if len(cleaned) >= 24:
+            lines.append(cleaned)
+    return lines
+
+
 def reasoning_stream_stuck(buffer: str) -> bool:
-    """Return True when streamed reasoning is repeating or too long."""
+    """Return True when streamed reasoning is repeating or too long.
+
+    Catches exact tail repeats, alternating Wait/Actually paraphrases, and
+    thrashing on the same MCP tool name without producing an answer.
+    """
     if len(buffer) > _MAX_REASONING_CHARS:
         return True
-    if len(buffer) < 240:
+    if len(buffer) < _REASONING_MIN_BUFFER:
         return False
-    marker = buffer[-_REASONING_REPEAT_MARKER:]
-    if len(marker.strip()) < 20:
+
+    for size in (_REASONING_REPEAT_MARKER, 40, 28):
+        if len(buffer) < size * 2:
+            continue
+        marker = buffer[-size:]
+        if len(marker.strip()) < 16:
+            continue
+        if buffer.count(marker) >= 3:
+            return True
+
+    lines = _normalized_reasoning_lines(buffer)
+    if len(lines) >= 4:
+        counts: dict[str, int] = {}
+        for line in lines:
+            counts[line] = counts.get(line, 0) + 1
+        unique = len(counts)
+        top = max(counts.values())
+        # Same intent restated (e.g. Wait/Actually/Let's variants).
+        if top >= 3:
+            return True
+        if top >= 2 and unique <= max(2, len(lines) // 2):
+            return True
+        if len(lines) >= 6 and unique <= max(2, len(lines) // 3):
+            return True
+
+    tools = _REASONING_TOOL_MENTION.findall(buffer)
+    if tools:
+        top_count = max(tools.count(name) for name in set(tools))
+        if top_count >= 3:
+            return True
+    return False
+
+
+def is_reasoning_loop(
+    reasoning: str,
+    *,
+    has_tools: bool,
+    content: str = "",
+) -> bool:
+    """Return True when reasoning stalled without a usable answer or tools."""
+    if has_tools:
         return False
-    return buffer.count(marker) >= 4
+    if len((content or "").strip()) >= _MIN_ANSWER_CHARS_TO_IGNORE_REASONING_STALL:
+        return False
+    return reasoning_stream_stuck(reasoning or "")
+
+
+def should_retry_reasoning_stuck(
+    loop_state: LoopState,
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Return True when a reasoning stall should trigger a guided retry."""
+    if iteration >= max_iterations - 1:
+        return False
+    loop_state.reasoning_stalls += 1
+    return loop_state.reasoning_stalls <= _MAX_REASONING_STALLS
+
+
+def mark_reasoning_stuck(loop_state: LoopState) -> None:
+    """End the turn when reasoning keeps looping without progress."""
+    loop_state.stuck = True
+    loop_state.stuck_message = (
+        "I got stuck repeating the same reasoning without making progress. "
+        "Please rephrase or narrow the request."
+    )
+
+
+def build_reasoning_stuck_nudge(loop_state: LoopState) -> str:
+    """Return a directive when the model looped in reasoning without acting."""
+    return (
+        "SYSTEM (internal — not from the user): Your previous reply got stuck "
+        "in repetitive or oversized reasoning without calling a tool or "
+        "answering. Stop expanding the analysis. Either call exactly one tool "
+        "to make progress, or write the final answer to the user in plain "
+        f"text now. {describe_plan_next_action(loop_state)}"
+    )
 
 
 def check_stuck(

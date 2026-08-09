@@ -58,6 +58,7 @@ from .loop_policy import (
     build_mcp_tool_adherence_hint,
     build_missing_control_nudge,
     build_pending_failure_summary,
+    build_reasoning_stuck_nudge,
     cache_mcp_tools_from_schemas,
     check_stuck,
     claims_action_success,
@@ -67,9 +68,11 @@ from .loop_policy import (
     honest_missing_control_message,
     initialize_loop_plan,
     inject_loop_context,
+    is_reasoning_loop,
     mark_iteration_after_tools,
     mark_iteration_outcome,
     mark_iteration_preserve_stream,
+    mark_reasoning_stuck,
     maybe_omit_plan_steps_from_reasoning,
     maybe_suspend_skill_plan_from_reasoning,
     reasoning_execution_mismatch,
@@ -86,6 +89,7 @@ from .loop_policy import (
     should_retry_after_failed_tools,
     should_retry_empty_response,
     should_retry_missing_control,
+    should_retry_reasoning_stuck,
     skill_plan_blocks_discovery,
     suspend_skill_plan,
     user_requests_skill_override,
@@ -343,16 +347,25 @@ async def _yield_streamed_assistant_text(
         tools=tools,
         session=session,
     ):
-        if show_reasoning and chunk.reasoning_content:
+        if chunk.reasoning_content:
             reasoning_buffer, _ = stream_text_delta(
                 reasoning_buffer,
                 chunk.reasoning_content,
             )
-            if len(reasoning_buffer) > reasoning_yielded_len:
+            if show_reasoning and len(reasoning_buffer) > reasoning_yielded_len:
                 text = reasoning_buffer[reasoning_yielded_len:]
                 reasoning_yielded_len = len(reasoning_buffer)
                 if text:
                     yield AgentDelta(thinking=text), session
+            # Abort endless/repeating thinking before the stream times out.
+            content_so_far = safe_stream_display_text(raw_buffer)
+            if is_reasoning_loop(
+                session.reasoning_content or reasoning_buffer,
+                has_tools=bool(session.tool_calls),
+                content=content_so_far,
+            ):
+                session.aborted_reasoning_loop = True
+                break
         if not chunk.content:
             continue
         raw_buffer += chunk.content
@@ -363,6 +376,12 @@ async def _yield_streamed_assistant_text(
             yield AgentDelta(content=text), session
 
     session.content = raw_buffer
+    if not session.aborted_reasoning_loop and is_reasoning_loop(
+        session.reasoning_content or reasoning_buffer,
+        has_tools=bool(session.tool_calls),
+        content=strip_embedded_tool_markup(raw_buffer),
+    ):
+        session.aborted_reasoning_loop = True
     assistant_text = strip_embedded_tool_markup(raw_buffer)
     if len(assistant_text) > yielded_len:
         yield AgentDelta(content=assistant_text[yielded_len:]), session
@@ -404,6 +423,30 @@ def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
     trace.skill_plan_override = loop_state.skill_plan_override
     trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
     return loop_state.stuck_message
+
+
+def _reasoning_loop_action(
+    loop_state: LoopState,
+    *,
+    iteration: int,
+    max_iterations: int,
+    reasoning: str,
+    has_tools: bool,
+    content: str,
+    aborted: bool = False,
+) -> str:
+    """Return ``ok``, ``retry``, or ``stuck`` for a reasoning-loop check."""
+    looped = is_reasoning_loop(
+        reasoning,
+        has_tools=has_tools,
+        content=content,
+    ) or (aborted and not has_tools)
+    if not looped:
+        return "ok"
+    if should_retry_reasoning_stuck(loop_state, iteration, max_iterations):
+        return "retry"
+    mark_reasoning_stuck(loop_state)
+    return "stuck"
 
 
 def _prepare_next_loop_iteration(loop_state: LoopState) -> None:
@@ -1949,6 +1992,48 @@ async def run_agent(
                     yield delta
 
             raw_buffer = session.content
+            stream_reasoning_action = _reasoning_loop_action(
+                loop_state,
+                iteration=iteration,
+                max_iterations=agent_config.max_iterations,
+                reasoning=session.reasoning_content or "",
+                has_tools=bool(session.tool_calls),
+                content=strip_embedded_tool_markup(raw_buffer),
+                aborted=session.aborted_reasoning_loop,
+            )
+            if stream_reasoning_action == "retry":
+                if agent_config.show_reasoning_in_chat:
+                    yield AgentDelta(thinking_clear=True)
+                messages.append(
+                    {
+                        "role": INTERNAL_GUIDANCE_ROLE,
+                        "content": build_reasoning_stuck_nudge(loop_state),
+                    }
+                )
+                _prepare_next_loop_iteration(loop_state)
+                mark_iteration_preserve_stream(loop_state)
+                use_chat_backend = _stick_action_or_chat(route)
+                continue
+            if stream_reasoning_action == "stuck":
+                if agent_config.show_reasoning_in_chat:
+                    yield AgentDelta(thinking_clear=True)
+                _attach_plan_progress(turn_meta, loop_state, trace)
+                yield AgentDelta(
+                    content=_finalize_stuck_turn(trace, loop_state),
+                    meta=dict(turn_meta),
+                )
+                append_turn(
+                    hass,
+                    conversation_id,
+                    user_text,
+                    loop_state.stuck_message,
+                    max_turns=agent_config.history_turns,
+                    entry_id=entry_id,
+                    turn_meta=turn_meta,
+                )
+                record_turn(hass, entry_id, trace)
+                return
+
             if session.tool_calls:
                 assistant_message = build_assistant_message(
                     content=None,
@@ -2132,6 +2217,46 @@ async def run_agent(
             if assistant_text and is_tool_call_only_text(assistant_text):
                 assistant_text = ""
             streamed_answer = False
+            buffered_reasoning_action = _reasoning_loop_action(
+                loop_state,
+                iteration=iteration,
+                max_iterations=agent_config.max_iterations,
+                reasoning=result.reasoning_content or "",
+                has_tools=False,
+                content=assistant_text,
+            )
+            if buffered_reasoning_action == "retry":
+                if agent_config.show_reasoning_in_chat:
+                    yield AgentDelta(thinking_clear=True)
+                messages.append(
+                    {
+                        "role": INTERNAL_GUIDANCE_ROLE,
+                        "content": build_reasoning_stuck_nudge(loop_state),
+                    }
+                )
+                _prepare_next_loop_iteration(loop_state)
+                mark_iteration_preserve_stream(loop_state)
+                use_chat_backend = _stick_action_or_chat(route)
+                continue
+            if buffered_reasoning_action == "stuck":
+                if agent_config.show_reasoning_in_chat:
+                    yield AgentDelta(thinking_clear=True)
+                _attach_plan_progress(turn_meta, loop_state, trace)
+                yield AgentDelta(
+                    content=_finalize_stuck_turn(trace, loop_state),
+                    meta=dict(turn_meta),
+                )
+                append_turn(
+                    hass,
+                    conversation_id,
+                    user_text,
+                    loop_state.stuck_message,
+                    max_turns=agent_config.history_turns,
+                    entry_id=entry_id,
+                    turn_meta=turn_meta,
+                )
+                record_turn(hass, entry_id, trace)
+                return
 
         if assistant_text and should_retry_after_failed_tools(
             loop_state,
