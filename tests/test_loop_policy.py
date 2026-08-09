@@ -1508,6 +1508,43 @@ def test_analyze_search_wrong_place_temperature_stops_pagination() -> None:
     assert any("query=`jonathans`" in hint for hint in state.mcp_guidance)
 
 
+def test_scrub_mismatched_reading_slots_clears_wrong_entity() -> None:
+    policy = _load_loop_policy()
+    scrubbed = policy.scrub_mismatched_reading_slots(
+        {"value": "sensor.emilias_room_humidity", "query": "aqi"},
+        "what is the outdoor air quality?",
+    )
+    assert scrubbed["value"] == ""
+    assert scrubbed["query"] == "aqi"
+    kept = policy.scrub_mismatched_reading_slots(
+        {"value": "sensor.home_outdoor_aqi_5min_mean"},
+        "what is the outdoor air quality?",
+    )
+    assert kept["value"] == "sensor.home_outdoor_aqi_5min_mean"
+
+
+def test_scrub_mismatched_plan_entities_drops_wrong_entity_id() -> None:
+    policy = _load_loop_policy()
+    steps = policy.scrub_mismatched_plan_entities(
+        [
+            {
+                "toolName": "home_assistant__ha_get_state",
+                "arguments": {"entity_id": "sensor.emilias_room_humidity"},
+            }
+        ],
+        "outdoor air quality",
+    )
+    assert steps is not None
+    assert "entity_id" not in steps[0]["arguments"]
+
+
+def test_honest_missing_reading_uses_an_for_aqi() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "outdoor air quality"
+    assert "an aqi" in policy.honest_missing_reading_message(state)
+
+
 def test_analyze_entity_lookup_rejects_wrong_place_temperature() -> None:
     policy = _load_loop_policy()
     state = policy.LoopState()

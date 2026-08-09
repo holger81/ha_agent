@@ -28,6 +28,7 @@ from .context import (
     build_tool_context,
     format_identity_context,
     is_affirmative,
+    resolve_turn_goal,
 )
 from .embedded_tools import (
     is_tool_call_only_text,
@@ -90,6 +91,8 @@ from .loop_policy import (
     record_skill_discovery_block_guidance,
     redundant_override_tool_block,
     reset_iteration_flags,
+    scrub_mismatched_plan_entities,
+    scrub_mismatched_reading_slots,
     should_block_reasoning_execution_mismatch,
     should_retry_after_failed_tools,
     should_retry_empty_response,
@@ -1499,6 +1502,7 @@ async def run_agent(
         user_text,
         max_turns=agent_config.history_turns,
     )
+    turn_goal = resolve_turn_goal(user_text, history)
 
     if is_affirmative(user_text) and (
         confirm := await try_confirm_pending_save(
@@ -1760,7 +1764,7 @@ async def run_agent(
             inferred = await infer_slot_bindings(
                 llm,
                 role_registry.backend_for(ModelRole.ROUTER),
-                user_text=user_text,
+                user_text=turn_goal or user_text,
                 skill=primary_learned,
                 route=route.value,
                 exposed_entities=exposed_entities,
@@ -1781,6 +1785,7 @@ async def run_agent(
                 slot_bindings,
                 merged_memory_values,
             )
+        slot_bindings = scrub_mismatched_reading_slots(slot_bindings, turn_goal)
         skill_hints = build_skill_hints(
             matched_skills,
             route=route.value,
@@ -1905,9 +1910,10 @@ async def run_agent(
         raw_steps = primary_skill.tool_steps or None
         if raw_steps:
             skill_steps = bind_tool_steps(raw_steps, slot_bindings)
+            skill_steps = scrub_mismatched_plan_entities(skill_steps, turn_goal)
     initialize_loop_plan(
         loop_state,
-        goal=user_text,
+        goal=turn_goal or user_text,
         route=route.value,
         tool_steps=skill_steps,
         skill_title=matched_skills[0].title if matched_skills else "",

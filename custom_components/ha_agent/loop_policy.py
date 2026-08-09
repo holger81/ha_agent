@@ -1112,10 +1112,6 @@ _PLACE_STOPWORDS = frozenset(
         "sensor",
         "entity",
         "home",
-        "outside",
-        "outdoor",
-        "inside",
-        "indoor",
     }
 )
 
@@ -1738,10 +1734,74 @@ def build_missing_reading_nudge(loop_state: LoopState) -> str:
 def honest_missing_reading_message(loop_state: LoopState) -> str:
     """User-visible fallback when a reading was claimed without confirmation."""
     kind = _infer_reading_kind(loop_state.plan_goal) or "reading"
+    article = "an" if kind[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
     return (
-        f"I haven't confirmed a {kind} sensor state with a tool call yet, so I "
-        "can't report that value. Please try again."
+        f"I haven't confirmed {article} {kind} sensor state with a tool call "
+        "yet, so I can't report that value. Please try again."
     )
+
+
+_ENTITY_ID_VALUE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_]+$", re.IGNORECASE)
+
+
+def _entity_matches_reading_markers(entity_id: str, kind: str) -> bool:
+    text = (entity_id or "").strip().lower()
+    if not text:
+        return False
+    blob = text.replace(".", " ")
+    markers = dict(_READING_KIND_MARKERS).get(kind, (kind,))
+    return any(marker.replace(" ", "_") in text or marker in blob for marker in markers)
+
+
+def scrub_mismatched_reading_slots(
+    bindings: dict[str, str] | None,
+    goal: str,
+) -> dict[str, str]:
+    """Clear entity-like slot values that cannot satisfy the reading goal.
+
+    Stale skill defaults (e.g. a humidity entity on an AQI ask) must not seed
+    ha_get_state — force search instead.
+    """
+    result = dict(bindings or {})
+    kind = _infer_reading_kind(goal)
+    if not kind or not result:
+        return result
+    for key, value in list(result.items()):
+        text = str(value or "").strip()
+        if not _ENTITY_ID_VALUE.match(text):
+            continue
+        if _entity_matches_reading_markers(text, kind):
+            continue
+        result[key] = ""
+    return result
+
+
+def scrub_mismatched_plan_entities(
+    steps: list[dict[str, Any]] | None,
+    goal: str,
+) -> list[dict[str, Any]] | None:
+    """Drop baked-in entity_ids that cannot satisfy the reading goal."""
+    if not steps:
+        return steps
+    kind = _infer_reading_kind(goal)
+    if not kind:
+        return steps
+    cleaned: list[dict[str, Any]] = []
+    for step in steps:
+        new_step = dict(step)
+        args = new_step.get("arguments")
+        if isinstance(args, dict):
+            args = dict(args)
+            entity_id = args.get("entity_id")
+            if (
+                isinstance(entity_id, str)
+                and _ENTITY_ID_VALUE.match(entity_id.strip())
+                and not _entity_matches_reading_markers(entity_id, kind)
+            ):
+                args.pop("entity_id", None)
+            new_step["arguments"] = args
+        cleaned.append(new_step)
+    return cleaned
 
 
 def should_retry_missing_reading(

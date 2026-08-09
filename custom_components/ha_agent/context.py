@@ -374,6 +374,29 @@ def is_short_follow_up_query(query: str) -> bool:
     return bool(_FOLLOW_UP_REF.search(text) or _INFORMATIONAL_FOLLOW_UP.search(text))
 
 
+def resolve_turn_goal(
+    user_text: str,
+    history: list[dict[str, Any]] | None = None,
+) -> str:
+    """Return the substantive goal for this turn (prior user ask on short follow-ups).
+
+    Short retries like "try again" must keep the previous reading/control goal so
+    loop policy (reading kind, place tokens) and skill slots stay on-topic.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return ""
+    if not history or not is_short_follow_up_query(text):
+        return text
+    for message in reversed(history):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        prior = str(message.get("content") or "").strip()
+        if prior and not is_short_follow_up_query(prior):
+            return prior
+    return text
+
+
 def _follow_up_device_hint(
     query: str,
     history: list[dict[str, str]],

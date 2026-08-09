@@ -247,6 +247,21 @@ def test_is_device_action_query_matches_turn_them_back_off() -> None:
     assert context.is_device_action_query("turn them back off")
 
 
+def test_resolve_turn_goal_keeps_prior_ask_on_short_follow_up() -> None:
+    """Retries like 'try again' keep the previous substantive user goal."""
+    history = [
+        {"role": "user", "content": "what is the outdoor air quality?"},
+        {"role": "assistant", "content": "Please try again."},
+    ]
+    assert (
+        context.resolve_turn_goal("try again", history)
+        == "what is the outdoor air quality?"
+    )
+    assert context.resolve_turn_goal("what is the outdoor air quality?", history) == (
+        "what is the outdoor air quality?"
+    )
+
+
 def test_build_tool_context_turn_them_back_off_reuses_entity() -> None:
     """Follow-up off phrasing reuses prior entity ids without tool hardcoding."""
     history = [
