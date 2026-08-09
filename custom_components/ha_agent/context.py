@@ -153,10 +153,13 @@ def is_affirmative(query: str) -> bool:
 _GENERIC_CHITCHAT = re.compile(
     r"^(?:"
     r"hi|hello|hey|yo|howdy|"
-    r"good\s+(?:morning|afternoon|evening|night)|"
+    r"good\s*(?:morning|afternoon|evening|night)|"
     r"thanks|thank\s+you|thx|"
-    r"ok|okay|bye|goodbye|see\s+ya"
-    r")[!.?\s]*$",
+    r"ok|okay|bye|goodbye|see\s+(?:ya|you)|never\s*mind"
+    r")"
+    # Greetings often carry a short address or filler word ("hello there").
+    r"(?:\s+(?:there|again|all|everyone|folks|friend|buddy|later))?"
+    r"[!.?\s]*$",
     re.IGNORECASE,
 )
 
@@ -165,12 +168,29 @@ _CASUAL_CHAT = re.compile(
     r"joke|jokes|funny|make\s+me\s+laugh|"
     r"say\s+something\s+(?:funny|random)|"
     r"tell\s+me\s+(?:a\s+)?(?:joke|story|riddle)|"
-    r"who\s+are\s+you|what\s+can\s+you\s+do"
+    r"who\s+are\s+you|what\s+can\s+you\s+do|"
+    r"how\s+are\s+you|what(?:'?s|\s+is)\s+your\s+name"
     r")\b",
     re.IGNORECASE,
 )
 
 _CHAT_ROUTES = frozenset({"chat", "general", ""})
+
+# Asks that read state instead of commanding a change. A leading interrogative
+# is the reliable signal: "is the front door locked" reads, while "lock the
+# front door" acts, even though both name a lock.
+_STATE_QUESTION = re.compile(
+    r"^\s*(?:so\s+|and\s+)?(?:"
+    r"what|whats|what's|how|hows|how's|is|are|was|were|which|who|whos|who's|"
+    r"do|does|did|any|anything|tell|show|give|read|check|list"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_state_question(query: str) -> bool:
+    """Return True when the ask reads state rather than commanding a change."""
+    return bool(_STATE_QUESTION.match(query or ""))
 
 
 def is_generic_chitchat(query: str) -> bool:

@@ -47,6 +47,55 @@ _BARE_ALIAS = re.compile(
     re.IGNORECASE,
 )
 
+# Tool names are verb-shaped on every MCP server we talk to
+# (``ha_call_service``, ``imap_search_messages``, ``HassTurnOn``), so the verb
+# decides whether a step reads or writes. Classifying by verb keeps this working
+# for servers and domains we have never seen — no per-domain tool lists.
+_READ_EFFECT = re.compile(
+    r"(?:^|_)(?:get|read|search|list|find|fetch|status|curate|describe|show|lookup|"
+    r"query|summarize|check|eval)(?:_|$)",
+    re.IGNORECASE,
+)
+_MUTATE_EFFECT = re.compile(
+    r"(?:^|_)(?:set|update|mark|flag|bulk|delete|remove|create|send|call|turn|"
+    r"write|apply|move|copy|add|clear|toggle|enable|disable|play|pause|resume|"
+    r"stop|start|skip|mute|unmute|broadcast|open|close|lock|unlock|dim|activate|"
+    r"deactivate|arm|disarm|run|cast|press|trigger|restart|cancel)(?:_|$)",
+    re.IGNORECASE,
+)
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def tool_effect_tail(tool_name: str) -> str:
+    """Return the verb-bearing part of a tool name as lowercase snake_case."""
+    name = str(tool_name or "").strip()
+    tail = name.split("__")[-1] if "__" in name else name
+    return _CAMEL_BOUNDARY.sub("_", tail).replace("-", "_").lower()
+
+
+def tool_effect_kind(tool_name: str) -> str:
+    """Classify a tool as read, mutate, or other from its name."""
+    tail = tool_effect_tail(tool_name)
+    if _MUTATE_EFFECT.search(tail):
+        return "mutate"
+    if _READ_EFFECT.search(tail):
+        return "read"
+    return "other"
+
+
+def steps_change_state(steps: list[dict[str, Any]] | None) -> bool:
+    """True unless every concrete step is a recognizable read.
+
+    Unrecognized tools count as changing state: a workflow may only be treated
+    as safe for a read-only question when every step is known to read.
+    """
+    names = [
+        str(step.get("toolName") or step.get("name") or "").strip()
+        for step in (steps or [])
+        if isinstance(step, dict)
+    ]
+    return any(tool_effect_kind(name) != "read" for name in names if name)
+
 
 def _normalize_upstream_tool_name(name: str) -> str:
     """Fix common LLM mistakes in MCP proxy tool names."""

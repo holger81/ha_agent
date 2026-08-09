@@ -1,0 +1,30 @@
+{
+  "group": "co2",
+  "kind": "reading",
+  "expect_skill": "look-up-sensor-or-entity-status",
+  "expect_route": "chat",
+  "expect_soft_domain": null,
+  "expect_reading_kind": "co2",
+  "phrases": [
+    "what is the co2 level in the office",
+    "co2 in Jonathans room",
+    "how much co2 is in the bedroom",
+    "tell me the co2 level upstairs",
+    "check the co2 in the nursery",
+    "whats the co2 reading in the living room",
+    "is the co2 too high in the office",
+    "co2 level please",
+    "current co2 in the meeting room",
+    "read the co2 sensor in the bedroom",
+    "co2 concentration in the basement",
+    "how is the co2 in Emilias room",
+    "give me the co2 value for the office",
+    "co2 check on the nursery",
+    "whats the co2 ppm in the bedroom",
+    "is co2 above 1000 in the office",
+    "co2 status of the living room",
+    "show me co2 for the whole house",
+    "which room has the highest co2",
+    "co2 downstairs right now"
+  ]
+}

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from .context import is_state_question
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
@@ -116,6 +118,57 @@ _READING_KIND_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pressure", ("pressure", "hpa", "mbar")),
     ("aqi", ("aqi", "air_quality", "airquality", "pm2", "pm_2", "pm25")),
     ("co2", ("co2", "co₂")),
+)
+# Goal-side vocabulary: how people ask for a reading, in precedence order.
+# Kept separate from the entity-side markers above so loose words ("hot",
+# "dry") never make an unrelated entity ("hot water", "dryer") look like a match.
+_READING_GOAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "aqi",
+        re.compile(
+            r"\bair\s*quality\b|\baqi\b|\bpm\s?2[.,]?5\b|\bpm25\b|\bpm10\b"
+            r"|particulate|\bair\b[^.]{0,20}\b(?:clean|polluted|pollution)\b"
+            r"|\b(?:clean|polluted)\b[^.]{0,20}\bair\b"
+            # "how is the air (outside)" asks about air quality, but
+            # "how is the air temperature" is a temperature ask.
+            r"|\bhow(?:'?s|\s+is)\s+(?:the\s+)?air\b(?!\s+temp)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "temperature",
+        re.compile(
+            r"\btemperatures?\b|\btemps?\b|\bdegrees?\b|\bcelsius\b|\bfahrenheit\b"
+            r"|°c|°f|\bthermometer\b"
+            r"|\bwarm(?:er|est|th)?\b|\bcold(?:er|est)?\b|\bhot(?:ter|test)?\b"
+            r"|\bchilly\b|\bfreezing\b|\bcool(?:er|est)?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "humidity",
+        re.compile(
+            r"\bhumidity\b|\bhumid\b|\bdamp(?:ness)?\b|\bmoisture\b|\bdry\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "pressure",
+        re.compile(r"\bpressure\b|\bhpa\b|\bmbar\b|barometric", re.IGNORECASE),
+    ),
+    (
+        "co2",
+        re.compile(r"\bco2\b|co₂|carbon\s+dioxide|\bppm\b", re.IGNORECASE),
+    ),
+)
+# Setpoint/device intent: shares vocabulary with readings but changes state.
+_CONTROL_GOAL_INTENT = re.compile(
+    r"\b(?:set|sets|setting|change|adjust|raise|lower|increase|decrease|reduce"
+    r"|bump|crank|drop|boost|dial)\b"
+    r"|\bturn\s+(?:it\s+|the\s+\w+\s+)?(?:up|down|on|off)\b"
+    r"|\bswitch\s+(?:on|off|to)\b|\bput\s+the\b|\bmake\s+(?:it|the)\b"
+    r"|\b(?:warm|heat)\s+up\b|\bcool\s+down\b",
+    re.IGNORECASE,
 )
 _REASONING_WILL_CALL = re.compile(
     r"\b(?:will|should|i'?ll|going to)\s+call\s+`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?",
@@ -1063,16 +1116,23 @@ def _is_entity_search_result(tool_name: str, data: dict[str, Any]) -> bool:
 
 
 def _infer_reading_kind(goal: str) -> str | None:
-    """Infer a sensor reading kind from the user goal, if any."""
+    """Infer a sensor reading kind from the user goal, if any.
+
+    Goal vocabulary is deliberately wider than the entity-side markers in
+    ``_READING_KIND_MARKERS``: users say "how cold is the garage" or "how many
+    degrees upstairs", while entity names say "temperature". Control asks
+    ("set the thermostat to 21 degrees") are not readings even though they share
+    that vocabulary, so an explicit setpoint intent wins over the markers.
+    """
     text = (goal or "").strip().lower()
     if not text:
         return None
-    if re.search(r"\b(?:air\s*quality|aqi)\b", text):
-        return "aqi"
-    if re.search(r"\b(?:how\s+warm|how\s+cold|temps?)\b", text):
-        return "temperature"
-    for kind, _markers in _READING_KIND_MARKERS:
-        if re.search(rf"\b{re.escape(kind)}\b", text):
+    # A leading interrogative outranks a setpoint verb ("what temperature is
+    # the thermostat set to" reads; "set the thermostat to 21" does not).
+    if _CONTROL_GOAL_INTENT.search(text) and not is_state_question(text):
+        return None
+    for kind, pattern in _READING_GOAL_MARKERS:
+        if pattern.search(text):
             return kind
     return None
 
@@ -1112,8 +1172,107 @@ _PLACE_STOPWORDS = frozenset(
         "sensor",
         "entity",
         "home",
+        "house",
+        "whole",
+        "whats",
+        "hows",
+        "does",
+        "did",
+        "tell",
+        "show",
+        "give",
+        "know",
+        "want",
+        "idea",
+        "look",
+        "need",
+        "say",
+        "says",
+        "report",
+        "out",
+        "level",
+        "levels",
+        "much",
+        "many",
+        "high",
+        "low",
+        "above",
+        "below",
+        "over",
+        "under",
+        "too",
+        "very",
+        "still",
+        "right",
+        "now",
+        "moment",
+        "today",
+        "all",
+        "any",
+        "get",
+        "got",
+        "like",
+        "there",
+        "percent",
+        "percentage",
+        # "temperature wise", "heat wise" — a suffix adverb, never a place.
+        "wise",
     }
 )
+# Goal words per reading kind: they describe the measurement, so they are never
+# useful as an entity-search term.
+_READING_GOAL_WORDS: dict[str, frozenset[str]] = {
+    "temperature": frozenset(
+        {
+            "temperature",
+            "temperatures",
+            "temp",
+            "temps",
+            "degree",
+            "degrees",
+            "celsius",
+            "fahrenheit",
+            "thermometer",
+            "warm",
+            "warmer",
+            "warmest",
+            "warmth",
+            "cold",
+            "colder",
+            "coldest",
+            "hot",
+            "hotter",
+            "hottest",
+            "chilly",
+            "freezing",
+            "cool",
+            "cooler",
+            "coolest",
+        }
+    ),
+    "humidity": frozenset(
+        {"humidity", "humid", "damp", "dampness", "moisture", "dry", "relative"}
+    ),
+    "aqi": frozenset(
+        {
+            "air",
+            "quality",
+            "aqi",
+            "pm2",
+            "pm25",
+            "pm10",
+            "particulate",
+            "matter",
+            "clean",
+            "polluted",
+            "pollution",
+            "index",
+        }
+    ),
+    "co2": frozenset({"co2", "carbon", "dioxide", "ppm", "concentration"}),
+    "pressure": frozenset({"pressure", "hpa", "mbar", "barometric"}),
+}
+_MEASURE_WORDS: frozenset[str] = frozenset().union(*_READING_GOAL_WORDS.values())
 
 
 def _goal_place_tokens(goal: str, reading_kind: str | None = None) -> list[str]:
@@ -1123,16 +1282,16 @@ def _goal_place_tokens(goal: str, reading_kind: str | None = None) -> list[str]:
         return []
     skip = set(_PLACE_STOPWORDS)
     if reading_kind:
+        # A measurement word is never a place, whichever kind won the goal:
+        # "how warm and how humid is the attic" searches for the attic.
+        skip.update(_MEASURE_WORDS)
         skip.add(reading_kind)
         for marker in dict(_READING_KIND_MARKERS).get(reading_kind, ()):
             skip.update(re.findall(r"[a-z0-9]{3,}", marker.lower()))
-        if reading_kind == "aqi":
-            skip.update({"air", "quality"})
-        if reading_kind == "temperature":
-            skip.update({"temp", "temps", "degrees", "celsius", "fahrenheit"})
     tokens: list[str] = []
     for tok in re.findall(r"[a-z0-9]{3,}", text):
-        if tok in skip or tok in tokens:
+        # Bare numbers ("above 100") are thresholds, never places.
+        if tok in skip or tok in tokens or tok.isdigit():
             continue
         tokens.append(tok)
         if len(tokens) >= 6:

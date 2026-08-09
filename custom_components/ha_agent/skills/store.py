@@ -771,7 +771,9 @@ def _build_fts_query(text: str) -> str:
     escaped = []
     for token in tokens[:12]:
         safe = token.replace('"', '""')
-        escaped.append(f'"{safe}"')
+        # Prefix match so morphological variants still find a skill
+        # ("temps" → "temperature", "blinds" → "blind"). Exact hits are included.
+        escaped.append(f'"{safe}"*')
     return " OR ".join(escaped)
 
 

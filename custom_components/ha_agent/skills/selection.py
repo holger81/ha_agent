@@ -11,12 +11,18 @@ from homeassistant.core import HomeAssistant
 
 from ..config_helpers import LlmBackend
 from ..const import LOGGER
-from ..context import is_casual_chat_query, is_chat_route, is_short_follow_up_query
+from ..context import (
+    is_casual_chat_query,
+    is_chat_route,
+    is_short_follow_up_query,
+    is_state_question,
+)
 from ..llm_client import LlmClient
 from ..structured_output import SKILL_SELECT_SCHEMA, json_schema_format
 from .discovery import build_discovery_query
 from .models import Skill
 from .store import get_skill_store
+from .tool_names import steps_change_state
 
 _SELECT_PROMPT = (
     "You choose which saved workflow skill (if any) matches the user's INTENT.\n"
@@ -45,11 +51,11 @@ _SELECT_PROMPT = (
 
 _ROUTE_DOMAIN_MARKERS: dict[str, re.Pattern[str]] = {
     "email": re.compile(
-        r"\b(emails?|e-?mails?|inbox|imap|mailbox|unread)\b",
+        r"\b(e-?mails?|mails?|inbox|imap|mailbox|unread)\b",
         re.IGNORECASE,
     ),
     "news": re.compile(
-        r"\b(news|headline|briefing|rss|nachrichten|curate)\b",
+        r"\b(news|headlines?|briefings?|rss|nachrichten|curate)\b",
         re.IGNORECASE,
     ),
     "action": re.compile(
@@ -80,6 +86,7 @@ _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
 
 # Soft workflow domains on chat (not device-control/action).
 _SOFT_DOMAIN_HINTS = frozenset(key for key in _ROUTE_DOMAIN_MARKERS if key != "action")
+
 
 _CATALOG_LIMIT = 30
 # Minimum Jaccard overlap between user tokens and skill triggers/title before
@@ -229,6 +236,18 @@ def infer_soft_domain_hint(user_text: str) -> str | None:
     return None
 
 
+def soft_domains_in_text(user_text: str) -> frozenset[str]:
+    """Return every soft chat domain whose markers appear in the user text."""
+    text = (user_text or "").strip()
+    if not text:
+        return frozenset()
+    return frozenset(
+        domain
+        for domain in _SOFT_DOMAIN_HINTS
+        if _ROUTE_DOMAIN_MARKERS[domain].search(text)
+    )
+
+
 def _skill_step_names(skill: Skill) -> list[str]:
     return [
         str(step.get("toolName") or "")
@@ -247,16 +266,48 @@ def _skill_tool_domains(skill: Skill) -> set[str]:
     return domains
 
 
+def skill_changes_state(skill: Skill) -> bool:
+    """True when a skill's tool steps are not all recognizable reads.
+
+    Verb-based via :func:`steps_change_state`, so a control workflow on any MCP
+    server counts — not just the Home Assistant tools we happen to ship.
+    """
+    return steps_change_state(skill.tool_steps)
+
+
+def _skill_soft_domains(skill: Skill) -> frozenset[str]:
+    """Soft chat domains a skill declares via its scope or its concrete tools."""
+    domains = set(_skill_tool_domains(skill))
+    scope = (skill.route_scope or "").lower()
+    if scope:
+        domains.add(scope)
+    return frozenset(domains & _SOFT_DOMAIN_HINTS)
+
+
 def skill_matches_route(
     skill: Skill,
     route: str | None,
     *,
     domain_hint: str | None = None,
+    user_text: str | None = None,
 ) -> bool:
     """Return True when a skill plausibly belongs on the active route/domain."""
     route_key = (route or "").lower()
     hint = (domain_hint or "").lower()
     scope = (skill.route_scope or "").lower()
+
+    # A skill built for a specialized domain needs that domain's vocabulary in
+    # the ask. Without it an email/news workflow must not serve an unrelated
+    # chat turn (e.g. a room temperature lookup), whatever FTS or the
+    # classifier proposed. Marker-driven, so new domains are covered too.
+    if user_text and route_key in {"", "chat"}:
+        declared = _skill_soft_domains(skill)
+        if declared and not declared & soft_domains_in_text(user_text):
+            return False
+        # A read-only question must not run a state-changing workflow, however
+        # it was proposed ("is the front door locked" is not "lock the door").
+        if is_state_question(user_text) and skill_changes_state(skill):
+            return False
 
     # Soft domain on chat: prefer matching scope/tools; reject other domains.
     if route_key in {"", "chat"} and hint in _SOFT_DOMAIN_HINTS:
@@ -320,12 +371,15 @@ def _filter_by_route(
     route: str | None,
     *,
     domain_hint: str | None = None,
+    user_text: str | None = None,
 ) -> list[Skill]:
     """Drop skills whose domain conflicts with the active route/hint."""
     return [
         skill
         for skill in skills
-        if skill_matches_route(skill, route, domain_hint=domain_hint)
+        if skill_matches_route(
+            skill, route, domain_hint=domain_hint, user_text=user_text
+        )
     ]
 
 
@@ -552,7 +606,11 @@ def _resolve_chat_route_skills(
         query = f"{query} {_ROUTE_SEARCH_HINTS[hint]}".strip()
     rows = store.search(query, limit=3 if hint else 2, enabled_only=True)
     skills = store.load_skills_by_ids([row.id for row in rows]) if rows else []
-    skills = _filter_by_route(skills, "chat", domain_hint=hint or None)
+    skills = _filter_by_route(
+        skills, "chat", domain_hint=hint or None, user_text=user_text
+    )
+    # Never pin a state-changing workflow from keyword overlap on a chat turn.
+    skills = [skill for skill in skills if not skill_changes_state(skill)]
 
     if hint and skills:
         scoped = [
@@ -671,8 +729,12 @@ async def resolve_skills_for_turn(
         )
 
     candidates, fts_matches = await hass.async_add_executor_job(_load)
-    candidates = _filter_by_route(candidates, route, domain_hint=effective_hint)
-    fts_matches = _filter_by_route(fts_matches, route, domain_hint=effective_hint)
+    candidates = _filter_by_route(
+        candidates, route, domain_hint=effective_hint, user_text=user_text
+    )
+    fts_matches = _filter_by_route(
+        fts_matches, route, domain_hint=effective_hint, user_text=user_text
+    )
     if not candidates and not fts_matches:
         if is_chat_route(route):
             return SkillSelectionResult(
@@ -692,9 +754,17 @@ async def resolve_skills_for_turn(
     # only when trigger overlap is strong enough for small models. Short
     # follow-ups ("check again") must not pin from a shared verb alone.
     follow_up = bool(history) and is_short_follow_up_query(user_text)
+    # Keyword overlap alone must not run a control workflow on a chat turn
+    # ("is the front door locked"). Classifier picks still own intent.
+    pinnable = [
+        skill
+        for skill in fts_matches
+        if not (is_chat_route(route) and skill_changes_state(skill))
+    ]
     if (
-        len(fts_matches) == 1
-        and _strong_fts_match(user_text, fts_matches[0])
+        len(pinnable) == 1
+        and len(fts_matches) == 1
+        and _strong_fts_match(user_text, pinnable[0])
         and not follow_up
     ):
         skill = fts_matches[0]
@@ -710,6 +780,7 @@ async def resolve_skills_for_turn(
         _merge_catalog(fts_matches, candidates),
         route,
         domain_hint=effective_hint,
+        user_text=user_text,
     )
     if not catalog:
         return SkillSelectionResult(
@@ -738,9 +809,9 @@ async def resolve_skills_for_turn(
     raw_preview = raw[:240] if raw else None
     if selected:
         # Trust the classifier's intent pick; only apply route/domain filters.
-        filtered = _filter_by_route(selected, route, domain_hint=effective_hint)[
-            :max_inject
-        ]
+        filtered = _filter_by_route(
+            selected, route, domain_hint=effective_hint, user_text=user_text
+        )[:max_inject]
         if not filtered:
             return SkillSelectionResult(
                 skills=[],
@@ -770,7 +841,7 @@ async def resolve_skills_for_turn(
     # Follow-ups also skip unsupervised FTS fallback (needs history-aware LLM).
     strong_fts = [
         skill
-        for skill in fts_matches
+        for skill in pinnable
         if _strong_fts_match(user_text, skill) and not follow_up
     ]
     if strong_fts:

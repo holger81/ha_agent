@@ -8,22 +8,12 @@ from typing import Any, Literal
 
 from .body import derive_tool_steps_from_body
 from .models import Skill, SkillDraft, TurnTrace
+from .tool_names import tool_effect_kind
 
 SaveMode = Literal["update", "fork"]
 
 _DISCOVERY_TOOL = re.compile(
     r"(searchToolsForDomain|searchTool|tools/list|tools_list)",
-    re.IGNORECASE,
-)
-
-_READ_EFFECT = re.compile(
-    r"(?:^|_)(?:get|read|search|list|find|fetch|status|curate|describe|show|lookup|"
-    r"query|summarize|check)(?:_|$)",
-    re.IGNORECASE,
-)
-_MUTATE_EFFECT = re.compile(
-    r"(?:^|_)(?:set|update|mark|flag|bulk|delete|remove|create|send|call|turn_on|"
-    r"turn_off|write|apply|move|copy|add|clear|toggle|enable|disable)(?:_|$)",
     re.IGNORECASE,
 )
 
@@ -81,16 +71,6 @@ def successful_workflow_tools(trace: TurnTrace) -> list[str]:
         seen.add(name)
         names.append(name)
     return names
-
-
-def tool_effect_kind(tool_name: str) -> str:
-    """Classify a tool as read, mutate, or other from its name."""
-    tail = tool_name.split("__")[-1] if "__" in tool_name else tool_name
-    if _MUTATE_EFFECT.search(tail):
-        return "mutate"
-    if _READ_EFFECT.search(tail):
-        return "read"
-    return "other"
 
 
 def _effect_set(tool_names: list[str]) -> frozenset[str]:

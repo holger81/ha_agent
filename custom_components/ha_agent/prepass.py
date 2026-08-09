@@ -29,7 +29,9 @@ from .skills.selection import (
     _load_skill_candidates,
     _merge_catalog,
     _resolve_chat_route_skills,
+    infer_soft_domain_hint,
     is_chat_route,
+    skill_matches_route,
 )
 from .skills.store import get_skill_store
 from .structured_output import PREPASS_SCHEMA, json_schema_format
@@ -47,9 +49,11 @@ _PREPAS_PROMPT = (
     "(including follow-ups like 'turn it back off').\n"
     "- skill_slug: catalog skill matching the user's INTENT (paraphrases OK); "
     "empty string when unsure or none apply\n"
+    "- Never pick a Home Assistant entity/search skill for a soft-domain ask "
+    "(email, news, …) — leave skill_slug empty if the catalog has no fit\n"
     "- slot_bindings: only keys listed for the chosen skill; use empty strings "
     "when unknown\n"
-    "- Prefer keyword_hint and heuristic_complexity when they are clear"
+    "- Prefer keyword_hint, domain_hint, and heuristic_complexity when clear"
 )
 
 
@@ -96,6 +100,11 @@ def _parse_prepass_payload(
     if route_value in {"email", "news"}:
         domain_hint = domain_hint or route_value
         route_value = "chat"
+    # Fill soft-domain hint from user text when prepass omitted it.
+    domain_hint = domain_hint or infer_soft_domain_hint(user_text)
+    # Soft domains are always chat workflows (not device-control/action).
+    if domain_hint and domain_hint != "action" and route_value == "action":
+        route_value = "chat"
     if route_value not in _ROUTE_VALUE_TO_TASK:
         return None
     route = _ROUTE_VALUE_TO_TASK[route_value]
@@ -117,8 +126,20 @@ def _parse_prepass_payload(
 
     selected_skills: list[Skill] = []
     if skill_slug and skill_slug in catalog_by_slug:
-        # Trust prepass intent selection; lexical overlap is only for FTS pins.
-        selected_skills = [catalog_by_slug[skill_slug]]
+        candidate = catalog_by_slug[skill_slug]
+        # Trust prepass intent, but never keep a tool/domain conflict
+        # (e.g. ha_search status skill on an email ask).
+        if skill_matches_route(
+            candidate,
+            route.value,
+            domain_hint=domain_hint,
+            user_text=user_text,
+        ):
+            selected_skills = [candidate]
+        else:
+            reason = (reason + "; ").lstrip(
+                "; "
+            ) + f"dropped conflicting skill {skill_slug!r}"
 
     skill_selection = None
     skill: Skill | None = None
@@ -138,6 +159,7 @@ def _parse_prepass_payload(
         route,
         skill_scope=skill.route_scope if skill is not None else None,
         domain_hint=domain_hint,
+        skill_tool_steps=list(skill.tool_steps) if skill is not None else None,
     )
     if align_reason:
         reason = (reason + "; ").lstrip("; ") + align_reason
@@ -229,29 +251,42 @@ async def run_turn_prepass(
 
     catalog: list[Skill] = []
     fts_matches: list[Skill] = []
+    soft_hint = getattr(
+        keyword_decision, "domain_hint", None
+    ) or infer_soft_domain_hint(user_text)
     if skills_enabled and max_inject > 0:
         store = get_skill_store(hass, entry_id)
+        route_key = keyword_decision.route.value
+        if soft_hint and soft_hint != "action":
+            # Soft-domain asks are chat workflows — don't seed action HA skills.
+            route_key = "chat"
 
         def _load() -> tuple[list[Skill], list[Skill]]:
-            if is_chat_route(keyword_decision.route.value):
+            if is_chat_route(route_key):
                 chat_sel = _resolve_chat_route_skills(
                     store,
                     user_text,
                     max_inject=max_inject,
+                    domain_hint=soft_hint,
                 )
                 return chat_sel.skills, chat_sel.skills
             return _load_skill_candidates(
                 store,
                 user_text=user_text,
                 history=history,
-                route=keyword_decision.route.value,
+                route=route_key,
                 max_inject=max_inject,
             )
 
         candidates, fts_matches = await hass.async_add_executor_job(_load)
         catalog = _filter_by_route(
             _merge_catalog(fts_matches, candidates),
-            keyword_decision.route.value,
+            route_key,
+            domain_hint=soft_hint,
+            user_text=user_text,
+        )
+        fts_matches = _filter_by_route(
+            fts_matches, route_key, domain_hint=soft_hint, user_text=user_text
         )
 
     if (
@@ -303,6 +338,7 @@ async def run_turn_prepass(
                     "user_text": user_text,
                     "recent_user_turns": recent,
                     "keyword_hint": keyword_decision.summary,
+                    "domain_hint": soft_hint or "",
                     "heuristic_complexity": heuristic.value,
                     "available_routes": [
                         route

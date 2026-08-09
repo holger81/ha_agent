@@ -1,0 +1,30 @@
+{
+  "group": "locks",
+  "kind": "control",
+  "expect_skill": "lock-doors",
+  "expect_route": "action",
+  "expect_soft_domain": null,
+  "expect_reading_kind": null,
+  "phrases": [
+    "lock the front door",
+    "unlock the back door",
+    "lock all the doors",
+    "please lock the front door for the night",
+    "unlock the garage door lock",
+    "lock the side entrance",
+    "make sure the front door is locked",
+    "can you lock up the house",
+    "unlock the front door for the delivery",
+    "lock the patio door",
+    "secure all doors",
+    "lock the basement door",
+    "unlock the office door",
+    "lock the apartment door",
+    "double lock the front door",
+    "lock the door in the garage",
+    "unlock everything",
+    "lock the balcony door",
+    "lock the doors and close the garage",
+    "unlock the side door please"
+  ]
+}

@@ -861,3 +861,181 @@ async def test_llm_intent_pick_trusted_despite_weak_lexical_overlap(
     assert [s.slug for s in result.skills] == ["look-up-sensor-or-entity-status"]
     assert result.method == "llm"
     llm.chat.assert_called_once()
+
+
+def test_specialized_skill_needs_domain_words_in_the_ask() -> None:
+    """An email workflow is not eligible for an unrelated chat ask."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    email = models.Skill(
+        id="1",
+        slug="check-unread-emails",
+        title="Check and read unread emails",
+        description="Summarize unread inbox messages",
+        triggers=["do I have new emails"],
+        body="# Email",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages", "arguments": {}}],
+        route_scope="email",
+    )
+
+    assert (
+        selection.skill_matches_route(
+            email,
+            "chat",
+            user_text="what is the temperature in Jonathans room",
+        )
+        is False
+    )
+    assert (
+        selection.skill_matches_route(
+            email,
+            "chat",
+            user_text="did I get any mail today",
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_state_changing_skill_is_not_pinned_on_a_status_question(
+    monkeypatch,
+) -> None:
+    """Keyword overlap must not run a control workflow for a status ask."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    config_helpers = _load("config_helpers")
+    llm_client = _load("llm_client")
+    lock = models.Skill(
+        id="1",
+        slug="lock-doors",
+        title="Lock or unlock doors",
+        description="Lock and unlock door locks",
+        triggers=["lock the front door", "unlock the front door"],
+        body="# Locks",
+        tool_steps=[
+            {"toolName": "home_assistant__ha_call_service", "arguments": {}},
+        ],
+        route_scope="action",
+    )
+    assert selection.skill_changes_state(lock) is True
+
+    store = MagicMock()
+    store.search.return_value = [MagicMock(id="1")]
+    store.load_skills_by_ids.return_value = [lock]
+    store.list_enabled.return_value = [lock]
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+
+    llm = MagicMock()
+    llm.chat = AsyncMock(
+        return_value=llm_client.ChatResult(
+            content='{"skill_slugs":[]}',
+            tool_calls=[],
+            assistant_message={},
+        )
+    )
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.1,
+        timeout=30,
+        thinking_level="off",
+    )
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        backend,
+        "is the front door locked",
+        route="chat",
+    )
+    assert result.skills == []
+
+
+def _skill(models, slug: str, *, tools: list[str], scope: str | None = None):
+    return models.Skill(
+        id="1",
+        slug=slug,
+        title=slug.replace("-", " "),
+        description=slug.replace("-", " "),
+        triggers=[slug.replace("-", " ")],
+        body=f"# {slug}",
+        tool_steps=[{"toolName": name, "arguments": {}} for name in tools],
+        route_scope=scope,
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool", "changes_state"),
+    [
+        # Home Assistant intent tools carry the verb in camelCase.
+        ("HassTurnOn", True),
+        ("HassLightSet", True),
+        ("HassMediaPause", True),
+        ("GetLiveContext", False),
+        # Tool families this repo has never shipped must classify too.
+        ("calendar_mcp__calendar_create_event", True),
+        ("vacuum_mcp__vacuum_start_cleaning", True),
+        ("todo_mcp__todo_add_item", True),
+        ("weather_mcp__weather_get_forecast", False),
+        ("mail_mcp__imap_search_messages", False),
+        ("mcp_news__news_curate", False),
+    ],
+)
+def test_state_change_detection_generalizes_past_ha_tools(
+    tool: str, changes_state: bool
+) -> None:
+    """Effect comes from the tool's verb, not a list of known HA tools."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+
+    skill = _skill(models, "some-workflow", tools=[tool])
+    assert selection.skill_changes_state(skill) is changes_state
+
+
+def test_unknown_domain_skill_needs_no_marker_entry() -> None:
+    """A brand-new domain works without adding it to any marker table."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+
+    # "calendar" is not a known soft domain, so the domain gate stays out of the
+    # way: a read-only calendar skill is eligible for a calendar question.
+    reader = _skill(
+        models,
+        "read-calendar",
+        tools=["calendar_mcp__calendar_list_events"],
+        scope="calendar",
+    )
+    assert (
+        selection.skill_matches_route(
+            reader, "chat", user_text="whats on my calendar tomorrow"
+        )
+        is True
+    )
+    # The read-only-question rule still applies to it, with no new special case.
+    writer = _skill(
+        models,
+        "add-calendar-event",
+        tools=["calendar_mcp__calendar_create_event"],
+        scope="calendar",
+    )
+    assert (
+        selection.skill_matches_route(
+            writer, "chat", user_text="whats on my calendar tomorrow"
+        )
+        is False
+    )
+    assert (
+        selection.skill_matches_route(
+            writer, "chat", user_text="add a dentist appointment on friday"
+        )
+        is True
+    )

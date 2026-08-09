@@ -178,6 +178,7 @@ from .skills.runtime import (
     should_offer_skill_creation,
 )
 from .skills.selection import (
+    SkillSelectionResult,
     infer_soft_domain_hint,
     resolve_skills_for_turn,
     skill_matches_route,
@@ -1692,22 +1693,25 @@ async def run_agent(
                 classifier_raw=route_resolution.classifier_raw,
                 domain_hint=inferred_hint,
             )
-    if matched_skills and route_resolution.domain_hint:
-        matched_skills = [
+    if matched_skills:
+        kept = [
             skill
             for skill in matched_skills
             if skill_matches_route(
                 skill,
                 route.value,
                 domain_hint=route_resolution.domain_hint,
+                user_text=turn_goal or user_text,
             )
         ]
+        if len(kept) != len(matched_skills):
+            matched_skills = kept
+            if not matched_skills:
+                skill_selection = None
+                slot_bindings = {}
 
     # Resolve skills before route alignment so any matched skill can own the route.
-    if skills_config.use_enabled and (
-        prepass_result is None
-        or (not matched_skills and prepass_result.method == "prepass")
-    ):
+    if skills_config.use_enabled and (prepass_result is None or not matched_skills):
         skill_selection = await resolve_skills_for_turn(
             hass,
             entry_id,
@@ -1722,6 +1726,27 @@ async def run_agent(
             trace=trace,
         )
         matched_skills = skill_selection.skills
+        # Final conflict gate (covers LLM picks that slip past catalog filters).
+        if matched_skills:
+            matched_skills = [
+                skill
+                for skill in matched_skills
+                if skill_matches_route(
+                    skill,
+                    route.value,
+                    domain_hint=route_resolution.domain_hint,
+                    user_text=turn_goal or user_text,
+                )
+            ]
+            if not matched_skills:
+                skill_selection = SkillSelectionResult(
+                    skills=[],
+                    method="llm_empty",
+                    summary="LLM → none (domain filter)",
+                    detail="Classifier pick(s) conflicted with this turn's domain.",
+                    candidate_count=skill_selection.candidate_count,
+                    classifier_raw=skill_selection.classifier_raw,
+                )
 
     # Selected skill owns route via route_scope; soft domain hints run on chat.
     primary = matched_skills[0] if matched_skills else None

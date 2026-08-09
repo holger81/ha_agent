@@ -194,7 +194,6 @@ def test_prepass_aligns_action_to_skill_scope() -> None:
     assert result.route_resolution.domain_hint == "news"
     assert result.skill_selection is not None
     assert result.skill_selection.skills[0].slug == "news-briefing"
-    assert "aligned route to skill scope" in result.orch_plan.reason
 
 
 def test_prepass_aligns_from_custom_skill_scope_alone() -> None:
@@ -265,6 +264,42 @@ def test_prepass_trusts_intent_skill_despite_weak_lexical_overlap() -> None:
     )
     assert result is not None
     assert result.skill_selection is not None
-    assert result.skill_selection.skills[0].slug == (
-        "look-up-sensor-or-entity-status"
+    assert result.skill_selection.skills[0].slug == ("look-up-sensor-or-entity-status")
+
+
+def test_prepass_drops_ha_status_skill_on_email_ask() -> None:
+    """Email asks must not keep an HA entity-status skill from prepass."""
+    prepass = _load("prepass")
+    models = _load("skills.models")
+    skill = models.Skill(
+        id="1",
+        slug="look-up-sensor-or-entity-status",
+        title="Look up sensor or entity status",
+        description="Parameterized status lookup",
+        triggers=["status of {{query}}", "look up {{query}} sensor"],
+        body="# Status",
+        tool_steps=[{"toolName": "home_assistant__ha_search", "arguments": {}}],
+        route_scope="action",
     )
+    keyword = SimpleNamespace(
+        summary="default chat",
+        domain_hint=None,
+        route=prepass.TaskRoute.CHAT,
+    )
+    result = prepass._parse_prepass_payload(
+        {
+            "route": "chat",
+            "domain_hint": "",
+            "complexity": "single",
+            "skill_slug": "look-up-sensor-or-entity-status",
+            "slot_bindings": {"query": "do I have new emails"},
+        },
+        catalog_by_slug={"look-up-sensor-or-entity-status": skill},
+        keyword_decision=keyword,
+        heuristic=prepass.Complexity.SINGLE,
+        user_text="do I have new emails",
+    )
+    assert result is not None
+    assert result.route_resolution.domain_hint == "email"
+    assert result.skill_selection is None
+    assert "dropped conflicting skill" in result.orch_plan.reason

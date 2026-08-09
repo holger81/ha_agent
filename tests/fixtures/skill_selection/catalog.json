@@ -1,0 +1,140 @@
+{
+  "description": "Skill catalog used by the skill-selection corpus tests. Mirrors the skills the agent actually learns in a household (one reading/status workflow, several device-control workflows, and soft-domain workflows).",
+  "skills": [
+    {
+      "slug": "look-up-sensor-or-entity-status",
+      "title": "Look up sensor or entity status",
+      "description": "Parameterized status lookup for a reading in a room (temperature, humidity, air quality, energy).",
+      "triggers": [
+        "what is the temperature in {{query}}",
+        "status of {{query}}",
+        "look up {{query}} sensor",
+        "how warm is it in {{query}}"
+      ],
+      "body": "Search for the sensor, then read its state.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "{{query}}", "domain_filter": "sensor"}},
+        {"toolName": "home_assistant__ha_get_state", "arguments": {"entity_id": "{{entity_id}}"}}
+      ],
+      "route_scope": "chat",
+      "group": "reading"
+    },
+    {
+      "slug": "control-lights",
+      "title": "Turn lights on or off",
+      "description": "Switch or dim lights in a room.",
+      "triggers": [
+        "turn on the {{query}} lights",
+        "turn off the {{query}} light",
+        "dim the {{query}} lights"
+      ],
+      "body": "Find the light entity, then call the light service.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "{{query}}", "domain_filter": "light"}},
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"entity_id": "{{entity_id}}", "service": "{{service}}"}}
+      ],
+      "route_scope": "action",
+      "group": "control"
+    },
+    {
+      "slug": "control-covers",
+      "title": "Open or close covers and blinds",
+      "description": "Open, close, or position covers, blinds, shades, and shutters.",
+      "triggers": [
+        "open the {{query}} blinds",
+        "close the {{query}} shades",
+        "raise the {{query}} cover"
+      ],
+      "body": "Find the cover entity, then call the cover service.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "{{query}}", "domain_filter": "cover"}},
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"entity_id": "{{entity_id}}", "service": "{{service}}"}}
+      ],
+      "route_scope": "action",
+      "group": "control"
+    },
+    {
+      "slug": "lock-doors",
+      "title": "Lock or unlock doors",
+      "description": "Lock and unlock door locks.",
+      "triggers": [
+        "lock the {{query}} door",
+        "unlock the {{query}} door",
+        "lock up the house"
+      ],
+      "body": "Find the lock entity, then call the lock service.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "{{query}}", "domain_filter": "lock"}},
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"entity_id": "{{entity_id}}", "service": "{{service}}"}}
+      ],
+      "route_scope": "action",
+      "group": "control"
+    },
+    {
+      "slug": "set-thermostat",
+      "title": "Set the thermostat target temperature",
+      "description": "Change the heating or cooling target on a thermostat.",
+      "triggers": [
+        "set the thermostat to {{query}}",
+        "make it warmer in {{query}}",
+        "turn up the heat in {{query}}"
+      ],
+      "body": "Find the climate entity, then set the target temperature.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "{{query}}", "domain_filter": "climate"}},
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"entity_id": "{{entity_id}}", "service": "set_temperature"}}
+      ],
+      "route_scope": "action",
+      "group": "control"
+    },
+    {
+      "slug": "media-control",
+      "title": "Control music and media players",
+      "description": "Play, pause, skip, and change volume on media players.",
+      "triggers": [
+        "play music in the {{query}}",
+        "pause the music",
+        "turn the volume down"
+      ],
+      "body": "Find the media player, then call the media service.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "{{query}}", "domain_filter": "media_player"}},
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"entity_id": "{{entity_id}}", "service": "{{service}}"}}
+      ],
+      "route_scope": "action",
+      "group": "control"
+    },
+    {
+      "slug": "check-and-read-unread-emails",
+      "title": "Check and read unread emails",
+      "description": "Check the inbox and summarize unread email messages.",
+      "triggers": [
+        "do I have new emails",
+        "check my inbox",
+        "read my unread mail"
+      ],
+      "body": "Search the mailbox for unread messages, then summarize them.",
+      "tool_steps": [
+        {"toolName": "mail_mcp__imap_search_messages", "arguments": {"mailbox": "{{mailbox}}", "unread_only": true}}
+      ],
+      "route_scope": "email",
+      "group": "email"
+    },
+    {
+      "slug": "news-briefing",
+      "title": "Daily news briefing",
+      "description": "Curate headlines into a short briefing.",
+      "triggers": [
+        "what are todays news",
+        "give me the headlines",
+        "news briefing please"
+      ],
+      "body": "Curate headlines from the configured feeds.",
+      "tool_steps": [
+        {"toolName": "mcp_news__news_curate", "arguments": {"digest_scope": "{{digest_scope}}"}}
+      ],
+      "route_scope": "news",
+      "group": "news"
+    }
+  ]
+}

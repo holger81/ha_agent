@@ -1800,3 +1800,55 @@ def test_verify_ha_service_reports_failed_state() -> None:
 
     assert note is not None
     assert note.startswith("VERIFICATION FAILED")
+
+
+def test_infer_reading_kind_covers_natural_phrasings() -> None:
+    """Everyday wording for a reading resolves to the sensor kind."""
+    policy = _load_loop_policy()
+
+    assert policy._infer_reading_kind("how cold is it in the garage") == "temperature"
+    assert policy._infer_reading_kind("how many degrees upstairs") == "temperature"
+    assert policy._infer_reading_kind("is it freezing in the basement") == "temperature"
+    assert policy._infer_reading_kind("how humid is it in the bathroom") == "humidity"
+    assert policy._infer_reading_kind("how is the air outside today") == "aqi"
+
+
+def test_infer_reading_kind_ignores_setpoint_asks() -> None:
+    """Changing a target temperature is control, not a reading to confirm."""
+    policy = _load_loop_policy()
+
+    assert policy._infer_reading_kind("set the thermostat to 21 degrees") is None
+    assert policy._infer_reading_kind("raise the temperature in the bath to 23") is None
+    assert policy._infer_reading_kind("make it warmer in the nursery") is None
+    # A question still reads, even with a setpoint verb in the sentence.
+    assert (
+        policy._infer_reading_kind("what temperature is the thermostat set to")
+        == "temperature"
+    )
+
+
+def test_goal_place_tokens_drop_request_and_measure_words() -> None:
+    """Search terms keep the place, not the measurement or the request."""
+    policy = _load_loop_policy()
+
+    warm = policy._goal_place_tokens("how warm is it in the kitchen", "temperature")
+    assert warm == ["kitchen"]
+    co2 = policy._goal_place_tokens("tell me the co2 level in the office", "co2")
+    assert co2 == ["office"]
+    assert policy._goal_place_tokens("is the aqi above 100", "aqi") == []
+    # A measurement word is never a place, even for another reading kind.
+    mixed = policy._goal_place_tokens(
+        "how warm and how humid is the attic", "temperature"
+    )
+    assert mixed == ["attic"]
+
+
+def test_air_temperature_is_not_an_air_quality_ask() -> None:
+    """The word air plus a measurement word keeps the measurement's kind."""
+    policy = _load_loop_policy()
+
+    assert policy._infer_reading_kind("how is the air outside") == "aqi"
+    assert (
+        policy._infer_reading_kind("how is the air temperature in the office")
+        == "temperature"
+    )

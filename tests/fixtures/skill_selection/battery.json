@@ -1,0 +1,30 @@
+{
+  "group": "battery",
+  "kind": "reading",
+  "expect_skill": "look-up-sensor-or-entity-status",
+  "expect_route": "chat",
+  "expect_soft_domain": null,
+  "expect_reading_kind": null,
+  "phrases": [
+    "which sensors have low battery",
+    "whats the battery level of the door sensor",
+    "battery status of the motion sensors",
+    "how is the battery on the front door lock",
+    "any batteries that need replacing",
+    "battery percentage of the thermostat",
+    "show me all low batteries",
+    "is the smoke detector battery ok",
+    "battery level in Jonathans room sensor",
+    "whats the battery of the water leak sensor",
+    "check batteries in the house",
+    "how full is the vacuum battery",
+    "battery of the doorbell please",
+    "which devices are almost out of battery",
+    "battery health of the window sensors",
+    "tell me the battery level of the remote",
+    "are any sensor batteries below 20 percent",
+    "battery report please",
+    "whats the charge on the garage sensor",
+    "battery status overview"
+  ]
+}
