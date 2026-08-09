@@ -30,7 +30,6 @@ from .skills.selection import (
     _merge_catalog,
     _resolve_chat_route_skills,
     is_chat_route,
-    skill_applies_to_user_text,
 )
 from .skills.store import get_skill_store
 from .structured_output import PREPASS_SCHEMA, json_schema_format
@@ -46,7 +45,8 @@ _PREPAS_PROMPT = (
     "- complexity: simple (chat, no tools), single (one workflow with tools), "
     "complex (multi-domain). Never use simple for action / device control "
     "(including follow-ups like 'turn it back off').\n"
-    "- skill_slug: empty string when no catalog skill applies\n"
+    "- skill_slug: catalog skill matching the user's INTENT (paraphrases OK); "
+    "empty string when unsure or none apply\n"
     "- slot_bindings: only keys listed for the chosen skill; use empty strings "
     "when unknown\n"
     "- Prefer keyword_hint and heuristic_complexity when they are clear"
@@ -117,15 +117,8 @@ def _parse_prepass_payload(
 
     selected_skills: list[Skill] = []
     if skill_slug and skill_slug in catalog_by_slug:
-        candidate = catalog_by_slug[skill_slug]
-        if not str(user_text or "").strip() or skill_applies_to_user_text(
-            user_text, candidate
-        ):
-            selected_skills = [candidate]
-        else:
-            reason = (reason + "; ").lstrip("; ") + (
-                f"dropped skill {skill_slug!r} (weak trigger overlap)"
-            )
+        # Trust prepass intent selection; lexical overlap is only for FTS pins.
+        selected_skills = [catalog_by_slug[skill_slug]]
 
     skill_selection = None
     skill: Skill | None = None

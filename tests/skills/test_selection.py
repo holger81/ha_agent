@@ -489,11 +489,14 @@ async def test_joke_on_chat_route_skips_learned_skills(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_route_weak_fts_hit_does_not_pin(monkeypatch) -> None:
-    """Single FTS hit on chat must still require strong trigger overlap."""
+async def test_chat_route_weak_fts_hit_asks_llm_intent(monkeypatch) -> None:
+    """Weak chat FTS must not pin unsupervised; fall through to LLM intent."""
     selection = _load("skills.selection")
+    config_helpers = _load("config_helpers")
     models = _load("skills.models")
+    llm_client = _load("llm_client")
     Skill = models.Skill
+    ChatResult = llm_client.ChatResult
 
     email_skill = Skill(
         id="email-1",
@@ -508,6 +511,7 @@ async def test_chat_route_weak_fts_hit_does_not_pin(monkeypatch) -> None:
     store = MagicMock()
     store.search.return_value = [MagicMock(id=email_skill.id)]
     store.load_skills_by_ids.return_value = [email_skill]
+    store.list_enabled.return_value = [email_skill]
 
     async def _executor(func):
         return func()
@@ -517,21 +521,35 @@ async def test_chat_route_weak_fts_hit_does_not_pin(monkeypatch) -> None:
     monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
 
     llm = MagicMock()
-    llm.chat = AsyncMock()
+    llm.chat = AsyncMock(
+        return_value=ChatResult(
+            content='{"skill_slugs":[]}',
+            tool_calls=[],
+            assistant_message={},
+        )
+    )
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.1,
+        timeout=30,
+        thinking_level="off",
+    )
 
     result = await selection.resolve_skills_for_turn(
         hass,
         "entry",
         llm,
-        MagicMock(),
+        backend,
         "turn off dining room light",
         route="chat",
     )
 
     assert result.skills == []
-    assert result.method == "skipped"
-    assert "weak" in result.detail.lower()
-    llm.chat.assert_not_called()
+    assert result.method == "llm_empty"
+    llm.chat.assert_called_once()
 
 
 def test_dining_lights_skill_does_not_apply_to_temperature_query() -> None:
@@ -587,8 +605,10 @@ def test_prefer_overlapping_catalog_filters_zero_overlap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_llm_pick_rejected_when_overlap_weak(monkeypatch) -> None:
-    """LLM picks with weak trigger overlap are discarded."""
+async def test_llm_intent_pick_trusted_despite_weak_lexical_overlap(
+    monkeypatch,
+) -> None:
+    """Classifier intent picks apply even when title/triggers barely overlap."""
     selection = _load("skills.selection")
     config_helpers = _load("config_helpers")
     models = _load("skills.models")
@@ -596,14 +616,17 @@ async def test_llm_pick_rejected_when_overlap_weak(monkeypatch) -> None:
     Skill = models.Skill
     ChatResult = llm_client.ChatResult
 
-    lights = Skill(
+    status = Skill(
         id="1",
-        slug="turn-off-dining-room-lights",
-        title="Turn off Dining Room Lights",
-        description="Turn off dining lights",
-        triggers=["turn off dining room lights"],
+        slug="look-up-sensor-or-entity-status",
+        title="Look up sensor or entity status",
+        description="Parameterized status lookup",
+        triggers=[
+            "status of {{query}}",
+            "look up {{query}} sensor",
+        ],
         body="",
-        tool_steps=[{"toolName": "light.turn_off"}],
+        tool_steps=[{"toolName": "home_assistant__ha_search"}],
         route_scope="action",
     )
 
@@ -620,13 +643,13 @@ async def test_llm_pick_rejected_when_overlap_weak(monkeypatch) -> None:
     monkeypatch.setattr(
         selection,
         "_load_skill_candidates",
-        MagicMock(return_value=([lights], [lights])),
+        MagicMock(return_value=([status], [status])),
     )
 
     llm = MagicMock()
     llm.chat = AsyncMock(
         return_value=ChatResult(
-            content='{"skill_slugs":["turn-off-dining-room-lights"]}',
+            content='{"skill_slugs":["look-up-sensor-or-entity-status"]}',
             tool_calls=[],
             assistant_message={},
         )
@@ -643,16 +666,22 @@ async def test_llm_pick_rejected_when_overlap_weak(monkeypatch) -> None:
 
     # Force LLM path: make FTS match weak so it is not pinned early.
     monkeypatch.setattr(selection, "_strong_fts_match", lambda *_a, **_k: False)
+    assert (
+        selection.skill_applies_to_user_text(
+            "what is the temperature in the great room",
+            status,
+        )
+        is False
+    )
 
     result = await selection.resolve_skills_for_turn(
         hass,
         "entry",
         llm,
         backend,
-        "what is the temperature in Jonathans room",
+        "what is the temperature in the great room",
         route="action",
     )
-    assert result.skills == []
-    assert result.method == "llm_empty"
-    assert "overlap" in result.detail.lower()
+    assert [s.slug for s in result.skills] == ["look-up-sensor-or-entity-status"]
+    assert result.method == "llm"
     llm.chat.assert_called_once()

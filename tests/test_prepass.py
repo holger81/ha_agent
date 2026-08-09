@@ -220,17 +220,17 @@ def test_prepass_aligns_from_custom_skill_scope_alone() -> None:
     assert result.route_resolution.domain_hint == "digest"
 
 
-def test_prepass_drops_skill_with_weak_trigger_overlap() -> None:
+def test_prepass_trusts_intent_skill_despite_weak_lexical_overlap() -> None:
     prepass = _load("prepass")
     models = _load("skills.models")
     skill = models.Skill(
         id="1",
-        slug="turn-off-dining-room-lights",
-        title="Turn off Dining Room Lights",
-        description="Turn off dining room lights",
-        triggers=["turn off dining room lights", "dining lights off"],
-        body="# Turn off lights",
-        tool_steps=[{"toolName": "HassTurnOff", "arguments": {}}],
+        slug="look-up-sensor-or-entity-status",
+        title="Look up sensor or entity status",
+        description="Parameterized status lookup",
+        triggers=["status of {{query}}", "look up {{query}} sensor"],
+        body="# Status",
+        tool_steps=[{"toolName": "home_assistant__ha_search", "arguments": {}}],
         route_scope="action",
     )
     keyword = SimpleNamespace(
@@ -242,14 +242,16 @@ def test_prepass_drops_skill_with_weak_trigger_overlap() -> None:
         {
             "route": "action",
             "complexity": "single",
-            "skill_slug": "turn-off-dining-room-lights",
-            "slot_bindings": {"entity_id": "Jonathan"},
+            "skill_slug": "look-up-sensor-or-entity-status",
+            "slot_bindings": {"query": "great room"},
         },
-        catalog_by_slug={"turn-off-dining-room-lights": skill},
+        catalog_by_slug={"look-up-sensor-or-entity-status": skill},
         keyword_decision=keyword,
         heuristic=prepass.Complexity.SINGLE,
-        user_text="what is the temperature in Jonathans room",
+        user_text="what is the temperature in the great room",
     )
     assert result is not None
-    assert result.skill_selection is None
-    assert "weak trigger overlap" in result.orch_plan.reason
+    assert result.skill_selection is not None
+    assert result.skill_selection.skills[0].slug == (
+        "look-up-sensor-or-entity-status"
+    )

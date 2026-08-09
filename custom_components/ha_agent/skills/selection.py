@@ -19,20 +19,22 @@ from .models import Skill
 from .store import get_skill_store
 
 _SELECT_PROMPT = (
-    "You choose which saved workflow skill (if any) applies to the user's request.\n"
+    "You choose which saved workflow skill (if any) matches the user's INTENT.\n"
     'Return ONLY valid JSON: {{"skill_slugs": ["exact-slug"]}} or '
     '{{"skill_slugs": []}}.\n'
     "Rules:\n"
     "- Pick at most {max_select} skill(s).\n"
     "- Only use slugs from AVAILABLE SKILLS.\n"
-    "- Pick a skill only when its title/triggers clearly match this request "
-    "(same intent and same kind of device/area/topic).\n"
-    "- Return [] when no skill applies, the match is weak, or a generic reply "
-    "suffices.\n"
-    "- Return [] for status/read questions (temperature, state, 'what is') when "
-    "the only candidates are control/mutation skills (turn on/off, toggle).\n"
-    "- Never pick an unrelated device or area skill.\n"
-    "- When a domain_hint is email or news, prefer skills for that domain.\n"
+    "- Match on intent (what the user wants done), not exact wording. Triggers "
+    "are examples — paraphrases of the same workflow should still match.\n"
+    "- Prefer skills whose tools/workflow fit the request (read/status vs "
+    "control/mutation, email vs news vs device, etc.).\n"
+    "- Return [] when unsure, when no skill fits, or when a generic reply "
+    "suffices. Do not guess.\n"
+    "- Return [] for status/read questions when the only candidates are "
+    "control/mutation skills (turn on/off, toggle).\n"
+    "- Never pick an unrelated device, area, or domain skill.\n"
+    "- When a domain_hint is present, prefer skills for that domain.\n"
     "- Never pick an action/device skill for an email or news request, or an "
     "email/news skill for a device-control request."
 )
@@ -73,7 +75,8 @@ _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
 
 _CATALOG_LIMIT = 30
 # Minimum Jaccard overlap between user tokens and skill triggers/title before
-# FTS alone may pin a skill as an active plan (without LLM confirmation).
+# unsupervised FTS may pin a skill (without LLM confirmation). LLM/prepass
+# picks are trusted for intent and are not re-gated by this threshold.
 _MIN_FTS_TRIGGER_SCORE = 0.22
 _STOPWORDS = frozenset(
     {
@@ -154,7 +157,10 @@ def _strong_fts_match(user_text: str, skill: Skill) -> bool:
 
 
 def skill_applies_to_user_text(user_text: str, skill: Skill) -> bool:
-    """Return True when content-token Jaccard overlap is strong enough to apply."""
+    """Return True when lexical overlap is strong enough for unsupervised FTS pin.
+
+    Do not use this to veto LLM/prepass intent picks — those already judged intent.
+    """
     return _jaccard_content_overlap(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
 
 
@@ -233,6 +239,10 @@ def skill_matches_route(
     if route_key not in _SPECIALIZED_ROUTES:
         return True
 
+    # Explicit scope wins when it matches the active specialized route.
+    if scope == route_key:
+        return True
+
     step_names = [
         str(step.get("toolName") or "")
         for step in (skill.tool_steps or [])
@@ -258,7 +268,7 @@ def skill_matches_route(
 
     return bool(
         step_names
-        and any(_ROUTE_TOOL_MARKERS[route_key].search(name) for name in step_names)
+        and all(tool_step_matches_route(name, route_key) for name in step_names)
     )
 
 
@@ -293,7 +303,9 @@ def tool_step_matches_route(tool_name: str, route: str | None) -> bool:
         if other_pattern.search(name_lower):
             return False
 
-    return False
+    # On action, allow non-conflicting tools (e.g. ha_search / ha_get_state).
+    # Soft domains still require a positive marker match.
+    return route_key == "action"
 
 
 def filter_tool_steps_for_route(
@@ -348,15 +360,25 @@ async def select_skills_with_llm(
     if not catalog or max_select <= 0:
         return [], ""
 
-    entries = [
-        {
-            "slug": skill.slug,
-            "title": skill.title,
-            "description": skill.description,
-            "triggers": skill.triggers,
-        }
-        for skill in catalog
-    ]
+    entries = []
+    for skill in catalog:
+        tool_names: list[str] = []
+        for step in skill.tool_steps or []:
+            if not isinstance(step, dict):
+                continue
+            name = str(step.get("toolName") or step.get("name") or "").strip()
+            if name:
+                tool_names.append(name)
+        entries.append(
+            {
+                "slug": skill.slug,
+                "title": skill.title,
+                "description": skill.description,
+                "triggers": skill.triggers,
+                "route_scope": skill.route_scope or "",
+                "tools": tool_names[:8],
+            }
+        )
     messages = [
         {
             "role": "system",
@@ -506,6 +528,7 @@ def _resolve_chat_route_skills(
             method="skipped",
             summary="no skill (chat route)",
             detail="Chat turns skip learned skills unless one clearly matches.",
+            candidate_count=len(rows),
         )
     skill = skills[0]
     if not _strong_fts_match(user_text, skill) and not (
@@ -552,6 +575,8 @@ async def resolve_skills_for_turn(
 
     store = get_skill_store(hass, entry_id)
 
+    # Cheap unsupervised pins on chat (domain hint / strong FTS). Weak or
+    # ambiguous FTS hits fall through to the LLM intent classifier below.
     if is_chat_route(route):
 
         def _chat_only() -> SkillSelectionResult:
@@ -562,7 +587,11 @@ async def resolve_skills_for_turn(
                 domain_hint=domain_hint,
             )
 
-        return await hass.async_add_executor_job(_chat_only)
+        chat_result = await hass.async_add_executor_job(_chat_only)
+        if chat_result.skills:
+            return chat_result
+        if chat_result.candidate_count < 1:
+            return chat_result
 
     def _load() -> tuple[list[Skill], list[Skill]]:
         return _load_skill_candidates(
@@ -577,6 +606,13 @@ async def resolve_skills_for_turn(
     candidates = _filter_by_route(candidates, route, domain_hint=domain_hint)
     fts_matches = _filter_by_route(fts_matches, route, domain_hint=domain_hint)
     if not candidates and not fts_matches:
+        if is_chat_route(route):
+            return SkillSelectionResult(
+                skills=[],
+                method="skipped",
+                summary="no skill (chat route)",
+                detail="Chat turns skip learned skills unless one clearly matches.",
+            )
         return SkillSelectionResult(
             skills=[],
             method="none",
@@ -608,7 +644,10 @@ async def resolve_skills_for_turn(
             summary="no skill (route filter)",
             detail="Candidates were filtered out for the active route.",
         )
-    catalog = _prefer_overlapping_catalog(user_text, catalog)
+    # Prefer overlapping candidates for ranking, but keep the full catalog so the
+    # intent classifier can still see paraphrases with weak lexical overlap.
+    preferred = _prefer_overlapping_catalog(user_text, catalog)
+    catalog = _merge_catalog(preferred, catalog)
 
     selected, raw = await select_skills_with_llm(
         llm,
@@ -622,19 +661,18 @@ async def resolve_skills_for_turn(
     )
     raw_preview = raw[:240] if raw else None
     if selected:
-        filtered = [
-            skill
-            for skill in _filter_by_route(selected, route, domain_hint=domain_hint)
-            if skill_applies_to_user_text(user_text, skill)
-        ][:max_inject]
+        # Trust the classifier's intent pick; only apply route/domain filters.
+        filtered = _filter_by_route(
+            selected, route, domain_hint=domain_hint
+        )[:max_inject]
         if not filtered:
             return SkillSelectionResult(
                 skills=[],
                 method="llm_empty",
-                summary="LLM → none (weak overlap)",
+                summary="LLM → none (route filter)",
                 detail=(
                     f"Classifier picked skill(s) from {len(catalog)} candidate(s), "
-                    "but none had strong enough trigger overlap with the request."
+                    "but none remained after route filtering."
                 ),
                 candidate_count=len(catalog),
                 classifier_raw=raw_preview,
