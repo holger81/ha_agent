@@ -184,6 +184,7 @@ def test_extract_sensor_alias_and_this_entity_from_history() -> None:
     assert any(
         item.key == "entity.alias.outdoor_air_quality"
         and item.value == "sensor.home_outdoor_aqi_5min_mean"
+        and item.route_scope is None
         for item in explicit
     )
 
@@ -212,7 +213,44 @@ def test_extract_sensor_alias_and_this_entity_from_history() -> None:
     assert any(
         item.key == "entity.alias.outdoor_air_quality"
         and item.value == "sensor.home_outdoor_aqi_5min_mean"
+        and item.route_scope is None
         for item in writes
+    )
+
+
+def test_reject_air_quality_alias_to_light() -> None:
+    """Reading aliases must not latch onto unrelated control entities."""
+    assert not extract_memory_writes(
+        "Remember outdoor air quality is light.dining_room"
+    )
+    # Older light control must not win over a later AQI lookup.
+    history = [
+        {
+            "role": "assistant",
+            "content": "OK. Controlled: light.dining_room.",
+            "turn_meta": {"controlled_entity_ids": ["light.dining_room"]},
+        },
+        {
+            "role": "assistant",
+            "content": "AQI is 63. Controlled: sensor.home_outdoor_aqi_5min_mean.",
+            "turn_meta": {
+                "referenced_entity_ids": ["sensor.home_outdoor_aqi_5min_mean"],
+                "controlled_entity_ids": ["light.dining_room"],
+            },
+        },
+    ]
+    prior = extract_mod.entity_ids_from_history(history)
+    assert prior[0] == "sensor.home_outdoor_aqi_5min_mean"
+    writes = extract_memory_writes(
+        "Remember this entity is for outdoor air quality",
+        controlled_entity_ids=prior,
+    )
+    assert len(writes) == 1
+    assert writes[0].value == "sensor.home_outdoor_aqi_5min_mean"
+    # Only a light in history → refuse rather than store a bad alias.
+    assert not extract_memory_writes(
+        "Remember this entity is for outdoor air quality",
+        controlled_entity_ids=["light.dining_room"],
     )
 
 

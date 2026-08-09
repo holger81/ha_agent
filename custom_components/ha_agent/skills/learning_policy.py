@@ -430,13 +430,14 @@ def build_deterministic_hard_won_result(trace: TurnTrace) -> Any | None:
             "Answer from tool results; do not invent values.",
         ]
     )
+    # Status/reading lookups are chat workflows, not device-control/action.
     draft = SkillDraft(
         title=title,
         description=description[:512],
         triggers=triggers[:8],
         body="\n".join(body_lines),
         tool_steps=steps,
-        route_scope=str(trace.route).strip() or "action",
+        route_scope="chat",
     )
     draft = _slotify_status_search_args(draft)
     draft = _slotify_action_entity_ids(draft, trace)

@@ -1427,15 +1427,22 @@ def test_analyze_search_tool_result_counts_ha_search_entities() -> None:
     )
 
     assert unproductive is False
+    assert (
+        state.confirmed_reading_entity_id == "sensor.jonathans_bedroom_9b3a_temperature"
+    )
     assert any(
         "READING CANDIDATES (temperature)" in hint for hint in state.mcp_guidance
     )
+    assert any("Confirmed" in hint for hint in state.mcp_guidance)
     assert any(
         "sensor.jonathans_bedroom_9b3a_temperature" in hint
         for hint in state.mcp_guidance
     )
     assert not any(
         "sensor.jonathan_s_lights_energy" in hint for hint in state.mcp_guidance
+    )
+    assert not any(
+        "Answer the user from these results" in hint for hint in state.mcp_guidance
     )
 
 
@@ -1470,6 +1477,56 @@ def test_analyze_search_misses_reading_kind_keeps_searching() -> None:
     assert any("No temperature sensors" in hint for hint in state.mcp_guidance)
     # Prefer place token retry over paging all temperature sensors.
     assert any("query=`jonathans`" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_search_place_page_without_temperature_paginates() -> None:
+    """Humidity/rssi-first place pages should paginate, not give up."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans room"
+    output = json.dumps(
+        {
+            "success": True,
+            "query": "jonathan",
+            "entities": [
+                {
+                    "entity_id": "sensor.jonathans_bedroom_9b3a_humidity",
+                    "friendly_name": "Jonathan humidity",
+                    "state": "56",
+                },
+                {
+                    "entity_id": "sensor.jonathans_bedroom_9b3a_rssi",
+                    "friendly_name": "Jonathan rssi",
+                    "state": "-66",
+                },
+            ],
+            "entity_total_matches": 40,
+            "has_more": True,
+            "entity_next_offset": 10,
+            "next_offset": 10,
+        }
+    )
+    assert (
+        policy.analyze_search_tool_result(
+            state,
+            "home_assistant__ha_search",
+            output,
+            {"query": "jonathan", "domain_filter": "sensor"},
+        )
+        is True
+    )
+    assert state.suppress_pagination is False
+    assert any("More results available" in hint for hint in state.mcp_guidance)
+    assert any("offset=`10`" in hint for hint in state.mcp_guidance)
+
+
+def test_missing_reading_nudge_prefers_place_token() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans room"
+    nudge = policy.build_missing_reading_nudge(state)
+    assert "query=`temperature`" not in nudge
+    assert "query=`jonathans`" in nudge
 
 
 def test_analyze_search_wrong_place_temperature_stops_pagination() -> None:

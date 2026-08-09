@@ -68,6 +68,39 @@ _MEMORY_LEAD_IN = re.compile(
     re.IGNORECASE,
 )
 
+# Alias label → expected entity domains / id markers (readings vs controls).
+_SENSOR_DOMAINS = frozenset({"sensor", "binary_sensor", "number", "input_number"})
+_CONTROL_DOMAINS = frozenset(
+    {
+        "light",
+        "switch",
+        "cover",
+        "fan",
+        "lock",
+        "climate",
+        "media_player",
+        "humidifier",
+        "water_heater",
+        "input_boolean",
+        "camera",
+    }
+)
+_READING_ALIAS_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("aqi", ("aqi", "air quality", "air_quality", "airquality", "pm2.5", "pm25")),
+    ("temperature", ("temperature", "temp", "how warm", "how cold")),
+    ("humidity", ("humidity",)),
+    ("pressure", ("pressure",)),
+    ("co2", ("co2", "co₂")),
+)
+_CONTROL_ALIAS_KINDS: tuple[tuple[str, frozenset[str], tuple[str, ...]], ...] = (
+    ("light", frozenset({"light", "switch"}), ("light", "lamp", "lights")),
+    ("switch", frozenset({"switch", "light"}), ("switch",)),
+    ("cover", frozenset({"cover"}), ("cover", "blind", "shade", "curtain")),
+    ("fan", frozenset({"fan"}), ("fan",)),
+    ("lock", frozenset({"lock"}), ("lock", "door lock")),
+    ("climate", frozenset({"climate"}), ("thermostat", "climate", "hvac")),
+)
+
 
 def extract_memory_writes(
     user_text: str,
@@ -90,37 +123,139 @@ def extract_memory_writes(
 
 
 def entity_ids_from_history(history: list[dict[str, Any]] | None) -> list[str]:
-    """Return recent entity ids from assistant turns (Controlled / turn_meta)."""
+    """Return recent entity ids from assistant turns (lookups before controls).
+
+    Prefer ``referenced_entity_ids`` (sensor lookups) over ``controlled_entity_ids``
+    so “remember this entity…” after a reading does not latch onto an older light.
+    """
     if not history:
         return []
     found: list[str] = []
     for message in reversed(history[-8:]):
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
-        batch: list[str] = []
+        referenced: list[str] = []
+        controlled: list[str] = []
         meta = message.get("turn_meta")
         if isinstance(meta, dict):
-            for key in ("referenced_entity_ids", "controlled_entity_ids"):
-                raw = meta.get(key)
-                if isinstance(raw, list):
-                    for item in raw:
-                        if isinstance(item, str) and "." in item and " " not in item:
-                            batch.append(item.strip())
+            raw_ref = meta.get("referenced_entity_ids")
+            if isinstance(raw_ref, list):
+                for item in raw_ref:
+                    if isinstance(item, str) and "." in item and " " not in item:
+                        referenced.append(item.strip())
+            raw_ctrl = meta.get("controlled_entity_ids")
+            if isinstance(raw_ctrl, list):
+                for item in raw_ctrl:
+                    if isinstance(item, str) and "." in item and " " not in item:
+                        controlled.append(item.strip())
         content = str(message.get("content") or "")
-        controlled = _CONTROLLED_SUFFIX.search(content)
-        if controlled:
-            for part in controlled.group(1).split(","):
+        controlled_match = _CONTROLLED_SUFFIX.search(content)
+        if controlled_match:
+            for part in controlled_match.group(1).split(","):
                 eid = part.strip()
                 if eid and "." in eid and " " not in eid:
-                    batch.append(eid)
-        if not batch:
-            batch.extend(_ENTITY_ID_IN_TEXT.findall(content))
+                    # "Controlled:" lines often list the looked-up sensor too.
+                    domain = eid.split(".", 1)[0].lower()
+                    if domain in _SENSOR_DOMAINS:
+                        referenced.append(eid)
+                    else:
+                        controlled.append(eid)
+        if not referenced and not controlled:
+            for eid in _ENTITY_ID_IN_TEXT.findall(content):
+                domain = eid.split(".", 1)[0].lower()
+                if domain in _SENSOR_DOMAINS:
+                    referenced.append(eid)
+                else:
+                    controlled.append(eid)
+        batch = referenced + controlled
         if batch:
             for eid in batch:
                 if eid not in found:
                     found.append(eid)
-            break
+            # Keep scanning older turns so a prior light control does not
+            # starve a more recent reading — but stop once we have refs.
+            if referenced:
+                break
+            if len(found) >= 8:
+                break
     return found
+
+
+def _entity_domain(entity_id: str) -> str:
+    return entity_id.split(".", 1)[0].lower() if "." in entity_id else ""
+
+
+def _infer_reading_alias_kind(label: str) -> str | None:
+    text = (label or "").strip().lower()
+    if not text:
+        return None
+    for kind, markers in _READING_ALIAS_KINDS:
+        for marker in markers:
+            if marker in text:
+                return kind
+    return None
+
+
+def _infer_control_alias_kind(
+    label: str,
+) -> tuple[str, frozenset[str]] | None:
+    text = (label or "").strip().lower()
+    if not text:
+        return None
+    for kind, domains, markers in _CONTROL_ALIAS_KINDS:
+        if any(marker in text for marker in markers):
+            return kind, domains
+    return None
+
+
+def _entity_matches_reading_alias(entity_id: str, kind: str) -> bool:
+    text = (entity_id or "").strip().lower()
+    if not text or _entity_domain(text) not in _SENSOR_DOMAINS:
+        return False
+    markers = dict(_READING_ALIAS_KINDS).get(kind, (kind,))
+    blob = text.replace(".", " ").replace("_", " ")
+    return any(marker.replace(" ", "_") in text or marker in blob for marker in markers)
+
+
+def alias_entity_compatible(label: str, entity_id: str) -> bool:
+    """True when the alias label and entity domain/type plausibly match."""
+    eid = (entity_id or "").strip()
+    if not eid or "." not in eid or " " in eid:
+        return False
+    domain = _entity_domain(eid)
+    reading = _infer_reading_alias_kind(label)
+    if reading:
+        return _entity_matches_reading_alias(eid, reading)
+    control = _infer_control_alias_kind(label)
+    if control:
+        _kind, domains = control
+        return domain in domains
+    # Generic label: allow sensors or controls, but never mix a bare
+    # "quality"/"outdoor" reading-ish phrase onto a light via history.
+    return domain in _SENSOR_DOMAINS or domain in _CONTROL_DOMAINS
+
+
+def select_entity_for_alias(label: str, entity_ids: list[str] | None) -> str | None:
+    """Pick the best history entity for an alias label, or None if none fit."""
+    if not entity_ids:
+        return None
+    reading = _infer_reading_alias_kind(label)
+    if reading:
+        for eid in entity_ids:
+            if _entity_matches_reading_alias(eid, reading):
+                return eid
+        return None
+    control = _infer_control_alias_kind(label)
+    if control:
+        _kind, domains = control
+        for eid in entity_ids:
+            if _entity_domain(eid) in domains:
+                return eid
+        return None
+    for eid in entity_ids:
+        if alias_entity_compatible(label, eid):
+            return eid
+    return None
 
 
 def _extract_news(text: str, *, route: str | None) -> list[ExtractedMemory]:
@@ -180,16 +315,25 @@ def _clean_alias_label(label: str) -> str:
     return cleaned.strip()
 
 
+def _alias_route_scope(entity_id: str) -> str | None:
+    """Sensor aliases are global; control aliases stay action-scoped."""
+    if _entity_domain(entity_id) in _SENSOR_DOMAINS:
+        return None
+    return "action"
+
+
 def _alias_write(
     label: str,
     entity_id: str,
     *,
     confidence: float = 1.0,
-) -> ExtractedMemory:
+) -> ExtractedMemory | None:
+    if not alias_entity_compatible(label, entity_id):
+        return None
     return ExtractedMemory(
         key=f"entity.alias.{_slugify_alias(label)}",
         value=entity_id,
-        route_scope="action",
+        route_scope=_alias_route_scope(entity_id),
         notes=f"{label} → {entity_id}",
         confidence=confidence,
     )
@@ -210,26 +354,32 @@ def _extract_aliases(
         object_id = match.group(4)
         entity_id = f"{domain}.{object_id}"
         if label:
-            results.append(_alias_write(label, entity_id))
+            write = _alias_write(label, entity_id)
+            if write:
+                results.append(write)
             return results
 
     match = _SIMPLE_ALIAS.search(text)
     if match:
         label = _clean_alias_label(match.group(1))
         entity_id = f"{match.group(2)}.{match.group(3)}"
-        results.append(_alias_write(label, entity_id))
+        write = _alias_write(label, entity_id)
+        if write:
+            results.append(write)
         return results
 
     # "remember this entity is for outdoor air quality" after a lookup turn
     if controlled_entity_ids and re.search(
         r"\b(?:remember|prefer|always|default|means|is|for|as)\b", text, re.I
     ):
-        entity_id = controlled_entity_ids[-1]
         this_match = _THIS_ENTITY_FOR.search(text)
         if this_match:
             label = _clean_alias_label(this_match.group(1))
-            if label:
-                results.append(_alias_write(label, entity_id, confidence=0.9))
+            entity_id = select_entity_for_alias(label, controlled_entity_ids)
+            if label and entity_id:
+                write = _alias_write(label, entity_id, confidence=0.9)
+                if write:
+                    results.append(write)
                 return results
         label_match = re.search(
             r"\b(?:the\s+)?([\w\s-]{2,40}?)\s+"
@@ -240,7 +390,11 @@ def _extract_aliases(
         if label_match:
             label = _clean_alias_label(label_match.group(1))
             if label and label.lower() not in {"this", "that", "the"}:
-                results.append(_alias_write(label, entity_id, confidence=0.8))
+                entity_id = select_entity_for_alias(label, controlled_entity_ids)
+                if entity_id:
+                    write = _alias_write(label, entity_id, confidence=0.8)
+                    if write:
+                        results.append(write)
     return results
 
 
@@ -249,6 +403,7 @@ ROUTE_KEY_PREFIXES: dict[str, tuple[str, ...]] = {
     "news": ("news.",),
     "email": ("email.",),
     "action": ("entity.alias.", "ha."),
+    # Empty → inject keeps all keys (sensor aliases are route_scope=None).
     "chat": (),
 }
 

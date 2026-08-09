@@ -295,6 +295,7 @@ def test_build_deterministic_hard_won_result_parameterizes_search() -> None:
     assert search_steps
     assert search_steps[0]["arguments"].get("query") == "{{query}}"
     assert search_steps[0]["arguments"].get("domain_filter") == "sensor"
+    assert prepared.route_scope == "chat"
 
 
 def test_build_deterministic_override_result_forks_child() -> None:

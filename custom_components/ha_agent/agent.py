@@ -1695,11 +1695,13 @@ async def run_agent(
         matched_skills = skill_selection.skills
 
     # Selected skill owns route via route_scope; soft domain hints run on chat.
-    primary_scope = matched_skills[0].route_scope if matched_skills else None
+    primary = matched_skills[0] if matched_skills else None
+    primary_scope = primary.route_scope if primary else None
     route, aligned_hint, align_reason = align_route_to_skill(
         route,
         skill_scope=primary_scope,
         domain_hint=route_resolution.domain_hint,
+        skill_tool_steps=list(primary.tool_steps) if primary else None,
     )
     if align_reason or aligned_hint != route_resolution.domain_hint:
         route_resolution = RouteResolution(

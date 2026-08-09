@@ -1212,9 +1212,63 @@ def _reading_matches_from_entries(
         if not entity_id:
             continue
         matches.append(entry)
-        if len(matches) >= 5:
+        if len(matches) >= 8:
             break
     return matches
+
+
+def _reading_candidate_sort_key(
+    entry: dict[str, Any],
+    place_tokens: list[str],
+) -> tuple[int, int, str]:
+    """Sort key: best first (place match, usable state, not duct/internal)."""
+    blob = _entity_text_blob(entry)
+    score = 0
+    if place_tokens and _entity_matches_place(entry, place_tokens):
+        score += 10
+    state = str(entry.get("state") or "").strip().lower()
+    if state and state not in {"unknown", "unavailable"}:
+        score += 3
+    if any(
+        noise in blob
+        for noise in ("duct", "internal", "cpu", "board", "chip", "ambient_light")
+    ):
+        score -= 4
+    entity_id = str(entry.get("entity_id") or "")
+    return (-score, len(entity_id), entity_id)
+
+
+def _rank_reading_candidates(
+    matches: list[dict[str, Any]],
+    place_tokens: list[str],
+) -> list[dict[str, Any]]:
+    return sorted(
+        matches,
+        key=lambda item: _reading_candidate_sort_key(item, place_tokens),
+    )
+
+
+def _usable_reading_state(entry: dict[str, Any]) -> str | None:
+    state = str(entry.get("state") or "").strip()
+    if not state or state.lower() in {"unknown", "unavailable"}:
+        return None
+    return state
+
+
+def _confirm_reading_from_candidates(
+    loop_state: LoopState,
+    ranked: list[dict[str, Any]],
+) -> str | None:
+    """Treat a place-matched search hit with usable state as confirmed."""
+    for entry in ranked:
+        state = _usable_reading_state(entry)
+        entity_id = str(entry.get("entity_id") or "").strip()
+        if not state or not entity_id:
+            continue
+        loop_state.confirmed_reading_entity_id = entity_id
+        _note_referenced_entity(loop_state, entity_id)
+        return entity_id
+    return None
 
 
 def _format_reading_candidate(entry: dict[str, Any]) -> str:
@@ -1264,9 +1318,9 @@ def _empty_entity_search_hint(
                 else " Then ha_get_state the best match."
             )
             parts.append(
-                f"Retry with single-token query=`{primary}` and "
-                f"domain_filter=`sensor`.{kind_bit} Do not invent a value; "
-                "do not page through unrelated sensors."
+                f"Retry with single-token query=`{primary}`, "
+                f"domain_filter=`sensor`, and limit=`25`.{kind_bit} "
+                "Do not invent a value; do not page through unrelated sensors."
             )
         elif not has_domain:
             parts.append(
@@ -1390,41 +1444,97 @@ def analyze_search_tool_result(
                 f"search missed place {reading_kind} sensors",
             )
             return True
-        ranked = place_matches or matches
+        ranked = _rank_reading_candidates(place_matches or matches, place_tokens)
         if ranked:
             # Stop paging once we have a place-matched reading candidate.
             if place_matches:
                 _suppress_search_pagination(loop_state)
-            listed = "; ".join(_format_reading_candidate(item) for item in ranked)
-            hint = (
-                f"READING CANDIDATES ({reading_kind}): {listed}. "
-                f"Call ha_get_state on the best place match. Do not use "
-                f"energy/voltage/rssi/power sensors as {reading_kind}."
-            )
+            listed = "; ".join(_format_reading_candidate(item) for item in ranked[:5])
+            confirmed = _confirm_reading_from_candidates(loop_state, ranked)
+            if confirmed:
+                state_text = ""
+                for item in ranked:
+                    if str(item.get("entity_id") or "").strip() == confirmed:
+                        usable = _usable_reading_state(item)
+                        if usable:
+                            unit = str(item.get("unit_of_measurement") or "").strip()
+                            state_text = usable + unit
+                        break
+                hint = (
+                    f"READING CANDIDATES ({reading_kind}): {listed}. "
+                    f"Confirmed `{confirmed}`"
+                    + (f" state=`{state_text}`" if state_text else "")
+                    + " from search. Answer the user from that state now. "
+                    f"Do not use energy/voltage/rssi/power sensors as {reading_kind}; "
+                    "do not call ha_search again."
+                )
+            else:
+                best_id = str(ranked[0].get("entity_id") or "").strip()
+                hint = (
+                    f"READING CANDIDATES ({reading_kind}): {listed}. "
+                    f"Call ha_get_state on `{best_id}` now "
+                    "(best place match). Do not answer yet; do not use "
+                    f"energy/voltage/rssi/power sensors as {reading_kind}."
+                )
             if hint not in loop_state.mcp_guidance:
                 loop_state.mcp_guidance.insert(0, hint)
-            _inject_next_tool_adherence(
-                loop_state, lead_in=summary, after_tool=tool_name
-            )
+            # Avoid "Answer from these results" overriding a get_state need,
+            # and avoid re-search when the reading is already confirmed.
+            if not confirmed:
+                next_get = None
+                for step in loop_state.plan_steps:
+                    name = str(step.get("toolName") or "")
+                    if "get_state" in name.lower() or "get_entity" in name.lower():
+                        next_get = name
+                        break
+                if next_get:
+                    adherence = build_mcp_tool_adherence_hint(
+                        loop_state,
+                        next_get,
+                        lead_in=summary,
+                    )
+                    if adherence not in loop_state.mcp_guidance:
+                        loop_state.mcp_guidance.insert(0, adherence)
             return False
-        # Hits exist but none match the asked reading — keep searching.
+        # Hits exist but none match the asked reading — keep searching / paging.
         next_query = place_tokens[0] if place_tokens else reading_kind
-        hint = (
-            f"No {reading_kind} sensors in these results "
-            f"({len(entries)} unrelated hits). Retry ha_search with "
-            f"query=`{next_query}` and domain_filter=`sensor`"
-            + (
-                f". Prefer the place token over paging all {reading_kind} sensors"
-                if place_tokens
-                else (", or paginate has_more" if has_more else "")
+        if has_more and place_tokens:
+            # Place page often lists humidity/rssi before temperature — page on.
+            next_offset = data.get("entity_next_offset")
+            if next_offset is None:
+                next_offset = data.get("next_offset")
+            if next_offset is not None:
+                offset_bit = f" offset=`{next_offset}`"
+            else:
+                offset_bit = " (next page)"
+            hint = (
+                f"No {reading_kind} sensors in this page "
+                f"({len(entries)} hits for place {next_query}). "
+                f"More results available — call ha_search again with the same "
+                f"query=`{next_query}`, domain_filter=`sensor`,{offset_bit} "
+                f"and look for entity_ids containing `{reading_kind}`. "
+                f"Do not answer a {reading_kind} value from energy/voltage/"
+                "other sensors."
             )
-            + f". Do not answer a {reading_kind} value from energy/voltage/"
-            "other sensors."
-        )
+            # Allow pagination for this recovery path.
+            loop_state.suppress_pagination = False
+        else:
+            hint = (
+                f"No {reading_kind} sensors in these results "
+                f"({len(entries)} unrelated hits). Retry ha_search with "
+                f"query=`{next_query}` and domain_filter=`sensor`"
+                + (
+                    f". Prefer the place token over paging all {reading_kind} sensors"
+                    if place_tokens
+                    else (", or paginate has_more" if has_more else "")
+                )
+                + f". Do not answer a {reading_kind} value from energy/voltage/"
+                "other sensors."
+            )
+            if place_tokens and not has_more:
+                _suppress_search_pagination(loop_state)
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
-        if place_tokens:
-            _suppress_search_pagination(loop_state)
         mark_plan_tool_unproductive(
             loop_state,
             tool_name,
@@ -1720,14 +1830,17 @@ def claims_reading_answer(text: str) -> bool:
 def build_missing_reading_nudge(loop_state: LoopState) -> str:
     """Directive when a reading was claimed without a confirmed matching state."""
     kind = _infer_reading_kind(loop_state.plan_goal) or "sensor"
+    place_tokens = _goal_place_tokens(loop_state.plan_goal, kind)
+    place = place_tokens[0] if place_tokens else kind
     return (
         "SYSTEM (internal — not from the user): You stated a "
-        f"{kind} value but have no confirmed ha_get_state on a matching "
-        f"{kind} entity this turn. Search for query=`{kind}` "
-        "(domain_filter=`sensor`), pick the place match from READING "
-        "CANDIDATES / results, ha_get_state that entity_id, then answer from "
-        f"that state only. Do not invent {kind} from energy/voltage/other "
-        f"sensors. {describe_plan_next_action(loop_state)}"
+        f"{kind} value but have no confirmed matching {kind} entity this turn. "
+        "If READING CANDIDATES already listed one with a state, answer from "
+        f"that state. Otherwise ha_search query=`{place}` "
+        "(domain_filter=`sensor`), pick the place "
+        f"{kind} entity (not energy/voltage), ha_get_state it if state is "
+        f"missing, then answer from that state only. "
+        f"{describe_plan_next_action(loop_state)}"
     )
 
 

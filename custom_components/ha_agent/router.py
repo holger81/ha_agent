@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .config_helpers import LlmBackend, RouterConfig
 from .const import LOGGER
@@ -110,11 +110,73 @@ def task_route_for_skill_scope(scope: str | None) -> TaskRoute | None:
     return TaskRoute.CHAT
 
 
+def _concrete_skill_tool_names(tool_steps: list[dict[str, Any]] | None) -> list[str]:
+    names: list[str] = []
+    for step in tool_steps or []:
+        if not isinstance(step, dict):
+            continue
+        name = str(step.get("toolName") or "").strip().lower()
+        if not name:
+            continue
+        if "searchtool" in name or "searchtoolsfordomain" in name:
+            continue
+        names.append(name)
+    return names
+
+
+def _tools_are_status_lookup(tool_names: list[str]) -> bool:
+    """True when every concrete tool is entity search/state (no control)."""
+    if not tool_names:
+        return False
+    lookup_markers = (
+        "ha_search",
+        "get_state",
+        "get_entity",
+        "ha_get_history",
+        "ha_get_overview",
+    )
+    control_markers = (
+        "call_service",
+        "bulk_control",
+        "turn_on",
+        "turn_off",
+        "set_position",
+        "set_volume",
+        "media_",
+        "light_set",
+        "fan_set",
+        "hass",
+    )
+    if any(any(marker in name for marker in control_markers) for name in tool_names):
+        return False
+    return all(any(marker in name for marker in lookup_markers) for name in tool_names)
+
+
+def effective_skill_route_scope(
+    scope: str | None,
+    tool_steps: list[dict[str, Any]] | None = None,
+) -> str | None:
+    """Normalize skill scope for routing.
+
+    Lookup-only skills mis-tagged as ``action`` (common for distilled status
+    skills) run on chat so readings are not forced through the action backend.
+    """
+    key = (scope or "").strip() or None
+    if not key:
+        return None
+    if key.lower() == TaskRoute.HA_ACTION.value and _tools_are_status_lookup(
+        _concrete_skill_tool_names(tool_steps)
+    ):
+        return "chat"
+    return key
+
+
 def align_route_to_skill(
     route: TaskRoute,
     *,
     skill_scope: str | None = None,
     domain_hint: str | None = None,
+    skill_tool_steps: list[dict[str, Any]] | None = None,
 ) -> tuple[TaskRoute, str | None, str | None]:
     """Align turn route with a matched skill / soft domain hint.
 
@@ -123,14 +185,20 @@ def align_route_to_skill(
     """
     reason: str | None = None
     hint = (domain_hint or "").strip().lower() or None
-    scope = (skill_scope or "").strip().lower() or None
+    raw_scope = (skill_scope or "").strip().lower() or None
+    scope = effective_skill_route_scope(skill_scope, skill_tool_steps)
+    if scope:
+        scope = scope.strip().lower() or None
 
     skill_route = task_route_for_skill_scope(scope)
     if skill_route is not None:
         if scope and scope != TaskRoute.HA_ACTION.value:
             hint = hint or scope
         if skill_route != route:
-            reason = f"aligned route to skill scope {scope!r}"
+            if raw_scope == TaskRoute.HA_ACTION.value and scope == "chat":
+                reason = "aligned route to chat for lookup-only skill"
+            else:
+                reason = f"aligned route to skill scope {scope!r}"
             route = skill_route
     elif hint and route == TaskRoute.HA_ACTION:
         # Soft domain hints (any value) are chat workflows, not device control.

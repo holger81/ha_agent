@@ -131,6 +131,19 @@ def test_align_route_uses_skill_scope_not_hardcoded_domains() -> None:
     assert hint is None
     assert reason and "action" in reason
 
+    # Distilled status skills often mis-tag route_scope=action.
+    route, hint, reason = router.align_route_to_skill(
+        router.TaskRoute.HA_ACTION,
+        skill_scope="action",
+        domain_hint=None,
+        skill_tool_steps=[
+            {"toolName": "home_assistant__ha_search", "arguments": {}},
+            {"toolName": "home_assistant__ha_get_state", "arguments": {}},
+        ],
+    )
+    assert route == router.TaskRoute.CHAT
+    assert reason and "lookup-only" in reason
+
 
 def test_align_route_domain_hint_forces_chat_without_skill() -> None:
     router = _load("router")
