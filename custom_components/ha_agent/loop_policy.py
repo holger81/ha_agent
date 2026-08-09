@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from .context import is_state_question
+from .context import is_state_question, is_unit_conversion_follow_up
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -478,11 +478,31 @@ def extract_intended_tools_from_reasoning(reasoning: str) -> list[str]:
     return []
 
 
+def _tool_on_skill_plan(
+    tool_name: str,
+    plan_steps: list[dict[str, Any]] | None,
+) -> bool:
+    """True when ``tool_name`` is one of the skill plan's concrete tools."""
+    for step in plan_steps or []:
+        plan_tool = str(step.get("toolName") or "").strip()
+        if plan_tool and _tool_names_match(plan_tool, tool_name):
+            return True
+    return False
+
+
 def reasoning_execution_mismatch(
     reasoning: str,
     execution_tools: list[str],
+    *,
+    plan_steps: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Return guidance when reasoning names different tools than execution."""
+    """Return guidance when reasoning names different tools than execution.
+
+    Tools already listed on the active skill plan are never blocked this way:
+    reasoning often echoes the next pending plan step (or the whole plan) while
+    calling a later planned tool — e.g. thinking about ``imap_mailbox_status``
+    but calling ``imap_search_messages``. That is plan progress, not a hijack.
+    """
     from .tools import is_discovery_tool_name
 
     intended = extract_intended_tools_from_reasoning(reasoning)
@@ -495,6 +515,8 @@ def reasoning_execution_mismatch(
 
     for actual in actionable:
         if any(_tool_names_match(intent, actual) for intent in intended):
+            return None
+        if _tool_on_skill_plan(actual, plan_steps):
             return None
 
     primary = intended[-1]
@@ -2095,6 +2117,66 @@ def claims_reading_answer(text: str) -> bool:
     return bool(_READING_VALUE_CLAIM.search(cleaned))
 
 
+def prior_reading_answer_in_history(
+    history: list[dict[str, Any]] | None,
+) -> str | None:
+    """Return the latest assistant reply that already stated a reading value."""
+    for message in reversed(history or []):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = str(message.get("content") or "").strip()
+        if content and claims_reading_answer(content):
+            return content
+    return None
+
+
+def reading_grounded_by_prior_answer(
+    *,
+    user_text: str | None,
+    history: list[dict[str, Any]] | None,
+) -> str | None:
+    """Prior reading text when this ask is only a unit conversion of it.
+
+    "and in Fahrenheit?" after "… is 26.5°" is arithmetic on an already-stated
+    value — not a new sensor lookup — so the anti-invention gate must not force
+    another ha_search.
+    """
+    if not is_unit_conversion_follow_up(user_text or ""):
+        return None
+    return prior_reading_answer_in_history(history)
+
+
+def seed_unit_conversion_guidance(
+    loop_state: LoopState,
+    *,
+    user_text: str,
+    history: list[dict[str, Any]] | None,
+) -> bool:
+    """Prefer converting a prior reading over re-fetching the sensor."""
+    prior = reading_grounded_by_prior_answer(user_text=user_text, history=history)
+    if not prior:
+        return False
+    excerpt = prior if len(prior) <= 160 else prior[:157] + "..."
+    hint = (
+        "UNIT CONVERSION: the previous assistant reply already reported a "
+        f"reading ({excerpt!r}). Convert that value to the unit the user asked "
+        "for. Do not re-search sensors unless the prior value is missing or "
+        "clearly for a different place."
+    )
+    if hint not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(0, hint)
+    # Treat history as confirmation so a converted number is not blocked as
+    # an invented reading. No entity_id is available from chat text alone.
+    if not loop_state.confirmed_reading_entity_id:
+        loop_state.confirmed_reading_entity_id = "history:prior_reading"
+    # Drop lookup plan steps — conversion is arithmetic on the prior answer.
+    loop_state.plan_steps = []
+    loop_state.plan_step_statuses = []
+    loop_state.plan_step_notes = []
+    loop_state.plan_current_step_index = None
+    return True
+
+
 def build_missing_reading_nudge(loop_state: LoopState) -> str:
     """Directive when a reading was claimed without a confirmed matching state."""
     kind = _infer_reading_kind(loop_state.plan_goal) or "sensor"
@@ -2191,9 +2273,16 @@ def should_retry_missing_reading(
     assistant_text: str,
     iteration: int,
     max_iterations: int,
+    user_text: str | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Block answers that invent a reading without a matching get_state."""
-    if not needs_confirmed_reading(loop_state, assistant_text):
+    if not needs_confirmed_reading(
+        loop_state,
+        assistant_text,
+        user_text=user_text,
+        history=history,
+    ):
         return False
     if iteration >= max_iterations - 1:
         return False
@@ -2203,12 +2292,21 @@ def should_retry_missing_reading(
     return True
 
 
-def needs_confirmed_reading(loop_state: LoopState, assistant_text: str) -> bool:
+def needs_confirmed_reading(
+    loop_state: LoopState,
+    assistant_text: str,
+    *,
+    user_text: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+) -> bool:
     """True when the goal is a reading and the answer claims a value without proof."""
     kind = _infer_reading_kind(loop_state.plan_goal)
     if not kind:
         return False
     if loop_state.confirmed_reading_entity_id:
+        return False
+    # Unit-only follow-ups are arithmetic on the prior answer, not a new lookup.
+    if reading_grounded_by_prior_answer(user_text=user_text, history=history):
         return False
     return claims_reading_answer(assistant_text)
 

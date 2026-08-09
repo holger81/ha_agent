@@ -665,6 +665,39 @@ def test_reasoning_execution_mismatch_allows_matching_tool() -> None:
     )
 
 
+def test_reasoning_execution_mismatch_allows_later_skill_plan_step() -> None:
+    """Echoing plan step 1 in reasoning must not block calling plan step 2.
+
+    Email skills list mailbox_status then search_messages. Models often narrate
+    the pending first step while correctly jumping to search for unread mail.
+    """
+    policy = _load_loop_policy()
+    plan = [
+        {"toolName": "mail_mcp__imap_mailbox_status"},
+        {"toolName": "mail_mcp__imap_search_messages"},
+        {"toolName": "mail_mcp__imap_get_message"},
+    ]
+    reasoning = (
+        "Follow the plan. I will call `mail_mcp__imap_mailbox_status` for INBOX."
+    )
+    assert (
+        policy.reasoning_execution_mismatch(
+            reasoning,
+            ["mail_mcp__imap_search_messages"],
+            plan_steps=plan,
+        )
+        is None
+    )
+    # A tool outside the plan is still a real mismatch.
+    mismatch = policy.reasoning_execution_mismatch(
+        reasoning,
+        ["home_assistant__ha_search"],
+        plan_steps=plan,
+    )
+    assert mismatch is not None
+    assert "home_assistant__ha_search" in mismatch
+
+
 def test_user_requests_skill_override() -> None:
     """User phrases can explicitly bypass the active skill workflow."""
     policy = _load_loop_policy()
@@ -1723,6 +1756,83 @@ def test_should_retry_missing_reading_without_confirmed_state() -> None:
     assert "haven't confirmed" in policy.honest_missing_reading_message(state).lower()
     state.confirmed_reading_entity_id = "sensor.emilias_room_2733_temperature"
     assert policy.needs_confirmed_reading(state, claim) is False
+
+
+def test_unit_conversion_follow_up_skips_missing_reading_gate() -> None:
+    """Converting a prior reading is not treated as inventing a new value."""
+    policy = _load_loop_policy()
+    history = [
+        {"role": "user", "content": "what is the temperature in Jonathans bedroom"},
+        {
+            "role": "assistant",
+            "content": "The temperature in Jonathan's bedroom is 26.5°.",
+        },
+    ]
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans bedroom"
+    converted = "The temperature in Jonathan's bedroom is 79.7°F."
+
+    assert (
+        policy.reading_grounded_by_prior_answer(
+            user_text="and in Fahrenheit?", history=history
+        )
+        is not None
+    )
+    assert (
+        policy.needs_confirmed_reading(
+            state,
+            converted,
+            user_text="and in Fahrenheit?",
+            history=history,
+        )
+        is False
+    )
+    assert (
+        policy.should_retry_missing_reading(
+            state,
+            assistant_text=converted,
+            iteration=0,
+            max_iterations=6,
+            user_text="and in Fahrenheit?",
+            history=history,
+        )
+        is False
+    )
+
+
+def test_seed_unit_conversion_guidance_clears_lookup_plan() -> None:
+    """Unit follow-ups drop sensor-search plan steps and mark history as proof."""
+    policy = _load_loop_policy()
+    history = [
+        {
+            "role": "assistant",
+            "content": "The temperature in Jonathan's bedroom is 26.5°.",
+        },
+    ]
+    state = policy.LoopState()
+    state.plan_steps = [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "jonathan"}},
+    ]
+    state.plan_step_statuses = ["pending"]
+    state.plan_current_step_index = 0
+
+    assert (
+        policy.seed_unit_conversion_guidance(
+            state, user_text="and in Fahrenheit?", history=history
+        )
+        is True
+    )
+    assert state.confirmed_reading_entity_id == "history:prior_reading"
+    assert state.plan_steps == []
+    assert any("UNIT CONVERSION" in hint for hint in state.mcp_guidance)
+    # Without a prior reading, do nothing.
+    empty = policy.LoopState()
+    assert (
+        policy.seed_unit_conversion_guidance(
+            empty, user_text="and in Fahrenheit?", history=[]
+        )
+        is False
+    )
 
 
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:

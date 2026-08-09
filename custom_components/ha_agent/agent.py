@@ -93,6 +93,7 @@ from .loop_policy import (
     reset_iteration_flags,
     scrub_mismatched_plan_entities,
     scrub_mismatched_reading_slots,
+    seed_unit_conversion_guidance,
     should_block_reasoning_execution_mismatch,
     should_retry_after_failed_tools,
     should_retry_empty_response,
@@ -679,7 +680,11 @@ async def _process_tool_calls(
         and should_block_reasoning_execution_mismatch(loop_state)
     ):
         execution_names = [_tool_call_payload(call)[0] for call in calls]
-        if mismatch := reasoning_execution_mismatch(reasoning, execution_names):
+        if mismatch := reasoning_execution_mismatch(
+            reasoning,
+            execution_names,
+            plan_steps=loop_state.plan_steps,
+        ):
             for call in calls:
                 tool_name, arguments = _tool_call_payload(call)
                 if is_discovery_tool_name(tool_name):
@@ -1980,6 +1985,9 @@ async def run_agent(
             else (route_resolution.domain_hint or None)
         ),
     )
+    # Unit-only follow-ups ("and in Fahrenheit?") convert the prior answer;
+    # seed that so the reading gate does not force another sensor search.
+    seed_unit_conversion_guidance(loop_state, user_text=user_text, history=history)
     cache_mcp_tools_from_schemas(loop_state, llm_tools)
     if user_requests_skill_override(user_text):
         suspend_skill_plan(
@@ -2434,6 +2442,8 @@ async def run_agent(
             assistant_text=assistant_text,
             iteration=iteration,
             max_iterations=agent_config.max_iterations,
+            user_text=user_text,
+            history=history,
         ):
             if streamed_answer:
                 yield AgentDelta(content_clear=True)
@@ -2463,7 +2473,12 @@ async def run_agent(
             if streamed_answer:
                 yield AgentDelta(content_clear=True)
             yield AgentDelta(content=assistant_text)
-        elif assistant_text and needs_confirmed_reading(loop_state, assistant_text):
+        elif assistant_text and needs_confirmed_reading(
+            loop_state,
+            assistant_text,
+            user_text=user_text,
+            history=history,
+        ):
             assistant_text = honest_missing_reading_message(loop_state)
             false_action_success = True
             if streamed_answer:

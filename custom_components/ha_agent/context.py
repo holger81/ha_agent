@@ -373,10 +373,94 @@ _INFORMATIONAL_FOLLOW_UP = re.compile(
     re.IGNORECASE,
 )
 
+# Unit-only asks that restate a prior reading in another scale
+# ("and in Fahrenheit?", "convert that to celsius").
+_TEMP_UNIT_TOKEN = re.compile(
+    r"\b(?:fahrenheit|celsius|centigrade|kelvin)\b"
+    r"|(?:°\s*[cfk])\b"
+    r"|\bdegrees?\s*[cfk]\b",
+    re.IGNORECASE,
+)
+_UNIT_FOLLOW_UP_STOP = frozenset(
+    {
+        "and",
+        "or",
+        "in",
+        "to",
+        "as",
+        "the",
+        "a",
+        "an",
+        "please",
+        "convert",
+        "conversion",
+        "give",
+        "me",
+        "show",
+        "tell",
+        "what",
+        "whats",
+        "about",
+        "that",
+        "this",
+        "it",
+        "now",
+        "again",
+        "for",
+        "of",
+        "into",
+        "units",
+        "unit",
+        "degrees",
+        "degree",
+        "temp",
+        "temperature",
+        "how",
+        "much",
+        "is",
+        "are",
+        "can",
+        "you",
+        "express",
+        "say",
+    }
+)
+
 
 def is_informational_follow_up(query: str) -> bool:
     """Return True when the user asks for more detail on a prior topic."""
     return bool(_INFORMATIONAL_FOLLOW_UP.search(query))
+
+
+def is_unit_conversion_follow_up(query: str) -> bool:
+    """Return True when the ask only requests another unit for a prior reading.
+
+    Examples: "and in Fahrenheit?", "in celsius", "convert that to °F".
+    A full ask that also names a place ("temp in fahrenheit in the bedroom")
+    is not unit-only — residual content remains after stripping unit words.
+    """
+    text = (query or "").strip()
+    if not text or not _TEMP_UNIT_TOKEN.search(text):
+        return False
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    if not tokens or len(tokens) > 8:
+        return False
+    unit_words = {
+        "fahrenheit",
+        "celsius",
+        "centigrade",
+        "kelvin",
+        "cf",
+        "f",
+        "c",
+        "k",
+    }
+    residual = [
+        tok
+        for tok in tokens
+        if tok not in _UNIT_FOLLOW_UP_STOP and tok not in unit_words
+    ]
+    return not residual
 
 
 def is_short_follow_up_query(query: str) -> bool:
@@ -391,7 +475,11 @@ def is_short_follow_up_query(query: str) -> bool:
     tokens = re.findall(r"[a-z0-9]+", text.lower())
     if len(tokens) > 5:
         return False
-    return bool(_FOLLOW_UP_REF.search(text) or _INFORMATIONAL_FOLLOW_UP.search(text))
+    return bool(
+        _FOLLOW_UP_REF.search(text)
+        or _INFORMATIONAL_FOLLOW_UP.search(text)
+        or is_unit_conversion_follow_up(text)
+    )
 
 
 def resolve_turn_goal(
@@ -400,19 +488,26 @@ def resolve_turn_goal(
 ) -> str:
     """Return the substantive goal for this turn (prior user ask on short follow-ups).
 
-    Short retries like "try again" must keep the previous reading/control goal so
-    loop policy (reading kind, place tokens) and skill slots stay on-topic.
+    Short retries like "try again" and unit-only asks like "and in Fahrenheit?"
+    keep the previous reading/control goal so loop policy (reading kind, place
+    tokens) and skill slots stay on-topic.
     """
     text = (user_text or "").strip()
     if not text:
         return ""
-    if not history or not is_short_follow_up_query(text):
+    # Unit conversion allows a few more tokens than other short follow-ups
+    # ("can you convert that to fahrenheit"), so check it on its own.
+    if not history or not (
+        is_short_follow_up_query(text) or is_unit_conversion_follow_up(text)
+    ):
         return text
     for message in reversed(history):
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         prior = str(message.get("content") or "").strip()
-        if prior and not is_short_follow_up_query(prior):
+        if prior and not (
+            is_short_follow_up_query(prior) or is_unit_conversion_follow_up(prior)
+        ):
             return prior
     return text
 

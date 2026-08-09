@@ -262,6 +262,31 @@ def test_resolve_turn_goal_keeps_prior_ask_on_short_follow_up() -> None:
     )
 
 
+def test_unit_conversion_follow_up_keeps_prior_reading_goal() -> None:
+    """'and in Fahrenheit?' keeps the prior temperature ask, not a bare unit."""
+    history = [
+        {"role": "user", "content": "what is the temperature in Jonathans bedroom"},
+        {
+            "role": "assistant",
+            "content": "The temperature in Jonathan's bedroom is 26.5°.",
+        },
+    ]
+    assert context.is_unit_conversion_follow_up("and in Fahrenheit?") is True
+    assert context.is_unit_conversion_follow_up("in celsius") is True
+    assert context.is_unit_conversion_follow_up("convert that to °F") is True
+    # A full ask that names a place is not unit-only.
+    assert (
+        context.is_unit_conversion_follow_up(
+            "what is the temperature in fahrenheit in the bedroom"
+        )
+        is False
+    )
+    assert (
+        context.resolve_turn_goal("and in Fahrenheit?", history)
+        == "what is the temperature in Jonathans bedroom"
+    )
+
+
 def test_build_tool_context_turn_them_back_off_reuses_entity() -> None:
     """Follow-up off phrasing reuses prior entity ids without tool hardcoding."""
     history = [
