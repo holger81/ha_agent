@@ -61,6 +61,7 @@ class LoopState:
     discovery_streak: int = 0
     empty_entity_search_attempts: int = 0
     confirmed_reading_entity_id: str | None = None
+    referenced_entity_ids: list[str] = field(default_factory=list)
     missing_reading_retries: int = 0
     mcp_tool_catalog: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -1479,8 +1480,7 @@ def analyze_entity_lookup_result(
         return False
 
     looked_up = _entity_id_from_arguments(arguments)
-    kind = _infer_reading_kind(loop_state.plan_goal)
-    if not looked_up or not kind:
+    if not looked_up:
         return False
 
     probe = {"entity_id": looked_up}
@@ -1496,7 +1496,8 @@ def analyze_entity_lookup_result(
             elif nested.get(key) is not None:
                 probe[key] = nested.get(key)
 
-    if not _entity_matches_reading_kind(probe, kind):
+    kind = _infer_reading_kind(loop_state.plan_goal)
+    if kind and not _entity_matches_reading_kind(probe, kind):
         hint = (
             f"STATE MISMATCH: `{looked_up}` is not a {kind} sensor. "
             f"ha_search for query=`{kind}` with domain_filter=`sensor`, pick a "
@@ -1514,22 +1515,34 @@ def analyze_entity_lookup_result(
 
     state = str(probe.get("state") or "").strip().lower()
     if state in {"", "unavailable", "unknown"}:
-        hint = (
-            f"STATE UNUSABLE: `{looked_up}` has state `{state or 'empty'}`. "
-            f"Find another {kind} entity for the place and ha_get_state it. "
-            "Do not invent a value."
-        )
-        if hint not in loop_state.mcp_guidance:
-            loop_state.mcp_guidance.insert(0, hint)
-        mark_plan_tool_unproductive(
-            loop_state,
-            tool_name,
-            f"unusable {kind} state for {looked_up}",
-        )
-        return True
+        if kind:
+            hint = (
+                f"STATE UNUSABLE: `{looked_up}` has state `{state or 'empty'}`. "
+                f"Find another {kind} entity for the place and ha_get_state it. "
+                "Do not invent a value."
+            )
+            if hint not in loop_state.mcp_guidance:
+                loop_state.mcp_guidance.insert(0, hint)
+            mark_plan_tool_unproductive(
+                loop_state,
+                tool_name,
+                f"unusable {kind} state for {looked_up}",
+            )
+            return True
+        return False
 
-    loop_state.confirmed_reading_entity_id = looked_up
+    _note_referenced_entity(loop_state, looked_up)
+    if kind:
+        loop_state.confirmed_reading_entity_id = looked_up
     return False
+
+
+def _note_referenced_entity(loop_state: LoopState, entity_id: str) -> None:
+    """Track looked-up entity ids for remember follow-ups in conversation memory."""
+    cleaned = (entity_id or "").strip()
+    if not cleaned or cleaned in loop_state.referenced_entity_ids:
+        return
+    loop_state.referenced_entity_ids.append(cleaned)
 
 
 _READING_VALUE_CLAIM = re.compile(

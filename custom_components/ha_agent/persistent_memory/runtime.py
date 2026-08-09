@@ -71,7 +71,8 @@ async def async_handle_memory_intent(
         return (
             "I can remember preferences like local news, a default mailbox, "
             "or entity aliases (for example: remember dining light is "
-            "light.dining_room). What should I store?"
+            "light.dining_room, or after a lookup: remember this entity is "
+            "for outdoor air quality). What should I store?"
         )
 
     return await hass.async_add_executor_job(

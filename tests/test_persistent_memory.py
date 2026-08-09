@@ -175,6 +175,47 @@ def test_extract_local_news_and_alias() -> None:
     )
 
 
+def test_extract_sensor_alias_and_this_entity_from_history() -> None:
+    """Sensor aliases and 'this entity is for …' use the prior lookup id."""
+    entity_ids_from_history = extract_mod.entity_ids_from_history
+    explicit = extract_memory_writes(
+        "Remember outdoor air quality is sensor.home_outdoor_aqi_5min_mean"
+    )
+    assert any(
+        item.key == "entity.alias.outdoor_air_quality"
+        and item.value == "sensor.home_outdoor_aqi_5min_mean"
+        for item in explicit
+    )
+
+    intent = detect_memory_intent("Remember this entity is for outdoor air quality")
+    assert intent.kind == MemoryIntentKind.REMEMBER
+    history = [
+        {"role": "user", "content": "what is the outdoor air quality"},
+        {
+            "role": "assistant",
+            "content": (
+                "The outdoor air quality (AQI) is currently 63.71. "
+                "Controlled: sensor.home_outdoor_aqi_5min_mean."
+            ),
+            "turn_meta": {
+                "referenced_entity_ids": ["sensor.home_outdoor_aqi_5min_mean"]
+            },
+        },
+    ]
+    prior = entity_ids_from_history(history)
+    assert prior == ["sensor.home_outdoor_aqi_5min_mean"]
+    writes = extract_memory_writes(
+        "Remember this entity is for outdoor air quality",
+        fragment=intent.fragment,
+        controlled_entity_ids=prior,
+    )
+    assert any(
+        item.key == "entity.alias.outdoor_air_quality"
+        and item.value == "sensor.home_outdoor_aqi_5min_mean"
+        for item in writes
+    )
+
+
 def test_format_memory_context_compact(memory_store: PersistentMemoryStore) -> None:
     memory_store.set_system("email.default_mailbox", "INBOX", route_scope="email")
     merged = load_merged_memory(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .extract import ExtractedMemory, extract_memory_writes
+from .extract import ExtractedMemory, entity_ids_from_history, extract_memory_writes
 from .inject import (
     async_load_memory_context,
     format_memory_context,
@@ -39,6 +39,7 @@ __all__ = [
     "async_load_memory_context",
     "close_persistent_memory_store",
     "detect_memory_intent",
+    "entity_ids_from_history",
     "extract_memory_writes",
     "format_memory_context",
     "get_persistent_memory_store",

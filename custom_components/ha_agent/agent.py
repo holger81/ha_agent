@@ -117,6 +117,7 @@ from .persistent_memory import (
     async_handle_memory_intent,
     async_load_memory_context,
     detect_memory_intent,
+    entity_ids_from_history,
     is_preference_shaped_turn,
 )
 from .persistent_memory.intent import MemoryIntentKind
@@ -1592,6 +1593,7 @@ async def run_agent(
             entry_id,
             user_text=user_text,
             identity=identity,
+            controlled_entity_ids=entity_ids_from_history(history),
         )
         if memory_reply:
             append_turn(
@@ -2461,12 +2463,27 @@ async def run_agent(
             trace.outcome = TurnOutcome.FAILED
         else:
             trace.outcome = TurnOutcome.SUCCESS
+        memory_entity_ids = list(
+            dict.fromkeys(
+                [
+                    *controlled_entity_ids,
+                    *loop_state.referenced_entity_ids,
+                    *(
+                        [loop_state.confirmed_reading_entity_id]
+                        if loop_state.confirmed_reading_entity_id
+                        else []
+                    ),
+                ]
+            )
+        )
+        if memory_entity_ids:
+            turn_meta["referenced_entity_ids"] = memory_entity_ids
         _attach_plan_progress(turn_meta, loop_state, trace)
         append_turn(
             hass,
             conversation_id,
             user_text,
-            memory_assistant_text(assistant_text, controlled_entity_ids),
+            memory_assistant_text(assistant_text, memory_entity_ids),
             max_turns=agent_config.history_turns,
             entry_id=entry_id,
             turn_meta=turn_meta,
