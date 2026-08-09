@@ -97,10 +97,15 @@ def _load(name: str):
 
 
 def _group_files() -> list[Path]:
+    """Phrase-list fixtures only: composite/oddity fixtures have their own shape.
+
+    Those two are scored by ``tests/skills/test_selection_corpus.py`` instead,
+    because they pin per-case skill eligibility rather than one skill per group.
+    """
     return [
         path
         for path in sorted(CORPUS_DIR.glob("*.json"))
-        if path.name != "catalog.json"
+        if path.name != "catalog.json" and "phrases" in _read(path)
     ]
 
 

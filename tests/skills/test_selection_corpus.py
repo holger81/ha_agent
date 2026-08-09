@@ -83,6 +83,8 @@ def _load_cases() -> list[Case]:
         if path.name == "catalog.json":
             continue
         data = _read_json(path)
+        if "phrases" not in data:  # composite/oddity fixtures have their own shape
+            continue
         unmarked = {text.lower() for text in data.get("unmarked_phrases", [])}
         for phrase in data["phrases"]:
             cases.append(
@@ -100,9 +102,44 @@ def _load_cases() -> list[Case]:
     return cases
 
 
+@dataclass(frozen=True, slots=True)
+class Composite:
+    """A connected, multi-step ask and the skills it may or may not use."""
+
+    text: str
+    route: str
+    expect_soft_domain: str | None
+    expect_reading_kind: str | None
+    eligible: tuple[str, ...]
+    forbidden: tuple[str, ...]
+    known_dropped: tuple[str, ...]
+
+    def __str__(self) -> str:
+        return f"[composite] {self.text!r}"
+
+
+def _load_composites() -> list[Composite]:
+    data = _read_json(CORPUS_DIR / "composite.json")
+    return [
+        Composite(
+            text=entry["text"],
+            route=entry["route"],
+            expect_soft_domain=entry["expect_soft_domain"],
+            expect_reading_kind=entry["expect_reading_kind"],
+            eligible=tuple(entry["eligible"]),
+            forbidden=tuple(entry["forbidden"]),
+            known_dropped=tuple(entry.get("known_dropped", ())),
+        )
+        for entry in data["cases"]
+    ]
+
+
 CATALOG_SPEC = _load_catalog_spec()
 CASES = _load_cases()
+COMPOSITES = _load_composites()
+ODDITIES = _read_json(CORPUS_DIR / "oddities.json")
 SOFT_DOMAIN_GROUPS = {"email", "news"}
+HA_GROUPS = {"reading", "control", "composite"}
 
 
 def _report(failures: list[str], total: int) -> str:
@@ -323,9 +360,7 @@ def test_specialized_skill_needs_domain_support(skills_by_slug) -> None:
 def test_ha_skills_rejected_on_soft_domain_asks(skills_by_slug) -> None:
     """Reading/control skills never serve an email or news ask."""
     selection = _load("skills.selection")
-    ha_slugs = [
-        spec["slug"] for spec in CATALOG_SPEC if spec["group"] in {"reading", "control"}
-    ]
+    ha_slugs = [spec["slug"] for spec in CATALOG_SPEC if spec["group"] in HA_GROUPS]
     cases = [case for case in CASES if case.group in SOFT_DOMAIN_GROUPS and case.marked]
     failures = [
         f"{case} kept {slug!r}"
@@ -586,6 +621,272 @@ async def test_resolve_returns_the_expected_skill_or_nothing(
     slugs = [skill.slug for skill in result.skills]
     assert slugs in ([], [case.expect_skill]), (
         f"{case} → {result.summary} ({result.detail})"
+    )
+
+
+def test_composite_shape(skills_by_slug) -> None:
+    """Composite cases stay unique and reference catalog skills."""
+    assert len(COMPOSITES) >= 15
+    texts = [case.text.lower() for case in COMPOSITES]
+    assert len(set(texts)) == len(texts)
+    for case in COMPOSITES:
+        assert case.route in {"chat", "action"}, str(case)
+        for slug in case.eligible + case.forbidden + case.known_dropped:
+            assert slug in skills_by_slug, f"{case} references unknown {slug!r}"
+
+
+def test_composite_infers_domain_and_reading_kind() -> None:
+    """A connected ask still resolves its domain and any reading it implies."""
+    selection = _load("skills.selection")
+    policy = _load("loop_policy")
+    failures = []
+    for case in COMPOSITES:
+        hint = selection.infer_soft_domain_hint(case.text)
+        if hint != case.expect_soft_domain:
+            want = case.expect_soft_domain
+            failures.append(f"{case} → domain {hint!r}, want {want!r}")
+        kind = policy._infer_reading_kind(case.text)
+        if kind != case.expect_reading_kind:
+            want_kind = case.expect_reading_kind
+            failures.append(f"{case} → kind {kind!r}, want {want_kind!r}")
+    assert not failures, _report(failures, len(COMPOSITES))
+
+
+def test_composite_keeps_the_skills_the_turn_needs(skills_by_slug) -> None:
+    """The gates must not drop a skill a multi-step ask genuinely needs.
+
+    This is the inverse of the cross-domain tests: over-rejection is just as
+    much a bug as picking a foreign skill, and compound asks are where a
+    single-domain gate is most likely to overreach.
+    """
+    selection = _load("skills.selection")
+    failures = [
+        f"{case} dropped {slug!r}"
+        for case in COMPOSITES
+        for slug in case.eligible
+        if not selection.skill_matches_route(
+            skills_by_slug[slug],
+            case.route,
+            domain_hint=selection.infer_soft_domain_hint(case.text),
+            user_text=case.text,
+        )
+    ]
+    assert not failures, _report(failures, len(COMPOSITES))
+
+
+def test_composite_rejects_foreign_domain_skills(skills_by_slug) -> None:
+    """A connected ask still refuses skills from an unrelated domain."""
+    selection = _load("skills.selection")
+    failures = [
+        f"{case} kept {slug!r}"
+        for case in COMPOSITES
+        for slug in case.forbidden
+        if selection.skill_matches_route(
+            skills_by_slug[slug],
+            case.route,
+            domain_hint=selection.infer_soft_domain_hint(case.text),
+            user_text=case.text,
+        )
+    ]
+    assert not failures, _report(failures, len(COMPOSITES))
+
+
+def test_composite_documented_gate_limitations(skills_by_slug) -> None:
+    """Record where a single-domain hint drops a skill a compound ask needs.
+
+    "email me the temperature in the nursery" carries an email hint, so the HA
+    lookup skill is dropped as cross-domain even though the turn must read a
+    sensor. Keeping it would need a multi-intent signal in the gate; a plain
+    "shares a word with the skill" rule is not enough, because unrelated asks
+    share generic verbs like look/check/read. This test pins today's behavior so
+    the day it changes, the change is deliberate — update the fixture then.
+    """
+    selection = _load("skills.selection")
+    cases = [case for case in COMPOSITES if case.known_dropped]
+    assert cases, "no documented limitation left; drop this test"
+    unexpected = [
+        f"{case} now keeps {slug!r} (good — move it to 'eligible')"
+        for case in cases
+        for slug in case.known_dropped
+        if selection.skill_matches_route(
+            skills_by_slug[slug],
+            case.route,
+            domain_hint=selection.infer_soft_domain_hint(case.text),
+            user_text=case.text,
+        )
+    ]
+    assert not unexpected, _report(unexpected, len(cases))
+
+
+def test_multi_step_skill_counts_as_state_changing(skills_by_slug) -> None:
+    """A read step plus a write step is a write: snapshot-then-notify changes state."""
+    selection = _load("skills.selection")
+    snapshot = skills_by_slug["send-camera-snapshot"]
+    steps = [step["toolName"] for step in snapshot.tool_steps]
+    assert any("camera" in name for name in steps)
+    assert selection.skill_changes_state(snapshot) is True
+    # So it stays out of a plain question, without a camera-specific rule.
+    assert (
+        selection.skill_matches_route(
+            snapshot, "chat", user_text="is anyone at the front door"
+        )
+        is False
+    )
+
+
+def test_oddities_never_raise(skills_by_slug) -> None:
+    """Messy and degenerate input must not break any selection helper."""
+    selection = _load("skills.selection")
+    policy = _load("loop_policy")
+    context = _load("context")
+    texts = list(ODDITIES["texts"]) + list(ODDITIES["degenerate_texts"])
+    assert len(texts) >= 40
+    for text in texts:
+        context.is_state_question(text)
+        context.is_casual_chat_query(text)
+        hint = selection.infer_soft_domain_hint(text)
+        assert hint is None or isinstance(hint, str)
+        assert isinstance(selection.soft_domains_in_text(text), frozenset)
+        kind = policy._infer_reading_kind(text)
+        assert isinstance(policy._goal_place_tokens(text, kind), list)
+        for skill in skills_by_slug.values():
+            assert isinstance(
+                selection.skill_matches_route(
+                    skill, "chat", domain_hint=hint, user_text=text
+                ),
+                bool,
+            )
+
+
+def test_degenerate_input_infers_nothing() -> None:
+    """Empty, whitespace, and punctuation-only asks carry no intent."""
+    selection = _load("skills.selection")
+    policy = _load("loop_policy")
+    failures = []
+    for text in ODDITIES["degenerate_texts"]:
+        if selection.infer_soft_domain_hint(text) is not None:
+            failures.append(f"{text!r} inferred a domain")
+        if policy._infer_reading_kind(text) is not None:
+            failures.append(f"{text!r} inferred a reading kind")
+        if policy._goal_place_tokens(text, "temperature"):
+            failures.append(f"{text!r} produced place tokens")
+    assert not failures, _report(failures, len(ODDITIES["degenerate_texts"]))
+
+
+def test_oddity_questions_refuse_control_skills(skills_by_slug) -> None:
+    """Typos and shouting do not turn a question into a command."""
+    selection = _load("skills.selection")
+    context = _load("context")
+    changing = [
+        slug
+        for slug, skill in skills_by_slug.items()
+        if selection.skill_changes_state(skill)
+    ]
+    failures = []
+    for text in ODDITIES["question_texts"]:
+        if not context.is_state_question(text):
+            failures.append(f"{text!r} is not read as a question")
+            continue
+        failures.extend(
+            f"{text!r} kept {slug!r}"
+            for slug in changing
+            if selection.skill_matches_route(
+                skills_by_slug[slug],
+                "chat",
+                domain_hint=selection.infer_soft_domain_hint(text),
+                user_text=text,
+            )
+        )
+    assert not failures, _report(failures, len(ODDITIES["question_texts"]))
+
+
+def test_oddity_commands_keep_control_skills(skills_by_slug) -> None:
+    """Shouting, typos, and other languages still reach a control workflow."""
+    selection = _load("skills.selection")
+    lights = skills_by_slug["control-lights"]
+    covers = skills_by_slug["control-covers"]
+    failures = [
+        f"{text!r} dropped every control skill"
+        for text in ODDITIES["command_texts"]
+        if not (
+            selection.skill_matches_route(lights, "action", user_text=text)
+            or selection.skill_matches_route(covers, "action", user_text=text)
+        )
+    ]
+    assert not failures, _report(failures, len(ODDITIES["command_texts"]))
+
+
+def test_oddity_search_term_is_the_place() -> None:
+    """Filler, shouting, rambling, and umlauts still yield the place to search.
+
+    The first place token becomes the retry ``ha_search`` query, so a greeting
+    or hedge winning that slot sends the agent looking for "hey".
+    """
+    policy = _load("loop_policy")
+    expected = ODDITIES["expected_place_head"]
+    assert len(expected) >= 8
+    failures = []
+    for text, place in expected.items():
+        kind = policy._infer_reading_kind(text)
+        tokens = policy._goal_place_tokens(text, kind)
+        if tokens[:1] != [place]:
+            failures.append(f"{text[:48]!r} → {tokens[:3]}, want {place!r} first")
+    for text in ODDITIES["no_place_texts"]:
+        kind = policy._infer_reading_kind(text)
+        if policy._goal_place_tokens(text, kind):
+            failures.append(f"{text[:48]!r} invented a place")
+    for text, place in ODDITIES["place_in_tokens"].items():
+        kind = policy._infer_reading_kind(text)
+        if place not in policy._goal_place_tokens(text, kind):
+            failures.append(f"{text[:48]!r} lost the place {place!r}")
+    assert not failures, _report(failures, len(expected))
+
+
+def test_non_ascii_place_stays_one_token() -> None:
+    """A word like "küche" must not be chopped into a meaningless fragment."""
+    policy = _load("loop_policy")
+    tokens = policy._goal_place_tokens("wie warm ist es in der küche", "temperature")
+    assert "küche" in tokens
+    assert "che" not in tokens
+
+
+def test_oddity_place_tokens_have_no_junk() -> None:
+    """Filler, shouting, and punctuation never become the entity search term."""
+    policy = _load("loop_policy")
+    failures = []
+    for text in ODDITIES["texts"]:
+        kind = policy._infer_reading_kind(text)
+        if kind is None:
+            continue
+        tokens = policy._goal_place_tokens(text, kind)
+        bad = [token for token in tokens if token in _NOT_A_PLACE]
+        if bad:
+            failures.append(f"{text!r} → {tokens} include {bad}")
+    assert not failures, _report(failures, len(ODDITIES["texts"]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "send a picture from my front door camera to my iphone",
+        "take a snapshot of the driveway camera and text it to me",
+    ],
+)
+async def test_resolve_pins_the_composite_skill(monkeypatch, store, text: str) -> None:
+    """A connected camera-to-phone ask reaches its multi-step skill."""
+    selection = _load("skills.selection")
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+    result = await selection.resolve_skills_for_turn(
+        _hass_for(store),
+        "entry",
+        _llm_returning(["send-camera-snapshot"]),
+        _backend(),
+        text,
+        route="action",
+    )
+    assert [skill.slug for skill in result.skills] == ["send-camera-snapshot"], (
+        f"{text!r} → {result.summary} ({result.detail})"
     )
 
 

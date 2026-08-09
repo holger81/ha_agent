@@ -1217,7 +1217,85 @@ _PLACE_STOPWORDS = frozenset(
         "percentage",
         # "temperature wise", "heat wise" — a suffix adverb, never a place.
         "wise",
+        # Closed-class filler: discourse markers, hedges, auxiliaries, and
+        # pronouns. Real asks are full of them ("hey so um can you maybe tell
+        # me…") and any of them would otherwise become the search query.
+        "hey",
+        "hello",
+        "okay",
+        "well",
+        "actually",
+        "basically",
+        "anyway",
+        "quick",
+        "question",
+        "wonder",
+        "wondering",
+        "maybe",
+        "perhaps",
+        "really",
+        "thanks",
+        "thats",
+        "just",
+        "here",
+        "you",
+        "your",
+        "can",
+        "could",
+        "would",
+        "should",
+        "will",
+        "may",
+        "might",
+        "must",
+        "dont",
+        "doesnt",
+        "didnt",
+        "cant",
+        "wont",
+        "isnt",
+        "arent",
+        "were",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "not",
+        "never",
+        "think",
+        "guess",
+        "mean",
+        "wait",
+        "saying",
+        "said",
+        "care",
+        "let",
+        "looking",
+        "see",
+        "find",
+        "earlier",
+        "later",
+        "before",
+        "after",
+        "tonight",
+        "yesterday",
+        "tomorrow",
+        "soon",
+        "always",
+        "usually",
+        "sometimes",
     }
+)
+# Word characters, not ASCII letters: "küche" must stay one token instead of
+# breaking into "che" and mismatching every entity name.
+_WORDS = re.compile(r"\w{3,}", re.UNICODE)
+# Every word including short function words, so locative prepositions ("in",
+# "at", "on") survive for phrase analysis even though they are too short to be
+# search terms themselves.
+_ALL_WORDS = re.compile(r"\w+", re.UNICODE)
+_LOCATIVE_PREPOSITIONS = frozenset(
+    {"in", "at", "on", "inside", "within", "near", "around", "from", "for", "of"}
 )
 # Goal words per reading kind: they describe the measurement, so they are never
 # useful as an entity-search term.
@@ -1275,8 +1353,37 @@ _READING_GOAL_WORDS: dict[str, frozenset[str]] = {
 _MEASURE_WORDS: frozenset[str] = frozenset().union(*_READING_GOAL_WORDS.values())
 
 
+def _locative_head(words: list[str], skip: set[str]) -> str | None:
+    """Head word of a locative phrase: "in the guest room" → ``guest``.
+
+    A place follows its preposition, so the phrase after "in"/"at"/"on" names it
+    however much filler the ask piles up in front ("hey so um ... in the
+    kitchen"). Taking the last content word of that phrase also survives
+    articles this code does not know, which keeps non-English asks usable.
+    """
+    for index, word in enumerate(words):
+        if word not in _LOCATIVE_PREPOSITIONS:
+            continue
+        phrase: list[str] = []
+        for candidate in words[index + 1 :]:
+            if candidate in _LOCATIVE_PREPOSITIONS:
+                break
+            if candidate in skip or candidate.isdigit() or len(candidate) < 3:
+                if phrase:  # the phrase ended at a function word
+                    break
+                continue  # article or filler right after the preposition
+            phrase.append(candidate)
+        if phrase:
+            return phrase[-1]
+    return None
+
+
 def _goal_place_tokens(goal: str, reading_kind: str | None = None) -> list[str]:
-    """Distinctive place/person tokens from the goal (not the reading type)."""
+    """Distinctive place/person tokens from the goal (not the reading type).
+
+    The first token becomes the retry entity-search query, so word order
+    matters: a locative phrase wins over the order words happen to appear in.
+    """
     text = (goal or "").strip().lower()
     if not text:
         return []
@@ -1287,9 +1394,11 @@ def _goal_place_tokens(goal: str, reading_kind: str | None = None) -> list[str]:
         skip.update(_MEASURE_WORDS)
         skip.add(reading_kind)
         for marker in dict(_READING_KIND_MARKERS).get(reading_kind, ()):
-            skip.update(re.findall(r"[a-z0-9]{3,}", marker.lower()))
-    tokens: list[str] = []
-    for tok in re.findall(r"[a-z0-9]{3,}", text):
+            skip.update(_WORDS.findall(marker.lower()))
+    words = _WORDS.findall(text)
+    head = _locative_head(_ALL_WORDS.findall(text), skip)
+    tokens: list[str] = [head] if head else []
+    for tok in words:
         # Bare numbers ("above 100") are thresholds, never places.
         if tok in skip or tok in tokens or tok.isdigit():
             continue

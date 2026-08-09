@@ -1,0 +1,130 @@
+{
+  "group": "composite",
+  "kind": "composite",
+  "comment": "Connected, multi-step asks that span devices and services ('send a picture from my front door camera to my iphone'). These pin the opposite failure mode from the single-domain corpus: the route/domain gates must not over-reject a skill the turn genuinely needs. 'eligible' skills must survive the gates, 'forbidden' skills must be rejected, and 'known_dropped' records skills the gates drop today even though the turn arguably needs them.",
+  "cases": [
+    {
+      "text": "send a picture from my front door camera to my iphone",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["send-camera-snapshot"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "take a snapshot of the driveway camera and text it to me",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["send-camera-snapshot", "notify-my-phone"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "take a picture of the backyard camera and put it on the living room tv",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["send-camera-snapshot"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "if the garage door is open close it and let me know",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["control-covers", "notify-my-phone"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "turn off all the lights and lock the doors for the night",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["control-lights", "lock-doors"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "check if the windows are closed and lock the front door",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["lock-doors"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "lock the front door and tell me if it worked",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["lock-doors"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "set the living room to movie mode and dim the lights to 20 percent",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["run-scene-or-routine", "control-lights"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "wake me at 7 with music in the bedroom and open the blinds",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["media-control", "control-covers"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "when the washing machine finishes send a notification to my phone",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": null,
+      "eligible": ["notify-my-phone"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "if it is hotter than 25 in the attic close the blinds",
+      "route": "action",
+      "expect_soft_domain": null,
+      "comment": "A condition on a sensor value still needs that value read, so the reading kind is inferred and the loop must confirm it rather than assume it.",
+      "expect_reading_kind": "temperature",
+      "eligible": ["control-covers"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "notify me on my phone if the co2 in the office goes above 1000",
+      "route": "action",
+      "expect_soft_domain": null,
+      "expect_reading_kind": "co2",
+      "eligible": ["notify-my-phone", "look-up-sensor-or-entity-status"],
+      "forbidden": ["news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "email me the temperature in the nursery",
+      "route": "chat",
+      "expect_soft_domain": "email",
+      "expect_reading_kind": "temperature",
+      "eligible": [],
+      "forbidden": ["news-briefing"],
+      "known_dropped": ["look-up-sensor-or-entity-status"]
+    },
+    {
+      "text": "send todays energy usage to my email",
+      "route": "chat",
+      "expect_soft_domain": "email",
+      "expect_reading_kind": null,
+      "eligible": [],
+      "forbidden": ["news-briefing"],
+      "known_dropped": ["look-up-sensor-or-entity-status"]
+    },
+    {
+      "text": "read me the news and then turn off the lights",
+      "route": "chat",
+      "expect_soft_domain": "news",
+      "expect_reading_kind": null,
+      "eligible": ["news-briefing"],
+      "forbidden": ["check-and-read-unread-emails"]
+    }
+  ]
+}

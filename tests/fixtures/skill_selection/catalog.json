@@ -105,6 +105,56 @@
       "group": "control"
     },
     {
+      "slug": "send-camera-snapshot",
+      "title": "Send a camera snapshot to a phone",
+      "description": "Grab a still image from a camera and send it to a phone or tablet.",
+      "triggers": [
+        "send a picture from the {{query}} camera to my phone",
+        "snapshot the {{query}} camera and text it to me",
+        "show me who is at the door on my phone"
+      ],
+      "body": "Grab the camera image, then send it with the notify service.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_get_camera_image", "arguments": {"entity_id": "{{entity_id}}"}},
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"domain": "notify", "service": "{{service}}", "data": {"message": "{{message}}"}}}
+      ],
+      "route_scope": "action",
+      "group": "composite"
+    },
+    {
+      "slug": "notify-my-phone",
+      "title": "Send a notification to a phone",
+      "description": "Push a message or alert to a phone, tablet, or speaker.",
+      "triggers": [
+        "send a notification to my phone",
+        "text me when {{query}}",
+        "let me know when {{query}} is done"
+      ],
+      "body": "Call the notify service for the target device.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"domain": "notify", "service": "{{service}}", "data": {"message": "{{message}}"}}}
+      ],
+      "route_scope": "action",
+      "group": "composite"
+    },
+    {
+      "slug": "run-scene-or-routine",
+      "title": "Run a scene or routine",
+      "description": "Activate a scene, script, or multi-device routine such as movie mode or bedtime.",
+      "triggers": [
+        "activate {{query}} mode",
+        "run the {{query}} routine",
+        "set the house to {{query}}"
+      ],
+      "body": "Find the scene or script, then activate it.",
+      "tool_steps": [
+        {"toolName": "home_assistant__ha_search", "arguments": {"query": "{{query}}", "domain_filter": "scene"}},
+        {"toolName": "home_assistant__ha_call_service", "arguments": {"entity_id": "{{entity_id}}", "service": "turn_on"}}
+      ],
+      "route_scope": "action",
+      "group": "composite"
+    },
+    {
       "slug": "check-and-read-unread-emails",
       "title": "Check and read unread emails",
       "description": "Check the inbox and summarize unread email messages.",
