@@ -1058,6 +1058,14 @@ def analyze_search_tool_result(
         summary += " Results reflect the active query filters."
     if has_more:
         summary += " More pages are available per the tool result metadata."
+    if _is_entity_search_result(tool_name, data) and entries:
+        summary += (
+            " For a reading/status question, pick the entity whose "
+            "device_class / unit_of_measurement / friendly_name matches the "
+            "requested quantity in the user goal (e.g. temperature ≠ voltage). "
+            "Then ha_get_state that entity_id — do not invent values from "
+            "unrelated sensors."
+        )
 
     _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)
     return False

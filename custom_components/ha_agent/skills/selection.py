@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 
 from ..config_helpers import LlmBackend
 from ..const import LOGGER
-from ..context import is_casual_chat_query, is_chat_route
+from ..context import is_casual_chat_query, is_chat_route, is_short_follow_up_query
 from ..llm_client import LlmClient
 from ..structured_output import SKILL_SELECT_SCHEMA, json_schema_format
 from .discovery import build_discovery_query
@@ -29,6 +29,9 @@ _SELECT_PROMPT = (
     "are examples — paraphrases of the same workflow should still match.\n"
     "- Prefer skills whose tools/workflow fit the request (read/status vs "
     "control/mutation, email vs news vs device, etc.).\n"
+    "- Short follow-ups (again, check again, retry, that one) continue the "
+    "recent conversation topic from recent_messages — do not switch to an "
+    "unrelated domain skill that only shares a verb like check/read.\n"
     "- Return [] when unsure, when no skill fits, or when a generic reply "
     "suffices. Do not guess.\n"
     "- Return [] for status/read questions when the only candidates are "
@@ -352,6 +355,7 @@ async def select_skills_with_llm(
     catalog: list[Skill],
     max_select: int = 1,
     structured_output_enabled: bool = True,
+    history: list[dict[str, str]] | None = None,
     trace: Any | None = None,
 ) -> tuple[list[Skill], str]:
     """Ask the classifier model which catalog skill(s) apply; return (skills, raw)."""
@@ -379,6 +383,20 @@ async def select_skills_with_llm(
                 "tools": tool_names[:8],
             }
         )
+    recent_messages: list[dict[str, str]] = []
+    for message in (history or [])[-4:]:
+        role = str(message.get("role") or "").strip()
+        content = str(message.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        recent_messages.append({"role": role, "content": content[:240]})
+    payload: dict[str, Any] = {
+        "user_text": user_text,
+        "route": route or "general",
+        "available_skills": entries,
+    }
+    if recent_messages:
+        payload["recent_messages"] = recent_messages
     messages = [
         {
             "role": "system",
@@ -386,14 +404,7 @@ async def select_skills_with_llm(
         },
         {
             "role": "user",
-            "content": json.dumps(
-                {
-                    "user_text": user_text,
-                    "route": route or "general",
-                    "available_skills": entries,
-                },
-                ensure_ascii=True,
-            ),
+            "content": json.dumps(payload, ensure_ascii=True),
         },
     ]
     response_format = (
@@ -541,6 +552,15 @@ def _resolve_chat_route_skills(
             detail="Chat FTS hit was too weak to pin without stronger overlap.",
             candidate_count=1,
         )
+    if is_short_follow_up_query(user_text):
+        # Force history-aware LLM selection instead of verb-overlap FTS pins.
+        return SkillSelectionResult(
+            skills=[],
+            method="skipped",
+            summary="no skill (chat route)",
+            detail="Short follow-up skipped unsupervised FTS pin.",
+            candidate_count=1,
+        )
     return SkillSelectionResult(
         skills=[skill][:max_inject],
         method="fts_only",
@@ -621,8 +641,14 @@ async def resolve_skills_for_turn(
         )
 
     # FTS already pinned a single route-relevant skill — skip the extra LLM call
-    # only when trigger overlap is strong enough for small models.
-    if len(fts_matches) == 1 and _strong_fts_match(user_text, fts_matches[0]):
+    # only when trigger overlap is strong enough for small models. Short
+    # follow-ups ("check again") must not pin from a shared verb alone.
+    follow_up = bool(history) and is_short_follow_up_query(user_text)
+    if (
+        len(fts_matches) == 1
+        and _strong_fts_match(user_text, fts_matches[0])
+        and not follow_up
+    ):
         skill = fts_matches[0]
         return SkillSelectionResult(
             skills=fts_matches[:max_inject],
@@ -657,6 +683,7 @@ async def resolve_skills_for_turn(
         catalog=catalog,
         max_select=max_inject,
         structured_output_enabled=structured_output_enabled,
+        history=history,
         trace=trace,
     )
     raw_preview = raw[:240] if raw else None
@@ -691,7 +718,12 @@ async def resolve_skills_for_turn(
         )
 
     # Weak FTS matches must not pin an active skill plan after LLM said none.
-    strong_fts = [skill for skill in fts_matches if _strong_fts_match(user_text, skill)]
+    # Follow-ups also skip unsupervised FTS fallback (needs history-aware LLM).
+    strong_fts = [
+        skill
+        for skill in fts_matches
+        if _strong_fts_match(user_text, skill) and not follow_up
+    ]
     if strong_fts:
         skill = strong_fts[0]
         return SkillSelectionResult(

@@ -1334,6 +1334,8 @@ def test_analyze_search_tool_result_counts_ha_search_entities() -> None:
     )
 
     assert any("returned 1 item(s)" in hint for hint in state.mcp_guidance)
+    assert any("device_class" in hint for hint in state.mcp_guidance)
+    assert any("temperature ≠ voltage" in hint for hint in state.mcp_guidance)
 
 
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:

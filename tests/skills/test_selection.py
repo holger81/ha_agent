@@ -228,6 +228,98 @@ async def test_resolve_skips_llm_for_single_fts_match(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_short_follow_up_does_not_fts_pin_email_check_skill(
+    monkeypatch,
+) -> None:
+    """'check again' must not unsupervised-pin an email skill sharing 'check'."""
+    selection = _load("skills.selection")
+    config_helpers = _load("config_helpers")
+    models = _load("skills.models")
+    llm_client = _load("llm_client")
+    Skill = models.Skill
+    ChatResult = llm_client.ChatResult
+
+    email_skill = Skill(
+        id="email-1",
+        slug="check-and-read-unread-emails",
+        title="Check and Read Unread Emails",
+        description="Check inbox",
+        triggers=["check email", "check unread", "check inbox"],
+        body="",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages"}],
+        route_scope="email",
+    )
+    status_skill = Skill(
+        id="status-1",
+        slug="look-up-sensor-or-entity-status",
+        title="Look up sensor or entity status",
+        description="Status lookup",
+        triggers=["temperature", "status"],
+        body="",
+        tool_steps=[{"toolName": "home_assistant__ha_search"}],
+        route_scope="action",
+    )
+
+    store = MagicMock()
+    store.search.return_value = [MagicMock(id=email_skill.id)]
+    store.load_skills_by_ids.return_value = [email_skill]
+    store.list_enabled.return_value = [email_skill, status_skill]
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+    monkeypatch.setattr(
+        selection,
+        "_load_skill_candidates",
+        MagicMock(return_value=([email_skill, status_skill], [email_skill])),
+    )
+
+    llm = MagicMock()
+    llm.chat = AsyncMock(
+        return_value=ChatResult(
+            content='{"skill_slugs":["look-up-sensor-or-entity-status"]}',
+            tool_calls=[],
+            assistant_message={},
+        )
+    )
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.1,
+        timeout=30,
+        thinking_level="off",
+    )
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        backend,
+        "check again",
+        route="chat",
+        history=[
+            {"role": "user", "content": "what is the temperature in Jonathans room"},
+            {
+                "role": "assistant",
+                "content": "The temperature in Jonathan's bedroom is 22.9°C.",
+            },
+        ],
+    )
+
+    assert [s.slug for s in result.skills] == ["look-up-sensor-or-entity-status"]
+    assert result.method == "llm"
+    llm.chat.assert_called_once()
+    payload = json.loads(llm.chat.await_args.args[0][1]["content"])
+    assert "recent_messages" in payload
+    assert payload["user_text"] == "check again"
+
+
+@pytest.mark.asyncio
 async def test_news_domain_hint_does_not_select_email_only_skill(monkeypatch) -> None:
     """A news domain hint on chat must not pick an email-only skill."""
     selection = _load("skills.selection")

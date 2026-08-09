@@ -359,6 +359,21 @@ def is_informational_follow_up(query: str) -> bool:
     return bool(_INFORMATIONAL_FOLLOW_UP.search(query))
 
 
+def is_short_follow_up_query(query: str) -> bool:
+    """Return True for short retry/follow-up phrases that depend on history.
+
+    Examples: "check again", "again", "what about that". These must not pin a
+    skill from a shared verb alone (e.g. email "check …" matching "check again").
+    """
+    text = (query or "").strip()
+    if not text:
+        return False
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    if len(tokens) > 5:
+        return False
+    return bool(_FOLLOW_UP_REF.search(text) or _INFORMATIONAL_FOLLOW_UP.search(text))
+
+
 def _follow_up_device_hint(
     query: str,
     history: list[dict[str, str]],

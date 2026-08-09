@@ -425,6 +425,8 @@ def build_deterministic_hard_won_result(trace: TurnTrace) -> Any | None:
         [
             "",
             "Prefer a short `query={{query}}` plus `domain_filter` when searching.",
+            "Pick the entity whose device_class / unit_of_measurement matches "
+            "the asked reading (temperature ≠ voltage).",
             "Answer from tool results; do not invent values.",
         ]
     )
