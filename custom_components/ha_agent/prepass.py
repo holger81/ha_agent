@@ -94,14 +94,15 @@ def _parse_prepass_payload(
     keyword_decision,
     heuristic: Complexity,
     user_text: str = "",
+    history: list[dict[str, str]] | None = None,
 ) -> TurnPrepassResult | None:
     route_value = str(data.get("route", "")).strip().lower()
     domain_hint = str(data.get("domain_hint") or "").strip().lower() or None
     if route_value in {"email", "news"}:
         domain_hint = domain_hint or route_value
         route_value = "chat"
-    # Fill soft-domain hint from user text when prepass omitted it.
-    domain_hint = domain_hint or infer_soft_domain_hint(user_text)
+    # Fill soft-domain hint from user text or a prior soft topic on follow-ups.
+    domain_hint = domain_hint or infer_soft_domain_hint(user_text, history)
     # Soft domains are always chat workflows (not device-control/action).
     if domain_hint and domain_hint != "action" and route_value == "action":
         route_value = "chat"
@@ -253,7 +254,7 @@ async def run_turn_prepass(
     fts_matches: list[Skill] = []
     soft_hint = getattr(
         keyword_decision, "domain_hint", None
-    ) or infer_soft_domain_hint(user_text)
+    ) or infer_soft_domain_hint(user_text, history)
     if skills_enabled and max_inject > 0:
         store = get_skill_store(hass, entry_id)
         route_key = keyword_decision.route.value
@@ -389,6 +390,7 @@ async def run_turn_prepass(
         keyword_decision=keyword_decision,
         heuristic=heuristic,
         user_text=user_text,
+        history=history,
     )
     if parsed is None:
         return None

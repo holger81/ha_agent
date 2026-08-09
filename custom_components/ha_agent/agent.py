@@ -1684,13 +1684,20 @@ async def run_agent(
             trace=trace,
         )
 
-    # Soft-domain markers in the user text fill domain_hint when the router
-    # omitted one (keeps email/news/… asks from pinning HA status skills).
+    # Soft-domain markers in the user text — or a prior soft topic on a
+    # follow-up ("mark them as read" after email) — fill domain_hint when the
+    # router omitted one (keeps email/news/… asks from pinning HA skills).
     if not route_resolution.domain_hint:
-        inferred_hint = infer_soft_domain_hint(turn_goal or user_text)
+        inferred_hint = infer_soft_domain_hint(turn_goal or user_text, history)
         if inferred_hint:
+            # Soft domains are chat workflows, not device-control/action.
+            next_route = (
+                TaskRoute.CHAT
+                if route_resolution.route == TaskRoute.HA_ACTION
+                else route_resolution.route
+            )
             route_resolution = RouteResolution(
-                route=route_resolution.route,
+                route=next_route,
                 method=route_resolution.method,
                 classifier_summary=route_resolution.classifier_summary,
                 classifier_detail=route_resolution.classifier_detail,
@@ -1698,6 +1705,7 @@ async def run_agent(
                 classifier_raw=route_resolution.classifier_raw,
                 domain_hint=inferred_hint,
             )
+            route = next_route
     if matched_skills:
         kept = [
             skill

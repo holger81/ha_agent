@@ -1,0 +1,259 @@
+{
+  "group": "followups",
+  "kind": "followup",
+  "comment": "Conversation-history follow-ups. Soft-domain continuation must inherit the prior topic unless the ask is clearly a new one (device control or a different soft domain).",
+  "cases": [
+    {
+      "text": "mark them as read",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "Yes, you have 2 new unread emails from Netflix and Walmart."}
+      ],
+      "expect_soft_domain": "email",
+      "expect_route": "chat",
+      "eligible": ["check-and-read-unread-emails"],
+      "forbidden": ["control-lights", "lock-doors", "news-briefing"]
+    },
+    {
+      "text": "please mark all of them as read",
+      "history": [
+        {"role": "user", "content": "check my inbox"},
+        {"role": "assistant", "content": "You have 3 unread messages in your mailbox."}
+      ],
+      "expect_soft_domain": "email",
+      "expect_route": "chat",
+      "eligible": ["check-and-read-unread-emails"],
+      "forbidden": ["control-lights", "news-briefing"]
+    },
+    {
+      "text": "delete those",
+      "history": [
+        {"role": "user", "content": "any unread mail today"},
+        {"role": "assistant", "content": "Two unread emails."}
+      ],
+      "expect_soft_domain": "email",
+      "expect_route": "chat",
+      "eligible": ["check-and-read-unread-emails"],
+      "forbidden": ["control-lights"]
+    },
+    {
+      "text": "read the first one",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "Yes: 1) Netflix 2) Walmart Reviews"}
+      ],
+      "expect_soft_domain": "email",
+      "expect_route": "chat",
+      "eligible": ["check-and-read-unread-emails"],
+      "forbidden": ["control-lights", "news-briefing"]
+    },
+    {
+      "text": "and the second one",
+      "history": [
+        {"role": "user", "content": "check my unread emails"},
+        {"role": "assistant", "content": "Two unread emails in the inbox."},
+        {"role": "user", "content": "read the first one"},
+        {"role": "assistant", "content": "From Netflix: Coming Tuesday..."}
+      ],
+      "expect_soft_domain": "email",
+      "expect_route": "chat",
+      "eligible": ["check-and-read-unread-emails"],
+      "forbidden": ["control-lights"]
+    },
+    {
+      "text": "summarize that",
+      "history": [
+        {"role": "user", "content": "give me the headlines"},
+        {"role": "assistant", "content": "Top news: markets rose; local briefing next."}
+      ],
+      "expect_soft_domain": "news",
+      "expect_route": "chat",
+      "eligible": ["news-briefing"],
+      "forbidden": ["check-and-read-unread-emails", "control-lights"]
+    },
+    {
+      "text": "more detail on that",
+      "history": [
+        {"role": "user", "content": "whats in the news today"},
+        {"role": "assistant", "content": "Here is a short news briefing."}
+      ],
+      "expect_soft_domain": "news",
+      "expect_route": "chat",
+      "eligible": ["news-briefing"],
+      "forbidden": ["check-and-read-unread-emails"]
+    },
+    {
+      "text": "again please",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "No new emails in the inbox."}
+      ],
+      "expect_soft_domain": "email",
+      "expect_route": "chat",
+      "eligible": ["check-and-read-unread-emails"],
+      "forbidden": ["control-lights", "news-briefing"]
+    },
+    {
+      "text": "turn them off",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "Yes, two unread emails."}
+      ],
+      "expect_soft_domain": null,
+      "expect_route": "action",
+      "eligible": ["control-lights"],
+      "forbidden": ["check-and-read-unread-emails", "news-briefing"],
+      "comment": "Device-control phrasing is a new topic even with 'them'."
+    },
+    {
+      "text": "give me the headlines",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "Yes, two unread emails."}
+      ],
+      "expect_soft_domain": "news",
+      "expect_route": "chat",
+      "eligible": ["news-briefing"],
+      "forbidden": ["check-and-read-unread-emails"],
+      "comment": "A new soft-domain ask wins over the prior email topic."
+    },
+    {
+      "text": "what is the temperature in the kitchen",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "Yes, two unread emails."}
+      ],
+      "expect_soft_domain": null,
+      "expect_route": "chat",
+      "eligible": ["look-up-sensor-or-entity-status"],
+      "forbidden": ["check-and-read-unread-emails"],
+      "comment": "A full new reading ask is not an email follow-up."
+    },
+    {
+      "text": "mark them as read",
+      "history": [],
+      "expect_soft_domain": null,
+      "expect_route": "chat",
+      "eligible": [],
+      "forbidden": ["check-and-read-unread-emails"],
+      "comment": "Without history there is no email vocabulary to inherit."
+    },
+    {
+      "text": "what about apple",
+      "history": [
+        {"role": "user", "content": "how is the stock market today"},
+        {"role": "assistant", "content": "Markets are mixed; the Nasdaq is up slightly."}
+      ],
+      "expect_soft_domain": "stock",
+      "expect_route": "chat",
+      "eligible": ["look-up-stock-quotes"],
+      "forbidden": ["control-lights", "news-briefing", "check-and-read-unread-emails"]
+    },
+    {
+      "text": "same for microsoft",
+      "history": [
+        {"role": "user", "content": "how is the stock market today"},
+        {"role": "assistant", "content": "Indexes are mostly flat."},
+        {"role": "user", "content": "what about apple"},
+        {"role": "assistant", "content": "Apple is up about 1.2%."}
+      ],
+      "expect_soft_domain": "stock",
+      "expect_route": "chat",
+      "eligible": ["look-up-stock-quotes"],
+      "forbidden": ["control-lights", "news-briefing"]
+    },
+    {
+      "text": "compared to yesterday",
+      "history": [
+        {"role": "user", "content": "how is the stock market today"},
+        {"role": "assistant", "content": "Indexes are mostly flat."},
+        {"role": "user", "content": "what about apple"},
+        {"role": "assistant", "content": "Apple is up about 1.2%."},
+        {"role": "user", "content": "same for microsoft"},
+        {"role": "assistant", "content": "Microsoft is roughly unchanged."}
+      ],
+      "expect_soft_domain": "stock",
+      "expect_route": "chat",
+      "eligible": ["look-up-stock-quotes"],
+      "forbidden": ["control-lights", "news-briefing"]
+    },
+    {
+      "text": "and the nasdaq",
+      "history": [
+        {"role": "user", "content": "how is the stock market today"},
+        {"role": "assistant", "content": "Indexes are mostly flat."},
+        {"role": "user", "content": "what about apple"},
+        {"role": "assistant", "content": "Apple is up about 1.2%."},
+        {"role": "user", "content": "same for microsoft"},
+        {"role": "assistant", "content": "Microsoft is roughly unchanged."},
+        {"role": "user", "content": "compared to yesterday"},
+        {"role": "assistant", "content": "Both are a bit softer than yesterday."}
+      ],
+      "expect_soft_domain": "stock",
+      "expect_route": "chat",
+      "eligible": ["look-up-stock-quotes"],
+      "forbidden": ["control-lights", "news-briefing", "check-and-read-unread-emails"],
+      "comment": "Five-step stock chain: open → ticker → ticker → compare → index."
+    },
+    {
+      "text": "mark them as read",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "Yes: 1) Netflix 2) Walmart Reviews"},
+        {"role": "user", "content": "read the first one"},
+        {"role": "assistant", "content": "From Netflix: Coming Tuesday..."},
+        {"role": "user", "content": "and the second one"},
+        {"role": "assistant", "content": "From Walmart: Your order shipped."},
+        {"role": "user", "content": "summarize that"},
+        {"role": "assistant", "content": "Both are routine notifications."}
+      ],
+      "expect_soft_domain": "email",
+      "expect_route": "chat",
+      "eligible": ["check-and-read-unread-emails"],
+      "forbidden": ["control-lights", "news-briefing", "look-up-stock-quotes"],
+      "comment": "Five-step email chain still inherits the inbox topic."
+    },
+    {
+      "text": "what else about that",
+      "history": [
+        {"role": "user", "content": "give me the headlines"},
+        {"role": "assistant", "content": "Top news: local briefing and tech notes."},
+        {"role": "user", "content": "more detail on that"},
+        {"role": "assistant", "content": "Here is a longer news summary."},
+        {"role": "user", "content": "read the first one"},
+        {"role": "assistant", "content": "First headline: city council vote."},
+        {"role": "user", "content": "summarize that"},
+        {"role": "assistant", "content": "Council approved the transit plan."}
+      ],
+      "expect_soft_domain": "news",
+      "expect_route": "chat",
+      "eligible": ["news-briefing"],
+      "forbidden": ["check-and-read-unread-emails", "look-up-stock-quotes", "control-lights"],
+      "comment": "Five-step news chain; short detail ask continues the briefing."
+    },
+    {
+      "text": "check my portfolio",
+      "history": [
+        {"role": "user", "content": "do I have new emails"},
+        {"role": "assistant", "content": "Yes, two unread emails."}
+      ],
+      "expect_soft_domain": "stock",
+      "expect_route": "chat",
+      "eligible": ["look-up-stock-quotes"],
+      "forbidden": ["check-and-read-unread-emails"],
+      "comment": "A new soft-domain ask wins over the prior email topic."
+    },
+    {
+      "text": "summarize that",
+      "history": [
+        {"role": "user", "content": "give me the headlines"},
+        {"role": "assistant", "content": "Top news: stock market mixed; local briefing next."}
+      ],
+      "expect_soft_domain": "news",
+      "expect_route": "chat",
+      "eligible": ["news-briefing"],
+      "forbidden": ["look-up-stock-quotes", "control-lights"],
+      "comment": "News copy that mentions the stock market must not flip the topic to stock."
+    }
+  ]
+}

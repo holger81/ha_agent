@@ -134,11 +134,49 @@ def _load_composites() -> list[Composite]:
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class FollowUp:
+    """A history-dependent follow-up and the domain/skills it must keep."""
+
+    text: str
+    history: tuple[tuple[str, str], ...]
+    expect_soft_domain: str | None
+    expect_route: str
+    eligible: tuple[str, ...]
+    forbidden: tuple[str, ...]
+
+    def __str__(self) -> str:
+        return f"[followup] {self.text!r}"
+
+    @property
+    def history_messages(self) -> list[dict[str, str]]:
+        return [{"role": role, "content": content} for role, content in self.history]
+
+
+def _load_followups() -> list[FollowUp]:
+    data = _read_json(CORPUS_DIR / "followups.json")
+    return [
+        FollowUp(
+            text=entry["text"],
+            history=tuple(
+                (str(msg["role"]), str(msg["content"]))
+                for msg in entry.get("history", [])
+            ),
+            expect_soft_domain=entry["expect_soft_domain"],
+            expect_route=entry["expect_route"],
+            eligible=tuple(entry["eligible"]),
+            forbidden=tuple(entry["forbidden"]),
+        )
+        for entry in data["cases"]
+    ]
+
+
 CATALOG_SPEC = _load_catalog_spec()
 CASES = _load_cases()
 COMPOSITES = _load_composites()
+FOLLOWUPS = _load_followups()
 ODDITIES = _read_json(CORPUS_DIR / "oddities.json")
-SOFT_DOMAIN_GROUPS = {"email", "news"}
+SOFT_DOMAIN_GROUPS = {"email", "news", "stock"}
 HA_GROUPS = {"reading", "control", "composite"}
 
 
@@ -622,6 +660,122 @@ async def test_resolve_returns_the_expected_skill_or_nothing(
     assert slugs in ([], [case.expect_skill]), (
         f"{case} → {result.summary} ({result.detail})"
     )
+
+
+def test_followup_shape(skills_by_slug) -> None:
+    """History follow-up cases stay unique and reference catalog skills."""
+    assert len(FOLLOWUPS) >= 10
+    keys = [(case.text.lower(), case.history) for case in FOLLOWUPS]
+    assert len(set(keys)) == len(keys)
+    for case in FOLLOWUPS:
+        assert case.expect_route in {"chat", "action"}, str(case)
+        for slug in case.eligible + case.forbidden:
+            assert slug in skills_by_slug, f"{case} references unknown {slug!r}"
+
+
+def test_followup_inherits_soft_domain_from_history() -> None:
+    """Follow-ups without domain words inherit the prior soft topic."""
+    selection = _load("skills.selection")
+    failures = []
+    for case in FOLLOWUPS:
+        hint = selection.infer_soft_domain_hint(
+            case.text, case.history_messages or None
+        )
+        if hint != case.expect_soft_domain:
+            want = case.expect_soft_domain
+            failures.append(f"{case} → domain {hint!r}, want {want!r}")
+    assert not failures, _report(failures, len(FOLLOWUPS))
+
+
+def test_followup_keeps_topic_skills_and_rejects_foreign(
+    skills_by_slug,
+) -> None:
+    """History-carried domain keeps the right skills and drops foreign ones."""
+    selection = _load("skills.selection")
+    failures = []
+    for case in FOLLOWUPS:
+        hint = selection.infer_soft_domain_hint(
+            case.text, case.history_messages or None
+        )
+        for slug in case.eligible:
+            if not selection.skill_matches_route(
+                skills_by_slug[slug],
+                case.expect_route,
+                domain_hint=hint,
+                user_text=case.text,
+            ):
+                failures.append(f"{case} dropped {slug!r}")
+        for slug in case.forbidden:
+            if selection.skill_matches_route(
+                skills_by_slug[slug],
+                case.expect_route,
+                domain_hint=hint,
+                user_text=case.text,
+            ):
+                failures.append(f"{case} kept {slug!r}")
+    assert not failures, _report(failures, len(FOLLOWUPS))
+
+
+def test_followup_prepass_forces_chat_for_inherited_email(
+    skills_by_slug,
+) -> None:
+    """Prepass must not keep an action/lights pick on an email follow-up."""
+    prepass = _load_prepass()
+    selection = _load("skills.selection")
+    lights = skills_by_slug["control-lights"]
+    email = skills_by_slug["check-and-read-unread-emails"]
+    history = [
+        {"role": "user", "content": "do I have new emails"},
+        {
+            "role": "assistant",
+            "content": "Yes, you have 2 new unread emails.",
+        },
+    ]
+    assert selection.infer_soft_domain_hint("mark them as read", history) == "email"
+    keyword = SimpleNamespace(
+        summary="corpus",
+        domain_hint=None,
+        route=prepass.TaskRoute.HA_ACTION,
+    )
+    dropped = prepass._parse_prepass_payload(
+        {
+            "route": "action",
+            "domain_hint": "",
+            "complexity": "single",
+            "skill_slug": "control-lights",
+            "slot_bindings": {},
+        },
+        catalog_by_slug={"control-lights": lights},
+        keyword_decision=keyword,
+        heuristic=prepass.Complexity.SINGLE,
+        user_text="mark them as read",
+        history=history,
+    )
+    assert dropped is not None
+    assert dropped.route_resolution.route == prepass.TaskRoute.CHAT
+    assert dropped.route_resolution.domain_hint == "email"
+    assert dropped.skill_selection is None or not dropped.skill_selection.skills
+
+    kept = prepass._parse_prepass_payload(
+        {
+            "route": "action",
+            "domain_hint": "",
+            "complexity": "single",
+            "skill_slug": "check-and-read-unread-emails",
+            "slot_bindings": {"mailbox": "INBOX"},
+        },
+        catalog_by_slug={"check-and-read-unread-emails": email},
+        keyword_decision=keyword,
+        heuristic=prepass.Complexity.SINGLE,
+        user_text="mark them as read",
+        history=history,
+    )
+    assert kept is not None
+    assert kept.route_resolution.domain_hint == "email"
+    assert kept.skill_selection is not None
+    assert [skill.slug for skill in kept.skill_selection.skills] == [
+        "check-and-read-unread-emails"
+    ]
 
 
 def test_composite_shape(skills_by_slug) -> None:

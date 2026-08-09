@@ -12,8 +12,10 @@ from homeassistant.core import HomeAssistant
 from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..context import (
+    continues_prior_topic,
     is_casual_chat_query,
     is_chat_route,
+    is_device_action_query,
     is_short_follow_up_query,
     is_state_question,
 )
@@ -58,6 +60,16 @@ _ROUTE_DOMAIN_MARKERS: dict[str, re.Pattern[str]] = {
         r"\b(news|headlines?|briefings?|rss|nachrichten|curate)\b",
         re.IGNORECASE,
     ),
+    # Prefer "stock market" / ticker vocabulary over bare "market" so a news
+    # line like "markets rose" does not become a stock-domain hit.
+    "stock": re.compile(
+        r"\b("
+        r"stocks?|stock\s+market|tickers?|shares|equities|nasdaq|nyse|"
+        r"dow\s*jones|s\s*&\s*p|sandp|portfolio|share\s+price|"
+        r"stock\s+quote|earnings(?:\s+report)?"
+        r")\b",
+        re.IGNORECASE,
+    ),
     "action": re.compile(
         r"\b("
         r"light|switch|cover|fan|lock|climate|camera|entity_id|snapshot|"
@@ -72,11 +84,16 @@ _SPECIALIZED_ROUTES = frozenset(_ROUTE_DOMAIN_MARKERS)
 _ROUTE_SEARCH_HINTS: dict[str, str] = {
     "email": "email mail inbox unread messages",
     "news": "news headlines briefing curate",
+    "stock": "stock market ticker shares quote portfolio",
 }
 
 _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
     "email": re.compile(r"mail|imap|inbox|email|mailbox", re.IGNORECASE),
     "news": re.compile(r"news|curate|headline|rss", re.IGNORECASE),
+    "stock": re.compile(
+        r"stock|ticker|finance|equity|equities|quote|portfolio",
+        re.IGNORECASE,
+    ),
     "action": re.compile(
         r"ha_call_service|turn_on|turn_off|snapshot|open_cover|close_cover|"
         r"home_assistant|ha_search|ha_get_|ha_bulk_|ha_set_",
@@ -218,10 +235,44 @@ def _skill_text(skill: Skill) -> str:
     )
 
 
-def infer_soft_domain_hint(user_text: str) -> str | None:
-    """Infer a soft chat-domain hint from user text via shared markers.
+def soft_domains_in_text(user_text: str) -> frozenset[str]:
+    """Return every soft chat domain whose markers appear in the user text."""
+    text = (user_text or "").strip()
+    if not text:
+        return frozenset()
+    return frozenset(
+        domain
+        for domain in _SOFT_DOMAIN_HINTS
+        if _ROUTE_DOMAIN_MARKERS[domain].search(text)
+    )
+
+
+def soft_domain_from_history(
+    history: list[dict[str, str]] | None,
+) -> str | None:
+    """Most recent unambiguous soft domain mentioned in conversation history.
+
+    Ambiguous messages (e.g. news copy that also mentions markets) are skipped
+    so an older clear turn can still carry the topic forward.
+    """
+    for message in reversed(history or []):
+        if not isinstance(message, dict):
+            continue
+        domains = soft_domains_in_text(str(message.get("content") or ""))
+        if len(domains) == 1:
+            return next(iter(domains))
+    return None
+
+
+def infer_soft_domain_hint(
+    user_text: str,
+    history: list[dict[str, str]] | None = None,
+) -> str | None:
+    """Infer a soft chat-domain hint from the ask, or from recent history.
 
     Returns a domain only when exactly one soft domain matches (not action).
+    Follow-ups without domain words ("mark them as read") inherit the prior
+    soft domain; a clear new device-control ask does not.
     """
     text = (user_text or "").strip()
     if not text:
@@ -233,19 +284,15 @@ def infer_soft_domain_hint(user_text: str) -> str | None:
     ]
     if len(hits) == 1:
         return hits[0]
-    return None
-
-
-def soft_domains_in_text(user_text: str) -> frozenset[str]:
-    """Return every soft chat domain whose markers appear in the user text."""
-    text = (user_text or "").strip()
-    if not text:
-        return frozenset()
-    return frozenset(
-        domain
-        for domain in _SOFT_DOMAIN_HINTS
-        if _ROUTE_DOMAIN_MARKERS[domain].search(text)
-    )
+    if len(hits) > 1:
+        return None
+    # No domain words in this turn — continue the prior soft topic when the
+    # ask is anaphoric / short, unless it is clearly a new device command.
+    if not history or not continues_prior_topic(text):
+        return None
+    if is_device_action_query(text):
+        return None
+    return soft_domain_from_history(history)
 
 
 def _skill_step_names(skill: Skill) -> list[str]:
@@ -297,12 +344,15 @@ def skill_matches_route(
     scope = (skill.route_scope or "").lower()
 
     # A skill built for a specialized domain needs that domain's vocabulary in
-    # the ask. Without it an email/news workflow must not serve an unrelated
-    # chat turn (e.g. a room temperature lookup), whatever FTS or the
-    # classifier proposed. Marker-driven, so new domains are covered too.
+    # the ask — or a history-carried domain_hint for follow-ups like
+    # "mark them as read" after an email turn. Without either, an email/news
+    # workflow must not serve an unrelated chat turn.
     if user_text and route_key in {"", "chat"}:
         declared = _skill_soft_domains(skill)
-        if declared and not declared & soft_domains_in_text(user_text):
+        supported = soft_domains_in_text(user_text)
+        if hint in _SOFT_DOMAIN_HINTS:
+            supported = supported | {hint}
+        if declared and not declared & supported:
             return False
         # A read-only question must not run a state-changing workflow, however
         # it was proposed ("is the front door locked" is not "lock the door").
@@ -698,7 +748,7 @@ async def resolve_skills_for_turn(
     # Prefer router/prepass hint; otherwise infer from user text markers so
     # soft-domain asks (any scope) cannot pin conflicting HA/status skills.
     effective_hint = (domain_hint or "").strip().lower() or infer_soft_domain_hint(
-        user_text
+        user_text, history
     )
 
     # Cheap unsupervised pins on chat (domain hint / strong FTS). Weak or

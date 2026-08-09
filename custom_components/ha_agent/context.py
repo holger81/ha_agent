@@ -372,6 +372,18 @@ _INFORMATIONAL_FOLLOW_UP = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# "read the first one" / "and the second" after a listed set (emails, headlines).
+_ORDINAL_FOLLOW_UP = re.compile(
+    r"\b(?:the\s+)?(?:first|second|third|fourth|fifth|last|next|previous|other)"
+    r"(?:\s+one)?\b"
+    r"|\b(?:number|#)\s*\d+\b",
+    re.IGNORECASE,
+)
+# "what about microsoft", "same for tesla", "compared to yesterday".
+_RELATIVE_FOLLOW_UP = re.compile(
+    r"\b(?:how\s+about|what\s+about|same\s+for|compared?\s+to|versus|vs\.?)\b",
+    re.IGNORECASE,
+)
 
 # Unit-only asks that restate a prior reading in another scale
 # ("and in Fahrenheit?", "convert that to celsius").
@@ -480,6 +492,34 @@ def is_short_follow_up_query(query: str) -> bool:
         or _INFORMATIONAL_FOLLOW_UP.search(text)
         or is_unit_conversion_follow_up(text)
     )
+
+
+def continues_prior_topic(query: str) -> bool:
+    """Return True when the ask likely continues the previous conversation topic.
+
+    Covers short retries and anaphoric follow-ups ("mark them as read", "do that
+    again") even when slightly longer than :func:`is_short_follow_up_query`.
+    Unit-only conversions are excluded — those continue a reading, not a
+    soft-domain workflow.
+    """
+    text = (query or "").strip()
+    if not text or is_unit_conversion_follow_up(text):
+        return False
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    if not tokens:
+        return False
+    if len(tokens) <= 5 and (
+        _FOLLOW_UP_REF.search(text) or _INFORMATIONAL_FOLLOW_UP.search(text)
+    ):
+        return True
+    # "read the first one" / "and the second" after a listed set.
+    if len(tokens) <= 8 and _ORDINAL_FOLLOW_UP.search(text):
+        return True
+    # "what about microsoft" / "compared to yesterday" after a quote or list.
+    if len(tokens) <= 8 and _RELATIVE_FOLLOW_UP.search(text):
+        return True
+    # "please mark all of them as read" still depends on the prior topic.
+    return len(tokens) <= 12 and bool(_FOLLOW_UP_REF.search(text))
 
 
 def resolve_turn_goal(

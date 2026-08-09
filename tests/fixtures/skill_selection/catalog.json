@@ -1,5 +1,5 @@
 {
-  "description": "Skill catalog used by the skill-selection corpus tests. Mirrors the skills the agent actually learns in a household (one reading/status workflow, several device-control workflows, and soft-domain workflows).",
+  "description": "Skill catalog used by the skill-selection corpus tests. Mirrors the skills the agent actually learns in a household (one reading/status workflow, several device-control workflows, and soft-domain workflows like email/news/stock).",
   "skills": [
     {
       "slug": "look-up-sensor-or-entity-status",
@@ -185,6 +185,22 @@
       ],
       "route_scope": "news",
       "group": "news"
+    },
+    {
+      "slug": "look-up-stock-quotes",
+      "title": "Look up stock market quotes",
+      "description": "Look up share prices, indexes, and portfolio movers.",
+      "triggers": [
+        "how is the stock market",
+        "what is the {{query}} stock price",
+        "check my portfolio"
+      ],
+      "body": "Look up the ticker or index quote and summarize the move.",
+      "tool_steps": [
+        {"toolName": "finance_mcp__get_stock_quote", "arguments": {"query": "{{query}}"}}
+      ],
+      "route_scope": "stock",
+      "group": "stock"
     }
   ]
 }

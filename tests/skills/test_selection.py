@@ -519,6 +519,277 @@ def test_skill_matches_route_rejects_email_tools_on_action() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("text", "history", "expected"),
+    [
+        (
+            "mark them as read",
+            [
+                {"role": "user", "content": "do I have new emails"},
+                {
+                    "role": "assistant",
+                    "content": "Yes, you have 2 new unread emails from Netflix.",
+                },
+            ],
+            "email",
+        ),
+        (
+            "please mark all of them as read",
+            [
+                {"role": "user", "content": "check my inbox"},
+                {"role": "assistant", "content": "Three unread messages."},
+            ],
+            "email",
+        ),
+        (
+            "read the first one",
+            [
+                {"role": "user", "content": "do I have new emails"},
+                {"role": "assistant", "content": "Yes: 1) Netflix 2) Walmart"},
+            ],
+            "email",
+        ),
+        (
+            "summarize that",
+            [
+                {"role": "user", "content": "give me the headlines"},
+                {"role": "assistant", "content": "Here is today's news briefing."},
+            ],
+            "news",
+        ),
+        (
+            "again please",
+            [
+                {"role": "user", "content": "any unread mail"},
+                {"role": "assistant", "content": "No new emails."},
+            ],
+            "email",
+        ),
+        (
+            "what about apple",
+            [
+                {"role": "user", "content": "how is the stock market today"},
+                {"role": "assistant", "content": "Indexes are mixed."},
+            ],
+            "stock",
+        ),
+        (
+            "compared to yesterday",
+            [
+                {"role": "user", "content": "how is the stock market today"},
+                {"role": "assistant", "content": "Indexes are mixed."},
+                {"role": "user", "content": "what about apple"},
+                {"role": "assistant", "content": "Apple is up about 1%."},
+            ],
+            "stock",
+        ),
+        (
+            "summarize that",
+            [
+                {"role": "user", "content": "give me the headlines"},
+                {
+                    "role": "assistant",
+                    "content": "Top news: stock market mixed; local briefing next.",
+                },
+            ],
+            "news",
+        ),
+        # New topics — do not inherit.
+        (
+            "turn them off",
+            [
+                {"role": "user", "content": "do I have new emails"},
+                {"role": "assistant", "content": "Yes, two unread emails."},
+            ],
+            None,
+        ),
+        (
+            "give me the headlines",
+            [
+                {"role": "user", "content": "do I have new emails"},
+                {"role": "assistant", "content": "Yes, two unread emails."},
+            ],
+            "news",
+        ),
+        (
+            "check my portfolio",
+            [
+                {"role": "user", "content": "do I have new emails"},
+                {"role": "assistant", "content": "Yes, two unread emails."},
+            ],
+            "stock",
+        ),
+        (
+            "what is the temperature in the kitchen",
+            [
+                {"role": "user", "content": "do I have new emails"},
+                {"role": "assistant", "content": "Yes, two unread emails."},
+            ],
+            None,
+        ),
+        ("mark them as read", [], None),
+        ("mark them as read", None, None),
+    ],
+)
+def test_follow_up_inherits_soft_domain_from_history(
+    text: str,
+    history: list[dict[str, str]] | None,
+    expected: str | None,
+) -> None:
+    """Follow-ups inherit the prior soft domain; new topics do not."""
+    selection = _load("skills.selection")
+    assert selection.infer_soft_domain_hint(text, history) == expected
+
+
+def test_email_follow_up_keeps_email_skill_rejects_lights() -> None:
+    """History-carried email hint keeps mail workflows and drops lights."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    history = [
+        {"role": "user", "content": "do I have new emails"},
+        {
+            "role": "assistant",
+            "content": "Yes, you have 2 new unread emails from Netflix.",
+        },
+    ]
+    assert selection.infer_soft_domain_hint("mark them as read", history) == "email"
+
+    email = models.Skill(
+        id="1",
+        slug="check-and-read-unread-emails",
+        title="Check and read unread emails",
+        description="Check inbox",
+        triggers=["do I have new emails", "mark them as read"],
+        body="# Email",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages", "arguments": {}}],
+        route_scope="email",
+    )
+    lights = models.Skill(
+        id="2",
+        slug="turn-off-dining-room-lights",
+        title="Turn off Dining Room Lights",
+        description="Turn off the dining room lights",
+        triggers=["turn off dining room lights", "mark them as read"],
+        body="# Lights",
+        tool_steps=[
+            {"toolName": "home_assistant__ha_call_service", "arguments": {}},
+        ],
+        route_scope="action",
+    )
+    # History-carried email hint keeps the email skill and drops lights.
+    assert (
+        selection.skill_matches_route(
+            email,
+            "chat",
+            domain_hint="email",
+            user_text="mark them as read",
+        )
+        is True
+    )
+    assert (
+        selection.skill_matches_route(
+            lights,
+            "chat",
+            domain_hint="email",
+            user_text="mark them as read",
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_follow_up_keeps_email_catalog_not_lights(
+    monkeypatch,
+) -> None:
+    """After an email turn, mark-them-as-read must not offer a lights skill."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    config_helpers = _load("config_helpers")
+    llm_client = _load("llm_client")
+
+    email = models.Skill(
+        id="1",
+        slug="check-and-read-unread-emails",
+        title="Check and read unread emails",
+        description="Check inbox and mark messages",
+        triggers=["do I have new emails", "mark them as read"],
+        body="# Email",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages", "arguments": {}}],
+        route_scope="email",
+    )
+    lights = models.Skill(
+        id="2",
+        slug="turn-off-dining-room-lights",
+        title="Turn off Dining Room Lights",
+        description="Turn off dining room lights",
+        triggers=["turn off dining room lights", "mark them as read"],
+        body="# Lights",
+        tool_steps=[
+            {"toolName": "home_assistant__ha_call_service", "arguments": {}},
+        ],
+        route_scope="action",
+    )
+
+    store = MagicMock()
+    store.search.return_value = [MagicMock(id="1"), MagicMock(id="2")]
+    store.load_skills_by_ids.return_value = [email, lights]
+    store.list_enabled.return_value = [email, lights]
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+    monkeypatch.setattr(
+        selection,
+        "_load_skill_candidates",
+        MagicMock(return_value=([email, lights], [email, lights])),
+    )
+
+    llm = MagicMock()
+    llm.chat = AsyncMock(
+        return_value=llm_client.ChatResult(
+            content='{"skill_slugs":["check-and-read-unread-emails"]}',
+            tool_calls=[],
+            assistant_message={},
+        )
+    )
+    backend = config_helpers.LlmBackend(
+        base_url="http://example/v1",
+        model="test",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.1,
+        timeout=30,
+        thinking_level="off",
+    )
+    history = [
+        {"role": "user", "content": "do I have new emails"},
+        {
+            "role": "assistant",
+            "content": "Yes, you have 2 new unread emails.",
+        },
+    ]
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        backend,
+        "mark them as read",
+        route="chat",
+        history=history,
+    )
+    assert [skill.slug for skill in result.skills] == ["check-and-read-unread-emails"]
+    assert all(skill.slug != "turn-off-dining-room-lights" for skill in result.skills)
+    # If the classifier ran, lights must already have been filtered from its catalog.
+    if llm.chat.await_args is not None:
+        payload = json.loads(llm.chat.await_args.args[0][1]["content"])
+        catalog_slugs = {item["slug"] for item in payload["skills"]}
+        assert "turn-off-dining-room-lights" not in catalog_slugs
+
+
 @pytest.mark.asyncio
 async def test_single_fts_match_still_respects_route(monkeypatch) -> None:
     """A lone FTS hit is ignored when it conflicts with the active route."""

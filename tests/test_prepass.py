@@ -303,3 +303,84 @@ def test_prepass_drops_ha_status_skill_on_email_ask() -> None:
     assert result.route_resolution.domain_hint == "email"
     assert result.skill_selection is None
     assert "dropped conflicting skill" in result.orch_plan.reason
+
+
+def test_prepass_email_follow_up_inherits_history_and_drops_lights() -> None:
+    """'mark them as read' after email must not keep a lights skill from prepass."""
+    prepass = _load("prepass")
+    models = _load("skills.models")
+    lights = models.Skill(
+        id="1",
+        slug="control-lights",
+        title="Turn lights on or off",
+        description="Switch lights",
+        triggers=["turn off the lights", "mark them as read"],
+        body="# Lights",
+        tool_steps=[
+            {"toolName": "home_assistant__ha_call_service", "arguments": {}},
+        ],
+        route_scope="action",
+    )
+    email = models.Skill(
+        id="2",
+        slug="check-and-read-unread-emails",
+        title="Check and read unread emails",
+        description="Check inbox",
+        triggers=["do I have new emails", "mark them as read"],
+        body="# Email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages", "arguments": {}},
+        ],
+        route_scope="email",
+    )
+    history = [
+        {"role": "user", "content": "do I have new emails"},
+        {
+            "role": "assistant",
+            "content": "Yes, you have 2 new unread emails.",
+        },
+    ]
+    keyword = SimpleNamespace(
+        summary="default chat",
+        domain_hint=None,
+        route=prepass.TaskRoute.HA_ACTION,
+    )
+    dropped = prepass._parse_prepass_payload(
+        {
+            "route": "action",
+            "domain_hint": "",
+            "complexity": "single",
+            "skill_slug": "control-lights",
+            "slot_bindings": {},
+        },
+        catalog_by_slug={"control-lights": lights},
+        keyword_decision=keyword,
+        heuristic=prepass.Complexity.SINGLE,
+        user_text="mark them as read",
+        history=history,
+    )
+    assert dropped is not None
+    assert dropped.route_resolution.route == prepass.TaskRoute.CHAT
+    assert dropped.route_resolution.domain_hint == "email"
+    assert dropped.skill_selection is None or not dropped.skill_selection.skills
+
+    kept = prepass._parse_prepass_payload(
+        {
+            "route": "action",
+            "domain_hint": "",
+            "complexity": "single",
+            "skill_slug": "check-and-read-unread-emails",
+            "slot_bindings": {"mailbox": "INBOX"},
+        },
+        catalog_by_slug={"check-and-read-unread-emails": email},
+        keyword_decision=keyword,
+        heuristic=prepass.Complexity.SINGLE,
+        user_text="mark them as read",
+        history=history,
+    )
+    assert kept is not None
+    assert kept.route_resolution.domain_hint == "email"
+    assert kept.skill_selection is not None
+    assert [s.slug for s in kept.skill_selection.skills] == [
+        "check-and-read-unread-emails"
+    ]

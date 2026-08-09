@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
@@ -260,6 +262,36 @@ def test_resolve_turn_goal_keeps_prior_ask_on_short_follow_up() -> None:
     assert context.resolve_turn_goal("what is the outdoor air quality?", history) == (
         "what is the outdoor air quality?"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "continues"),
+    [
+        ("mark them as read", True),
+        ("please mark all of them as read", True),
+        ("do that again", True),
+        ("delete those", True),
+        ("read the first one", True),
+        ("and the second one", True),
+        ("summarize that", True),
+        ("more detail on that", True),
+        ("again please", True),
+        ("what about apple", True),
+        ("same for microsoft", True),
+        ("compared to yesterday", True),
+        ("what else about that", True),
+        ("turn off the kitchen lights", False),
+        ("what is the temperature in the kitchen", False),
+        ("give me the headlines", False),
+        ("and in Fahrenheit?", False),
+        ("", False),
+    ],
+)
+def test_continues_prior_topic_covers_anaphoric_follow_ups(
+    text: str, continues: bool
+) -> None:
+    """Pronoun/ordinal follow-ups continue the topic; fresh asks do not."""
+    assert context.continues_prior_topic(text) is continues
 
 
 def test_unit_conversion_follow_up_keeps_prior_reading_goal() -> None:
