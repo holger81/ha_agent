@@ -1,11 +1,14 @@
-"""Editable route trigger keywords.
+"""Editable action-route trigger keywords.
 
-Route detection (email / news / action) ships as compiled regexes in
-``context.py``. This module makes the trigger keyword list for each built-in
-route editable and resettable from the console UI, persisted per config entry
-in SQLite. When a route override is disabled, empty, or unchanged from the
-shipped default, the deterministic shipped regex is used so behavior never
-regresses and a storage problem never breaks a turn.
+Device-action route detection ships as compiled regexes in ``context.py``.
+This module makes the action keyword list editable and resettable from the
+console UI, persisted per config entry in SQLite. When the override is
+disabled, empty, or unchanged from the shipped default, the deterministic
+shipped regex is used so behavior never regresses and a storage problem
+never breaks a turn.
+
+Email/news workflows are owned by skills (triggers / ``route_scope``), not
+by parallel keyword routes.
 """
 
 from __future__ import annotations
@@ -22,18 +25,11 @@ from .const import DATA_KEY, LOGGER
 
 ROUTE_KEYWORDS_STORE_KEY = "route_keyword_stores"
 
-# Ordered, editable built-in routes. Each maps to a router route value.
-ROUTE_KEYWORD_ROUTES = ("email", "news", "action")
+# Only device-action keywords are editable here. Soft domain workflows
+# (email, news, …) come from skills, not from this table.
+ROUTE_KEYWORD_ROUTES = ("action",)
 
 DEFAULT_ROUTE_KEYWORDS: dict[str, dict[str, object]] = {
-    "email": {
-        "title": "Email",
-        "keywords": ["email", "emails", "e-mail", "mail", "inbox", "unread"],
-    },
-    "news": {
-        "title": "News",
-        "keywords": ["news", "headlines", "headline", "briefing", "nachrichten"],
-    },
     "action": {
         "title": "Device action",
         "keywords": [
@@ -68,7 +64,7 @@ CREATE TABLE IF NOT EXISTS route_keywords (
 
 @dataclass(slots=True)
 class RouteKeywords:
-    """An editable trigger keyword list for a built-in route."""
+    """An editable trigger keyword list for the action route."""
 
     route: str
     title: str
@@ -120,7 +116,7 @@ def _row_to_route_keywords(row: sqlite3.Row) -> RouteKeywords:
 
 
 class RouteKeywordStore:
-    """Per-config-entry editable route keyword database."""
+    """Per-config-entry editable action keyword database."""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
@@ -138,6 +134,7 @@ class RouteKeywordStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._seed_defaults()
+        self._purge_obsolete_routes()
         self._conn.commit()
 
     def close(self) -> None:
@@ -170,6 +167,20 @@ class RouteKeywordStore:
                 ),
             )
 
+    def _purge_obsolete_routes(self) -> None:
+        """Drop retired keyword rows (e.g. former email/news route keywords)."""
+        conn = self._conn
+        assert conn is not None
+        keep = tuple(ROUTE_KEYWORD_ROUTES)
+        if not keep:
+            conn.execute("DELETE FROM route_keywords")
+            return
+        placeholders = ", ".join("?" for _ in keep)
+        conn.execute(
+            f"DELETE FROM route_keywords WHERE route NOT IN ({placeholders})",
+            keep,
+        )
+
     def list_route_keywords(self) -> list[RouteKeywords]:
         """Return built-in route keyword rows in canonical order."""
         rows = (
@@ -184,6 +195,8 @@ class RouteKeywordStore:
 
     def get_route_keywords(self, route: str) -> RouteKeywords | None:
         """Return one route's keyword row."""
+        if route not in ROUTE_KEYWORD_ROUTES:
+            return None
         row = (
             self._connection()
             .execute(

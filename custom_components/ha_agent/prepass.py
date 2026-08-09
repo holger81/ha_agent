@@ -40,8 +40,9 @@ _PREPAS_PROMPT = (
     "Pick route, complexity, optional learned skill slug from the catalog, "
     "and slot_bindings for that skill.\n"
     "Rules:\n"
-    "- route: chat|action (email/news are skills on chat, not routes)\n"
-    '- domain_hint: email|news|"" when the request is clearly mail or news\n'
+    "- route: chat|action (soft domains like email/news are skills on chat)\n"
+    '- domain_hint: optional soft workflow hint string, or "" when none\n'
+    "  (skills own domain workflows via route_scope; do not invent routes)\n"
     "- complexity: simple (chat, no tools), single (one workflow with tools), "
     "complex (multi-domain). Never use simple for action / device control "
     "(including follow-ups like 'turn it back off').\n"
@@ -138,9 +139,8 @@ def _parse_prepass_payload(
             candidate_count=len(catalog_by_slug),
         )
 
-    if domain_hint not in {"email", "news"}:
-        domain_hint = getattr(keyword_decision, "domain_hint", None)
-
+    # Domain hints come from the matched skill's route_scope (and optional
+    # free-form prepass hint), not from retired email/news keyword routes.
     route, domain_hint, align_reason = align_route_to_skill(
         route,
         skill_scope=skill.route_scope if skill is not None else None,

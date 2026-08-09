@@ -11,12 +11,7 @@ from typing import TYPE_CHECKING
 from .config_helpers import LlmBackend, RouterConfig
 from .const import LOGGER
 from .context import (
-    _recent_email_context,
-    _recent_news_context,
     entity_matches_query,
-    is_email_query,
-    is_informational_follow_up,
-    is_news_query,
     route_keyword_match,
 )
 from .structured_output import ROUTE_SCHEMA, json_schema_format
@@ -280,10 +275,7 @@ async def resolve_route_with_classifier(
                 classifier_raw=raw_preview,
                 domain_hint=keyword_decision.domain_hint,
             )
-        # Preserve email/news domain hints even when the LLM picks chat.
-        domain_hint = keyword_decision.domain_hint
-        if route == TaskRoute.HA_ACTION:
-            domain_hint = None
+        # Domain hints come from matched skills (route_scope), not keywords.
         return RouteResolution(
             route=route,
             method="llm",
@@ -294,7 +286,7 @@ async def resolve_route_with_classifier(
             ),
             keyword_hint=keyword_decision.summary,
             classifier_raw=raw_preview,
-            domain_hint=domain_hint,
+            domain_hint=None,
         )
 
     return RouteResolution(
@@ -321,28 +313,13 @@ def classify_route_with_detail(
 ) -> RouteDecision:
     """Pick the route for this user turn and explain how it was chosen.
 
-    ``route_keywords`` carries optional per-domain UI keyword overrides
-    (``{"email": [...], "news": [...], "action": [...]}``). Email/news
-    keywords become skill domain hints on the chat route.
+    ``route_keywords`` carries optional action keyword overrides
+    (``{"action": [...]}``). Soft domain workflows (email, news, …) are
+    owned by skills via triggers / ``route_scope``, not keyword routes.
     """
     del exposed_entities  # reserved for future entity-aware routing
+    del history  # follow-ups no longer invent domain routes
     overrides = route_keywords or {}
-    prior = history or []
-    if match := route_keyword_match(user_text, "email", overrides.get("email")):
-        return RouteDecision(
-            TaskRoute.CHAT,
-            "domain_hint",
-            match,
-            domain_hint="email",
-        )
-
-    if match := route_keyword_match(user_text, "news", overrides.get("news")):
-        return RouteDecision(
-            TaskRoute.CHAT,
-            "domain_hint",
-            match,
-            domain_hint="news",
-        )
 
     if (
         router_config.action_enabled
@@ -350,30 +327,6 @@ def classify_route_with_detail(
         and (match := route_keyword_match(user_text, "action", overrides.get("action")))
     ):
         return RouteDecision(TaskRoute.HA_ACTION, "keyword", match)
-
-    if (
-        _recent_news_context(prior)
-        and is_informational_follow_up(user_text)
-        and not is_email_query(user_text, overrides.get("email"))
-    ):
-        return RouteDecision(
-            TaskRoute.CHAT,
-            "follow_up",
-            "recent news context",
-            domain_hint="news",
-        )
-
-    if (
-        _recent_email_context(prior)
-        and is_informational_follow_up(user_text)
-        and not is_news_query(user_text, overrides.get("news"))
-    ):
-        return RouteDecision(
-            TaskRoute.CHAT,
-            "follow_up",
-            "recent email context",
-            domain_hint="email",
-        )
 
     return RouteDecision(TaskRoute.CHAT, "default", "general chat")
 

@@ -95,13 +95,15 @@ def test_build_tool_context_adds_device_search_hint() -> None:
 
 
 def test_build_tool_context_exposed_entities_are_shortcuts() -> None:
-    """Exposed entities are labeled as shortcuts, not the full entity list."""
+    """Exposed entities are labeled as an incomplete inventory, not exhaustive."""
     tool_context = context.build_tool_context(
         "what is the kitchen temperature?",
         [{"entity_id": "sensor.kitchen_temp", "name": "Kitchen temperature"}],
     )
-    assert "shortcuts" in tool_context.lower()
-    assert "not a complete list" in tool_context.lower()
+    lowered = tool_context.lower()
+    assert "incomplete inventory" in lowered
+    assert "absent from this list" in lowered
+    assert "search first" in lowered
     assert "searchToolsForDomain" in tool_context
     assert "sensor.kitchen_temp" in tool_context
 

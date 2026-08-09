@@ -50,10 +50,7 @@ PREPASS_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": {"type": "string"},
         },
-        "domain_hint": {
-            "type": "string",
-            "enum": ["email", "news", ""],
-        },
+        "domain_hint": {"type": "string"},
     },
     "required": ["route", "complexity"],
     "additionalProperties": False,

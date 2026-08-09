@@ -28,8 +28,6 @@ from .context import (
     build_tool_context,
     format_identity_context,
     is_affirmative,
-    is_email_query,
-    is_news_query,
 )
 from .embedded_tools import (
     is_tool_call_only_text,
@@ -215,14 +213,6 @@ def _model_chip(backend: LlmBackend) -> dict[str, str]:
     }
 
 
-def _domain_hint_for_text(text: str) -> str | None:
-    if is_email_query(text):
-        return "email"
-    if is_news_query(text):
-        return "news"
-    return None
-
-
 def _agent_model_role(
     route: TaskRoute,
     *,
@@ -231,8 +221,9 @@ def _agent_model_role(
 ) -> str:
     if not use_chat_backend and route == TaskRoute.HA_ACTION:
         return "action"
-    scope = (skill_scope or "").lower()
-    if scope in {"email", "news"}:
+    # Non-action skill scopes (email, news, …) may use a dedicated model role.
+    scope = (skill_scope or "").strip().lower()
+    if scope and scope != TaskRoute.HA_ACTION.value and scope != TaskRoute.CHAT.value:
         return scope
     return "chat"
 
@@ -896,7 +887,7 @@ async def _run_orchestrated_turn(
                 subtask.subgoal,
                 history=[],
                 route=subtask.route,
-                domain_hint=_domain_hint_for_text(subtask.subgoal),
+                domain_hint=None,
                 max_inject=1,
                 structured_output_enabled=structured,
                 trace=trace,
@@ -1965,7 +1956,6 @@ async def run_agent(
             str(route) == "action"
             or bool(skill_steps)
             or (primary_skill is not None and bool(primary_skill.tool_steps))
-            or (route_resolution.domain_hint or "") in {"email", "news"}
         )
         stream_this_iteration = agent_config.enable_streaming and not (
             trace.tool_errors > 0
@@ -2268,7 +2258,6 @@ async def run_agent(
             tool_critical=bool(
                 skill_steps
                 or (primary_skill is not None and bool(primary_skill.tool_steps))
-                or (route_resolution.domain_hint or "") in {"email", "news"}
             ),
         ):
             if streamed_answer:

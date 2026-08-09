@@ -3819,7 +3819,7 @@ class HaAgentPanel extends HTMLElement {
 
     return `
       ${notice}
-      <p class="section-intro">Keywords for email and news are domain hints on the chat route (skills handle those workflows). Action keywords still select the action route for device control. Matching is case-insensitive whole-word. When custom keywords are disabled, empty, or unchanged from the default, the shipped matcher is used.</p>
+      <p class="section-intro">Action keywords select the device-control route. Soft domains (email, news, and others) are owned by skills via triggers and route_scope — they are not separate routes. Matching is case-insensitive whole-word. When custom keywords are disabled, empty, or unchanged from the default, the shipped matcher is used.</p>
       <table>
         <thead><tr><th>Route</th><th>Keywords</th><th>Custom enabled</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5">No routes.</td></tr>'}</tbody>

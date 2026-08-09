@@ -81,25 +81,27 @@ def test_classify_route_uses_action_for_device_commands() -> None:
 
 
 def test_classify_route_uses_chat_for_news() -> None:
-    """News queries stay on chat with a news domain hint."""
+    """News queries stay on chat; skills own the domain, not keyword routes."""
     decision = router.classify_route_with_detail(
         "what's the news?",
         [],
         _router_config(enabled=True),
     )
     assert decision.route == router.TaskRoute.CHAT
-    assert decision.domain_hint == "news"
+    assert decision.domain_hint is None
+    assert decision.method == "default"
 
 
 def test_classify_route_uses_chat_for_mail_queries() -> None:
-    """Email queries stay on chat with an email domain hint."""
+    """Email queries stay on chat; skills own the domain, not keyword routes."""
     decision = router.classify_route_with_detail(
         "do I have new emails?",
         [],
         _router_config(enabled=True),
     )
     assert decision.route == router.TaskRoute.CHAT
-    assert decision.domain_hint == "email"
+    assert decision.domain_hint is None
+    assert decision.method == "default"
 
 
 def test_classify_route_uses_action_for_camera_snapshot() -> None:
@@ -122,8 +124,20 @@ def test_classify_route_disabled_always_chat() -> None:
     assert route == router.TaskRoute.CHAT
 
 
-def test_classify_route_uses_keyword_override() -> None:
-    """A custom email keyword becomes a domain hint on chat."""
+def test_classify_route_uses_action_keyword_override() -> None:
+    """A custom action keyword selects the action route."""
+    decision = router.classify_route_with_detail(
+        "dim the lounge",
+        [],
+        _router_config(enabled=True),
+        route_keywords={"action": ["dim"]},
+    )
+    assert decision.route == router.TaskRoute.HA_ACTION
+    assert decision.method == "keyword"
+
+
+def test_classify_route_ignores_retired_email_keyword_override() -> None:
+    """Retired email keyword overrides no longer invent a domain hint."""
     decision = router.classify_route_with_detail(
         "any postbox updates?",
         [],
@@ -131,18 +145,7 @@ def test_classify_route_uses_keyword_override() -> None:
         route_keywords={"email": ["postbox"]},
     )
     assert decision.route == router.TaskRoute.CHAT
-    assert decision.domain_hint == "email"
-
-
-def test_classify_route_override_does_not_match_default_keyword() -> None:
-    """When overridden, the default keyword set is replaced, not merged."""
-    route = router.classify_route(
-        "do I have new emails?",
-        [],
-        _router_config(enabled=True),
-        route_keywords={"email": ["postbox"]},
-    )
-    assert route == router.TaskRoute.CHAT
+    assert decision.domain_hint is None
 
 
 def test_backend_for_route_returns_action_backend() -> None:
@@ -166,8 +169,8 @@ def test_backend_for_route_returns_action_backend() -> None:
     assert backend.model == "action-model"
 
 
-def test_classify_route_news_follow_up_after_briefing() -> None:
-    """News detail questions keep a news domain hint on chat."""
+def test_classify_route_news_follow_up_stays_default_chat() -> None:
+    """Follow-ups no longer invent a news domain route from history alone."""
     history = [
         {"role": "user", "content": "what are todays news"},
         {
@@ -182,21 +185,20 @@ def test_classify_route_news_follow_up_after_briefing() -> None:
         history=history,
     )
     assert decision.route == router.TaskRoute.CHAT
-    assert decision.domain_hint == "news"
+    assert decision.domain_hint is None
+    assert decision.method == "default"
 
 
-def test_classify_route_with_detail_news_keyword() -> None:
-    """News classification includes the matched keyword as a domain hint."""
+def test_classify_route_with_detail_action_keyword() -> None:
+    """Action classification includes the matched keyword detail."""
     decision = router.classify_route_with_detail(
-        "what are todays news",
+        "turn on the lights",
         [],
         _router_config(enabled=True),
     )
-    assert decision.route == router.TaskRoute.CHAT
-    assert decision.domain_hint == "news"
-    assert decision.method == "domain_hint"
-    assert "news" in decision.detail.lower()
-    assert "news" in decision.summary
+    assert decision.route == router.TaskRoute.HA_ACTION
+    assert decision.method == "keyword"
+    assert "turn on" in decision.detail.lower() or "action" in decision.summary
 
 
 @pytest.mark.asyncio

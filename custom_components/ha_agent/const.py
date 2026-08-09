@@ -123,8 +123,10 @@ DEFAULT_TOOL_INSTRUCTIONS = (
     "Follow MCP SERVER INSTRUCTIONS and use the provided session tools. "
     "Discover tools with searchToolsForDomain or searchTool, then callTool "
     "with an exact toolName and arguments from that tool's schema. "
-    "Never invent tool names. Exposed entity shortcuts may appear in context; "
-    "they are not exhaustive — discover tools when a shortcut does not fit."
+    "Never invent tool names. Exposed entity shortcuts in context are an "
+    "incomplete Assist subset — never treat them as the full inventory or "
+    "conclude something is unavailable because it is missing from that list; "
+    "search with MCP tools first."
 )
 
 # Saved during setup before MCP-compliant defaults; reset on upgrade.

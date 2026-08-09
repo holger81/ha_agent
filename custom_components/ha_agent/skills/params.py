@@ -158,8 +158,10 @@ async def infer_slot_bindings(
                 'Return ONLY JSON: {"bindings": {"slot_name": "value", ...}}.\n'
                 "Use empty string when a slot cannot be inferred.\n"
                 "For entity_id, prefer an exact entity_id from exposed_entities "
-                "(match on name/area/aliases). For service, use turn_on, "
-                "turn_off, or toggle."
+                "when it clearly matches (name/area/aliases). That list is "
+                "incomplete — leave entity_id empty when nothing matches so "
+                "the agent can search. For service, use turn_on, turn_off, "
+                "or toggle."
             ),
         },
         {

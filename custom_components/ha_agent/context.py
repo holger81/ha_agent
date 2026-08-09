@@ -51,11 +51,13 @@ _CAPABILITY_QUERY = re.compile(
     re.IGNORECASE,
 )
 _EXPOSED_ENTITIES_HEADER = (
-    "EXPOSED ENTITIES (Assist shortcuts — not a complete list):\n"
-    "These are pre-matched entities for faster routing. The home may have "
-    "many more devices. When no shortcut fits, discover tools via MCP "
-    "(searchToolsForDomain / searchTool), then callTool with an exact "
-    "toolName from discovery. Never invent tool names."
+    "EXPOSED ENTITIES (Assist shortcuts — incomplete inventory):\n"
+    "This list is NOT complete and must NOT be treated as all entities in "
+    "the home. Prefer a matching shortcut when it clearly fits; otherwise "
+    "look up the entity with MCP tools (searchToolsForDomain / searchTool, "
+    "then callTool — e.g. ha_search with domain_filter). Never invent tool "
+    "names. Never tell the user an entity or room is missing solely because "
+    "it is absent from this list — search first."
 )
 _DEVICE_DISCOVERY_FALLBACK = (
     "Discover tools with searchToolsForDomain / searchTool for the relevant "
@@ -118,20 +120,19 @@ def route_keyword_match(
     route_name: str,
     keywords: list[str] | None = None,
 ) -> str | None:
-    """Return a short label when a route keyword matches, else None."""
-    if route_name == "email":
-        pattern = _keyword_regex(keywords) or _EMAIL_QUERY
-    elif route_name == "news":
-        pattern = _keyword_regex(keywords) or _NEWS_QUERY
-    elif route_name == "action":
-        if override := _keyword_regex(keywords):
-            pattern = override
-        elif _CAMERA_ACTION.search(query):
-            pattern = _CAMERA_ACTION
-        elif _DEVICE_ACTION.search(query):
-            pattern = _DEVICE_ACTION
-        else:
-            return None
+    """Return a short label when an action keyword matches, else None.
+
+    Only the ``action`` route uses keyword matching. Soft domains (email,
+    news, …) are selected via skills, not parallel keyword routes.
+    """
+    if route_name != "action":
+        return None
+    if override := _keyword_regex(keywords):
+        pattern = override
+    elif _CAMERA_ACTION.search(query):
+        pattern = _CAMERA_ACTION
+    elif _DEVICE_ACTION.search(query):
+        pattern = _DEVICE_ACTION
     else:
         return None
 
@@ -295,7 +296,9 @@ def _device_action_hint(
         lines = [
             "DEVICE ACTION: matching exposed-entity shortcut(s) below. Prefer "
             "them with the appropriate MCP tool from discovery / session tools. "
-            "If they are wrong, discover tools instead. Never invent tool names.",
+            "Shortcuts are incomplete — if they are wrong or the target is not "
+            "listed, search via MCP instead of assuming it does not exist. "
+            "Never invent tool names.",
             *_format_entity_candidates(matches),
         ]
         return "\n".join(lines)

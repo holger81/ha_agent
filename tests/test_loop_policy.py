@@ -1110,6 +1110,59 @@ def test_analyze_search_tool_result_counts_items() -> None:
     assert any("message_ids" in hint for hint in state.mcp_guidance)
 
 
+def test_analyze_search_tool_result_empty_ha_search_soft_recovery() -> None:
+    """Empty ha_search injects soft guidance to retry with domain_filter."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps(
+        {
+            "success": True,
+            "query": "jonathan temperature",
+            "entities": [],
+            "entity_total_matches": 0,
+        }
+    )
+
+    policy.analyze_search_tool_result(
+        state,
+        "home_assistant__ha_search",
+        output,
+        {"query": "jonathan temperature"},
+    )
+
+    assert state.mcp_guidance
+    hint = state.mcp_guidance[0]
+    assert "no matching entities" in hint
+    assert "domain_filter" in hint
+    assert "single-token" in hint
+    assert "Answer the user from these results" not in hint
+
+
+def test_analyze_search_tool_result_counts_ha_search_entities() -> None:
+    """ha_search entity lists are counted (not treated as empty)."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps(
+        {
+            "success": True,
+            "query": "jonathan",
+            "entities": [
+                {"entity_id": "sensor.jonathans_bedroom_9b3a_temperature"},
+            ],
+            "entity_total_matches": 1,
+        }
+    )
+
+    policy.analyze_search_tool_result(
+        state,
+        "home_assistant__ha_search",
+        output,
+        {"query": "jonathan", "domain_filter": "sensor"},
+    )
+
+    assert any("returned 1 item(s)" in hint for hint in state.mcp_guidance)
+
+
 def test_enrich_tool_output_adds_search_entities_recovery() -> None:
     """Unknown tools steer the model toward discovery."""
     policy = _load_loop_policy()

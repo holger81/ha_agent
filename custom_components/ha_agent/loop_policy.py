@@ -936,6 +936,51 @@ def record_override_block_guidance(
             loop_state.mcp_guidance.insert(0, adherence)
 
 
+def _search_result_entries(data: dict[str, Any]) -> list[Any] | None:
+    """Return list-valued search hits from common MCP result shapes."""
+    for key in ("messages", "items", "results", "entities"):
+        entries = data.get(key)
+        if isinstance(entries, list):
+            return entries
+    return None
+
+
+def _is_entity_search_result(tool_name: str, data: dict[str, Any]) -> bool:
+    """True when the tool result is an HA entity search (e.g. ha_search)."""
+    if "entities" in data or "entity_total_matches" in data:
+        return True
+    lowered = tool_name.lower()
+    return "ha_search" in lowered and "searchtool" not in lowered
+
+
+def _empty_entity_search_hint(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str:
+    """Soft recovery when entity search returns no matches."""
+    query = str(arguments.get("query") or "").strip()
+    domain = arguments.get("domain_filter") or arguments.get("domain")
+    has_domain = bool(str(domain or "").strip())
+    multi_token = len(query.split()) > 1
+    parts = ["SEARCH RESULT: no matching entities."]
+    if not has_domain:
+        parts.append(
+            "Retry once with a shorter single-token query and set "
+            "`domain_filter` from the tool MCP params to the entity domain "
+            "that matches the user's goal."
+        )
+    elif multi_token:
+        parts.append(
+            "Retry once with a shorter single-token query; keep domain_filter."
+        )
+    else:
+        parts.append(
+            f"Do not repeat the same `{tool_name}` query. Try a different "
+            "distinctive token, or tell the user no matching entity was found."
+        )
+    return " ".join(parts)
+
+
 def analyze_search_tool_result(
     loop_state: LoopState,
     tool_name: str,
@@ -949,14 +994,24 @@ def analyze_search_tool_result(
     if not data:
         return
 
-    entries = data.get("messages") or data.get("items") or data.get("results") or []
-    if not isinstance(entries, list):
+    entries = _search_result_entries(data)
+    if entries is None:
         return
 
     filtered = _coerce_bool(arguments.get("unread_only") or arguments.get("unreadOnly"))
     has_more = _coerce_bool(data.get("hasMore") or data.get("has_more"))
+    total_matches = data.get("entity_total_matches")
+    empty = not entries
+    if isinstance(total_matches, int) and total_matches == 0:
+        empty = True
 
-    if not entries:
+    if empty and _is_entity_search_result(tool_name, data):
+        hint = _empty_entity_search_hint(tool_name, arguments)
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        return
+
+    if empty:
         summary = "SEARCH RESULT: the query returned no items."
         if filtered:
             summary += " Active filters may still apply to follow-up calls."
@@ -1554,9 +1609,9 @@ def build_failed_tools_answer_nudge(loop_state: LoopState) -> str:
     return (
         "SYSTEM (internal — not from the user): One or more tools failed and no "
         "successful control/action tool ran. Do NOT claim success. Either "
-        "discover/call the correct MCP tool now (exact toolName from discovery, "
-        "using Exposed entities when they match), or tell the user honestly that "
-        "the action did not complete. "
+        "discover/call the correct MCP tool now (exact toolName from discovery; "
+        "Exposed entities are incomplete shortcuts — search when they do not "
+        "match), or tell the user honestly that the action did not complete. "
         f"{describe_plan_next_action(loop_state)}"
     )
 
@@ -1575,8 +1630,9 @@ def build_missing_control_nudge(loop_state: LoopState) -> str:
         "SYSTEM (internal — not from the user): You claimed a device action "
         "succeeded but no successful control tool ran this turn. Call the MCP "
         "control tool now (for example home_assistant__ha_call_service with "
-        "turn_on/turn_off, or HassTurnOn/HassTurnOff). Use Exposed entities / "
-        "prior Controlled entity ids for the target. Do not invent success. "
+        "turn_on/turn_off, or HassTurnOn/HassTurnOff). Prefer matching Exposed "
+        "entity shortcuts or prior Controlled entity ids; if none match, search "
+        "via MCP — the exposed list is incomplete. Do not invent success. "
         f"{describe_plan_next_action(loop_state)}"
     )
 
