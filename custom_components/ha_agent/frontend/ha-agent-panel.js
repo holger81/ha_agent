@@ -77,7 +77,10 @@ class HaAgentPanel extends HTMLElement {
     this._agentUsers = [];
     this._systemMemory = [];
     this._userMemory = [];
+    this._allUserMemory = [];
     this._memoryUserId = "";
+    this._memoryFilter = "all";
+    this._memoryNotice = null;
     this._identityEnrollment = null;
     this._identityOverrideUserId = "";
     this._identityNotice = null;
@@ -553,6 +556,7 @@ class HaAgentPanel extends HTMLElement {
       if (this._tab === "routes") await this._loadRouteKeywords();
       if (this._tab === "recovery") await this._loadRecoveryHints();
       if (this._tab === "skills") await this._loadSkills();
+      if (this._tab === "memory") await this._loadMemoriesTab();
       if (!quiet) {
         this._setHeaderNotice("Integration reloaded.");
       }
@@ -630,7 +634,7 @@ class HaAgentPanel extends HTMLElement {
       this._systemMemory = data.entries || [];
     } catch (err) {
       this._systemMemory = [];
-      this._identityNotice = this._formatApiError(err, "ha_agent/memory/list");
+      this._memoryNotice = this._formatApiError(err, "ha_agent/memory/list");
     }
   }
 
@@ -649,26 +653,57 @@ class HaAgentPanel extends HTMLElement {
       this._memoryUserId = agentUserId;
     } catch (err) {
       this._userMemory = [];
-      this._identityNotice = this._formatApiError(err, "ha_agent/memory/list");
+      this._memoryNotice = this._formatApiError(err, "ha_agent/memory/list");
     }
   }
 
-  async _loadUserMemory(agentUserId) {
-    if (!this._entryId || !agentUserId) {
-      this._userMemory = [];
+  async _loadAllUserMemories() {
+    if (!this._entryId) {
+      this._allUserMemory = [];
       return;
     }
-    try {
-      const data = await this._call("ha_agent/memory/list", {
-        entry_id: this._entryId,
-        scope: "user",
-        agent_user_id: agentUserId,
-      });
-      this._userMemory = data.entries || [];
-      this._memoryUserId = agentUserId;
-    } catch (err) {
-      this._userMemory = [];
-      this._identityNotice = this._formatApiError(err, "ha_agent/memory/list");
+    const users = (this._agentUsers || []).filter((user) => !user.merged_into);
+    const rows = [];
+    await Promise.all(
+      users.map(async (user) => {
+        try {
+          const data = await this._call("ha_agent/memory/list", {
+            entry_id: this._entryId,
+            scope: "user",
+            agent_user_id: user.id,
+          });
+          for (const entry of data.entries || []) {
+            rows.push({
+              ...entry,
+              owner_name: user.display_name || user.id,
+              agent_user_id: user.id,
+            });
+          }
+        } catch (_err) {
+          /* skip users that fail to load */
+        }
+      }),
+    );
+    rows.sort((a, b) => {
+      const owner = String(a.owner_name || "").localeCompare(String(b.owner_name || ""));
+      if (owner) return owner;
+      return String(a.key || "").localeCompare(String(b.key || ""));
+    });
+    this._allUserMemory = rows;
+  }
+
+  async _loadMemoriesTab() {
+    this._memoryNotice = null;
+    if (!this._agentUsers?.length) {
+      await this._loadIdentityUsers();
+    } else {
+      await this._loadSystemMemory();
+    }
+    await this._loadAllUserMemories();
+    if (this._memoryUserId) {
+      this._userMemory = this._allUserMemory.filter(
+        (entry) => entry.agent_user_id === this._memoryUserId,
+      );
     }
   }
 
@@ -683,25 +718,24 @@ class HaAgentPanel extends HTMLElement {
       }
     };
 
+    this.shadowRoot.querySelectorAll("[data-memory-filter]").forEach((el) => {
+      el.addEventListener("click", () => {
+        this._memoryFilter = el.getAttribute("data-memory-filter") || "all";
+        this._render();
+      });
+    });
+
     this.shadowRoot
       .querySelector('[data-action="memory-user-select"]')
       ?.addEventListener("change", async (event) => {
-        const userId = event.target.value;
-        await this._loadUserMemory(userId);
+        this._memoryUserId = event.target.value || "";
         this._render();
       });
 
     this.shadowRoot
-      .querySelector('[data-action="memory-reload-system"]')
+      .querySelector('[data-action="memory-reload"]')
       ?.addEventListener("click", async () => {
-        await this._loadSystemMemory();
-        this._render();
-      });
-
-    this.shadowRoot
-      .querySelector('[data-action="memory-reload-user"]')
-      ?.addEventListener("click", async () => {
-        await this._loadUserMemory(this._memoryUserId);
+        await this._loadMemoriesTab();
         this._render();
       });
 
@@ -709,8 +743,12 @@ class HaAgentPanel extends HTMLElement {
       .querySelector('[data-action="memory-add-system"]')
       ?.addEventListener("click", async () => {
         const key = this.shadowRoot.querySelector('[data-memory-key="system"]')?.value;
-        const value = this.shadowRoot.querySelector('[data-memory-value="system"]')?.value;
-        const route = this.shadowRoot.querySelector('[data-memory-route="system"]')?.value;
+        const value = this.shadowRoot.querySelector(
+          '[data-memory-value="system"]',
+        )?.value;
+        const route = this.shadowRoot.querySelector(
+          '[data-memory-route="system"]',
+        )?.value;
         if (!key?.trim()) return;
         try {
           await this._call("ha_agent/memory/set", {
@@ -722,11 +760,11 @@ class HaAgentPanel extends HTMLElement {
               route_scope: route?.trim() || null,
             },
           });
-          this._identityNotice = `Saved household memory ${key.trim()}.`;
-          await this._loadSystemMemory();
+          this._memoryNotice = `Saved household memory ${key.trim()}.`;
+          await this._loadMemoriesTab();
           this._render();
         } catch (err) {
-          this._identityNotice = this._formatApiError(err, "ha_agent/memory/set");
+          this._memoryNotice = this._formatApiError(err, "ha_agent/memory/set");
           this._render();
         }
       });
@@ -735,7 +773,7 @@ class HaAgentPanel extends HTMLElement {
       .querySelector('[data-action="memory-add-user"]')
       ?.addEventListener("click", async () => {
         if (!this._memoryUserId) {
-          this._identityNotice = "Select a registered member first.";
+          this._memoryNotice = "Select a registered member first.";
           this._render();
           return;
         }
@@ -754,11 +792,11 @@ class HaAgentPanel extends HTMLElement {
               route_scope: route?.trim() || null,
             },
           });
-          this._identityNotice = `Saved user memory ${key.trim()}.`;
-          await this._loadUserMemory(this._memoryUserId);
+          this._memoryNotice = `Saved user memory ${key.trim()}.`;
+          await this._loadMemoriesTab();
           this._render();
         } catch (err) {
-          this._identityNotice = this._formatApiError(err, "ha_agent/memory/set");
+          this._memoryNotice = this._formatApiError(err, "ha_agent/memory/set");
           this._render();
         }
       });
@@ -776,12 +814,11 @@ class HaAgentPanel extends HTMLElement {
             key,
             agent_user_id: scope === "user" ? userId : undefined,
           });
-          this._identityNotice = `Forgot ${key}.`;
-          if (scope === "user") await this._loadUserMemory(this._memoryUserId);
-          else await this._loadSystemMemory();
+          this._memoryNotice = `Forgot ${key}.`;
+          await this._loadMemoriesTab();
           this._render();
         } catch (err) {
-          this._identityNotice = this._formatApiError(err, "ha_agent/memory/delete");
+          this._memoryNotice = this._formatApiError(err, "ha_agent/memory/delete");
           this._render();
         }
       });
@@ -1921,6 +1958,13 @@ class HaAgentPanel extends HTMLElement {
     this._messages = this._historyToMessages(history || []);
   }
 
+  _stripControlledSuffix(content) {
+    // Internal conversation-memory marker — keep out of the chat UI.
+    return String(content || "")
+      .replace(/\s*Controlled:\s*[^.]*\.\s*$/i, "")
+      .trimEnd();
+  }
+
   _historyToMessages(history, openMsg = null) {
     const priorMeta = new Map();
     for (const msg of this._messages) {
@@ -1937,7 +1981,11 @@ class HaAgentPanel extends HTMLElement {
     }
     return (history || []).map((item, index) => {
       const thinking = String(item.thinking || "");
-      const content = item.content || "";
+      const rawContent = item.content || "";
+      const content =
+        item.role === "assistant"
+          ? this._stripControlledSuffix(rawContent)
+          : rawContent;
       const preserveStream =
         openMsg && index === lastAssistantIndex && item.role === "assistant";
       return {
@@ -2572,14 +2620,43 @@ class HaAgentPanel extends HTMLElement {
 
   _styles() {
     return `
-      :host { display: block; height: 100%; font-family: var(--ha-font-family-body); }
-      .wrap { display: flex; flex-direction: column; height: 100%; padding: 16px; box-sizing: border-box; }
-      .header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+      :host {
+        display: block;
+        height: 100%;
+        max-height: 100%;
+        overflow: hidden;
+        box-sizing: border-box;
+        font-family: var(--ha-font-family-body);
+      }
+      .wrap {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        max-height: 100%;
+        min-height: 0;
+        overflow: hidden;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+      .header {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+        flex-shrink: 0;
+      }
       .header-spacer { flex: 1; min-width: 8px; }
       .reload-notice { font-size: 0.9em; opacity: 0.85; }
       .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
       .header-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
-      .tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+        flex-shrink: 0;
+      }
       .tab, button, select, input, textarea {
         font: inherit;
       }
@@ -2591,7 +2668,17 @@ class HaAgentPanel extends HTMLElement {
         cursor: pointer;
       }
       .tab.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      .panel { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border: 1px solid var(--divider-color, #ccc); border-radius: 12px; padding: 12px; }
+      .panel {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        overscroll-behavior: contain;
+        overflow-anchor: none;
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 12px;
+        padding: 12px;
+        -webkit-overflow-scrolling: touch;
+      }
       .activity-hint { margin-top: 10px; opacity: 0.75; font-size: 0.9rem; }
       .skill-notice {
         padding: 10px 12px;
@@ -2743,6 +2830,8 @@ class HaAgentPanel extends HTMLElement {
         background: color-mix(in srgb, var(--primary-color) 18%, transparent);
       }
       .chat-main { display: flex; flex-direction: column; min-height: 0; height: 100%; overflow: hidden; }
+      .chat-main > .banner,
+      .chat-main > .skill-notice { flex-shrink: 0; }
       .messages {
         display: flex;
         flex-direction: column;
@@ -4521,48 +4610,58 @@ class HaAgentPanel extends HTMLElement {
         <p class="hint">Max agent steps = LLM/tool iterations in one turn (shown as “LLM step” in Turn info).</p>
         <label>Max skills per turn<input type="number" data-config="skills_max_inject" value="${c.skills_max_inject || 3}" /></label>
         <button data-action="save-config">Save settings</button>
-      </div>
-      ${this._renderHouseholdMemory()}`;
-  }
-
-  _renderMemoryRows(entries, scope) {
-    return (entries || [])
-      .map((entry) => {
-        const value =
-          typeof entry.value === "string"
-            ? entry.value
-            : JSON.stringify(entry.value);
-        return `<tr>
-          <td>${this._escape(entry.key)}</td>
-          <td>${this._escape(value)}</td>
-          <td>${this._escape(entry.route_scope || "—")}</td>
-          <td><button type="button" data-action="memory-delete" data-scope="${scope}" data-key="${this._escape(entry.key)}" data-user-id="${this._escape(entry.agent_user_id || "")}">Forget</button></td>
-        </tr>`;
-      })
-      .join("");
-  }
-
-  _renderHouseholdMemory() {
-    const rows = this._renderMemoryRows(this._systemMemory, "system");
-    return `
-      <div class="settings-grid" style="margin-top:20px">
-        <h3>Household memory</h3>
-        <p class="hint">Shared defaults and entity aliases. User memory overrides these.</p>
-        <table>
-          <thead><tr><th>Key</th><th>Value</th><th>Route</th><th></th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="4">No household memories yet.</td></tr>'}</tbody>
-        </table>
-        <div class="actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-          <input data-memory-key="system" placeholder="key (e.g. news.digest_scope)" />
-          <input data-memory-value="system" placeholder="value (e.g. local)" />
-          <input data-memory-route="system" placeholder="route (optional)" />
-          <button type="button" data-action="memory-add-system">Add</button>
-          <button type="button" data-action="memory-reload-system">Reload</button>
-        </div>
       </div>`;
   }
 
-  _renderUserMemory() {
+  _formatMemoryValue(value) {
+    return typeof value === "string" ? value : JSON.stringify(value);
+  }
+
+  _renderMemoryRow(entry, scope, ownerLabel) {
+    return `<tr>
+      <td>${this._escape(scope === "system" ? "Household" : "User")}</td>
+      <td>${this._escape(ownerLabel || "—")}</td>
+      <td>${this._escape(entry.key)}</td>
+      <td>${this._escape(this._formatMemoryValue(entry.value))}</td>
+      <td>${this._escape(entry.route_scope || "—")}</td>
+      <td>${this._escape(entry.notes || "—")}</td>
+      <td><button type="button" data-action="memory-delete" data-scope="${scope}" data-key="${this._escape(entry.key)}" data-user-id="${this._escape(entry.agent_user_id || "")}">Forget</button></td>
+    </tr>`;
+  }
+
+  _renderMemory() {
+    const notice = this._memoryNotice
+      ? `<p class="activity-hint">${this._escape(this._memoryNotice)}</p>`
+      : "";
+    const filter = this._memoryFilter || "all";
+    const filters = ["all", "household", "user"]
+      .map((value) => {
+        const label =
+          value === "all" ? "All" : value === "household" ? "Household" : "User";
+        const active = filter === value ? "active" : "";
+        return `<button type="button" class="${active}" data-memory-filter="${value}">${label}</button>`;
+      })
+      .join("");
+
+    const householdRows =
+      filter === "user"
+        ? ""
+        : (this._systemMemory || [])
+            .map((entry) => this._renderMemoryRow(entry, "system", "—"))
+            .join("");
+    const userRows =
+      filter === "household"
+        ? ""
+        : (this._allUserMemory || [])
+            .map((entry) =>
+              this._renderMemoryRow(entry, "user", entry.owner_name || entry.agent_user_id),
+            )
+            .join("");
+    const rows = `${householdRows}${userRows}`;
+    const empty =
+      rows ||
+      `<tr><td colspan="7">No memories stored yet. Ask the agent to remember a preference, or add one below.</td></tr>`;
+
     const options = (this._agentUsers || [])
       .filter((user) => user.kind === "registered" && !user.merged_into)
       .map(
@@ -4572,24 +4671,38 @@ class HaAgentPanel extends HTMLElement {
           }>${this._escape(user.display_name)}</option>`,
       )
       .join("");
-    const rows = this._renderMemoryRows(this._userMemory, "user");
+
     return `
-      <div class="settings-grid" style="margin-top:20px">
-        <h3>User memory</h3>
-        <p class="hint">Per-person preferences (news style, mailbox, aliases). Guests only get household memory.</p>
-        <label>Member
-          <select data-action="memory-user-select">${options || "<option value=\"\">No registered members</option>"}</select>
-        </label>
+      ${notice}
+      <div class="settings-grid">
+        <h3>Durable memory</h3>
+        <p class="hint">Household defaults and per-user preferences (entity aliases, mailbox, news style). User memory overrides household for that person.</p>
+        <div class="thread-source-filters" style="margin-bottom:12px">${filters}</div>
         <table>
-          <thead><tr><th>Key</th><th>Value</th><th>Route</th><th></th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="4">No user memories for this member.</td></tr>'}</tbody>
+          <thead><tr><th>Scope</th><th>Owner</th><th>Key</th><th>Value</th><th>Route</th><th>Notes</th><th></th></tr></thead>
+          <tbody>${empty}</tbody>
         </table>
+        <div class="actions" style="margin-top:12px">
+          <button type="button" data-action="memory-reload">Reload</button>
+        </div>
+
+        <h3 style="margin-top:24px">Add household memory</h3>
+        <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap">
+          <input data-memory-key="system" placeholder="key (e.g. entity.alias.outdoor_air_quality)" />
+          <input data-memory-value="system" placeholder="value (e.g. sensor.home_outdoor_aqi_5min_mean)" />
+          <input data-memory-route="system" placeholder="route (optional)" />
+          <button type="button" data-action="memory-add-system">Add household</button>
+        </div>
+
+        <h3 style="margin-top:24px">Add user memory</h3>
+        <label>Member
+          <select data-action="memory-user-select">${options || '<option value="">No registered members</option>'}</select>
+        </label>
         <div class="actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           <input data-memory-key="user" placeholder="key" />
           <input data-memory-value="user" placeholder="value" />
           <input data-memory-route="user" placeholder="route (optional)" />
-          <button type="button" data-action="memory-add-user">Add</button>
-          <button type="button" data-action="memory-reload-user">Reload</button>
+          <button type="button" data-action="memory-add-user">Add for member</button>
         </div>
       </div>`;
   }
@@ -4676,8 +4789,7 @@ class HaAgentPanel extends HTMLElement {
         <button type="button" data-action="identity-merge-selected">Merge selected guests</button>
         <button type="button" data-action="identity-add-guest">Add guest profile</button>
         <button type="button" data-action="identity-reload">Reload</button>
-      </div>
-      ${this._renderUserMemory()}`;
+      </div>`;
   }
 
   _renderActivity() {
@@ -5327,6 +5439,8 @@ class HaAgentPanel extends HTMLElement {
         return this._renderRoutes();
       case "recovery":
         return this._renderRecovery();
+      case "memory":
+        return this._renderMemory();
       case "settings":
         return this._renderSettings();
       case "users":
@@ -5347,6 +5461,7 @@ class HaAgentPanel extends HTMLElement {
       "skills",
       "routes",
       "recovery",
+      "memory",
       "users",
       "settings",
       "eval",
@@ -5429,6 +5544,7 @@ class HaAgentPanel extends HTMLElement {
           if (this._tab === "routes") await this._loadRouteKeywords();
           if (this._tab === "recovery") await this._loadRecoveryHints();
           if (this._tab === "eval") await this._loadEvalStatus();
+          if (this._tab === "memory") await this._loadMemoriesTab();
         } catch (err) {
           const message = err?.message || String(err);
           if (this._tab === "skills") {
@@ -5437,6 +5553,8 @@ class HaAgentPanel extends HTMLElement {
             this._routeNotice = `Could not load route keywords: ${message}`;
           } else if (this._tab === "recovery") {
             this._hintNotice = `Could not load recovery hints: ${message}`;
+          } else if (this._tab === "memory") {
+            this._memoryNotice = `Could not load memories: ${message}`;
           }
         }
         this._render();

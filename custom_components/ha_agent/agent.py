@@ -612,7 +612,6 @@ def _handle_tool_result(
         )
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
-    record_pagination_state(loop_state, tool_name, output, arguments)
     record_mcp_guidance(loop_state, tool_name, output)
     if phase == "done":
         analyze_discovery_tool_result(loop_state, tool_name, output, arguments)
@@ -621,6 +620,12 @@ def _handle_tool_result(
         if analyze_entity_lookup_result(loop_state, tool_name, output, arguments):
             logical_fail = True
         note_executed_tool(loop_state, tool_name, succeeded=not logical_fail)
+    # Analyze may suppress paging (e.g. wrong-place temperature hits).
+    if not loop_state.suppress_pagination:
+        record_pagination_state(loop_state, tool_name, output, arguments)
+    else:
+        loop_state.suppress_pagination = False
+        loop_state.pagination_pending = {}
     record_plan_tool_result(
         loop_state,
         tool_name,

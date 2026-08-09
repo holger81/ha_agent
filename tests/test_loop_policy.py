@@ -1227,9 +1227,10 @@ def test_analyze_search_tool_result_counts_items() -> None:
 
 
 def test_analyze_search_tool_result_empty_ha_search_soft_recovery() -> None:
-    """Empty ha_search injects soft guidance to retry with domain_filter."""
+    """Empty multi-word reading search prefers the place token, not temperature."""
     policy = _load_loop_policy()
     state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans room"
     output = json.dumps(
         {
             "success": True,
@@ -1243,7 +1244,7 @@ def test_analyze_search_tool_result_empty_ha_search_soft_recovery() -> None:
         state,
         "home_assistant__ha_search",
         output,
-        {"query": "jonathan temperature"},
+        {"query": "jonathan temperature", "domain_filter": "sensor"},
     )
 
     assert unproductive is True
@@ -1251,8 +1252,9 @@ def test_analyze_search_tool_result_empty_ha_search_soft_recovery() -> None:
     assert state.mcp_guidance
     hint = state.mcp_guidance[0]
     assert "no matching entities" in hint
-    assert "domain_filter" in hint
-    assert "single-token" in hint
+    assert "domain_filter=`sensor`" in hint
+    assert "query=`jonathans`" in hint
+    assert "query=`temperature`" not in hint
     assert "Do not answer yet" in hint
     assert "Answer the user from these results" not in hint
 
@@ -1466,7 +1468,75 @@ def test_analyze_search_misses_reading_kind_keeps_searching() -> None:
         is True
     )
     assert any("No temperature sensors" in hint for hint in state.mcp_guidance)
-    assert any("query=`temperature`" in hint for hint in state.mcp_guidance)
+    # Prefer place token retry over paging all temperature sensors.
+    assert any("query=`jonathans`" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_search_wrong_place_temperature_stops_pagination() -> None:
+    """Generic temperature pages that miss the place are unproductive."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans room"
+    output = json.dumps(
+        {
+            "success": True,
+            "query": "temperature",
+            "entities": [
+                {
+                    "entity_id": "sensor.attic_sensor_temperature",
+                    "friendly_name": "Attic Sensor temperature",
+                    "device_class": "temperature",
+                    "state": "32.2",
+                }
+            ],
+            "entity_total_matches": 40,
+            "has_more": True,
+            "next_offset": 10,
+        }
+    )
+    assert (
+        policy.analyze_search_tool_result(
+            state,
+            "home_assistant__ha_search",
+            output,
+            {"query": "temperature", "domain_filter": "sensor"},
+        )
+        is True
+    )
+    assert state.suppress_pagination is True
+    assert any("none matching jonathans" in hint for hint in state.mcp_guidance)
+    assert any("query=`jonathans`" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_entity_lookup_rejects_wrong_place_temperature() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "what is the temperature in Jonathans room"
+    output = json.dumps(
+        {
+            "success": True,
+            "data": {
+                "entity_id": "sensor.attic_sensor_temperature",
+                "state": "32.2",
+                "attributes": {
+                    "unit_of_measurement": "°C",
+                    "device_class": "temperature",
+                    "friendly_name": "Attic Sensor temperature",
+                },
+            },
+        }
+    )
+    assert (
+        policy.analyze_entity_lookup_result(
+            state,
+            "home_assistant__ha_get_state",
+            output,
+            {"entity_id": "sensor.attic_sensor_temperature"},
+        )
+        is True
+    )
+    assert state.confirmed_reading_entity_id is None
+    assert any("STATE PLACE MISMATCH" in hint for hint in state.mcp_guidance)
 
 
 def test_analyze_entity_lookup_rejects_wrong_reading_type() -> None:

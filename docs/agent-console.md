@@ -14,7 +14,8 @@ No `configuration.yaml` changes are required; the integration registers the pane
 |-----|---------|
 | **Chat** | Streamed text chat with the same `run_agent()` loop as Assist; model thinking and tool progress appear in muted blocks (not spoken). |
 | **Skills** | Browse, search, enable/disable, create, edit, delete, export, and import skills. Pending “save as skill” drafts can be confirmed from the chat banner. |
-| **Settings** | View and change models, thinking level, routing, skill switches, streaming, history, and memory persistence. |
+| **Memory** | Browse and edit durable household and per-user memories (entity aliases, mailbox, news preferences). |
+| **Settings** | View and change models, thinking level, routing, skill switches, streaming, history, and conversation-memory persistence. |
 | **Activity** | Recent turn traces: route, tool calls, matched skills, errors. |
 
 When multiple HA Agent config entries exist, use the header dropdown to switch entries.

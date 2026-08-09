@@ -55,6 +55,7 @@ class LoopState:
     include_full_tool_catalog: bool = False
     preferred_tool_names: list[str] = field(default_factory=list)
     pagination_pending: dict[str, Any] = field(default_factory=dict)
+    suppress_pagination: bool = False
     preserve_stream_ui: bool = False
     last_draft_answer: str = ""
     override_block_count: int = 0
@@ -1076,6 +1077,73 @@ def _infer_reading_kind(goal: str) -> str | None:
     return None
 
 
+_PLACE_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "with",
+        "what",
+        "how",
+        "about",
+        "anything",
+        "please",
+        "room",
+        "rooms",
+        "bedroom",
+        "in",
+        "is",
+        "are",
+        "was",
+        "of",
+        "to",
+        "my",
+        "our",
+        "me",
+        "this",
+        "that",
+        "current",
+        "currently",
+        "check",
+        "again",
+        "status",
+        "value",
+        "reading",
+        "sensor",
+        "entity",
+        "home",
+        "outside",
+        "outdoor",
+        "inside",
+        "indoor",
+    }
+)
+
+
+def _goal_place_tokens(goal: str, reading_kind: str | None = None) -> list[str]:
+    """Distinctive place/person tokens from the goal (not the reading type)."""
+    text = (goal or "").strip().lower()
+    if not text:
+        return []
+    skip = set(_PLACE_STOPWORDS)
+    if reading_kind:
+        skip.add(reading_kind)
+        for marker in dict(_READING_KIND_MARKERS).get(reading_kind, ()):
+            skip.update(re.findall(r"[a-z0-9]{3,}", marker.lower()))
+        if reading_kind == "aqi":
+            skip.update({"air", "quality"})
+        if reading_kind == "temperature":
+            skip.update({"temp", "temps", "degrees", "celsius", "fahrenheit"})
+    tokens: list[str] = []
+    for tok in re.findall(r"[a-z0-9]{3,}", text):
+        if tok in skip or tok in tokens:
+            continue
+        tokens.append(tok)
+        if len(tokens) >= 6:
+            break
+    return tokens
+
+
 def _entity_text_blob(entity: dict[str, Any]) -> str:
     return " ".join(
         str(entity.get(key) or "")
@@ -1088,6 +1156,28 @@ def _entity_text_blob(entity: dict[str, Any]) -> str:
             "state",
         )
     ).lower()
+
+
+def _entity_matches_place(
+    entity: dict[str, Any],
+    place_tokens: list[str],
+) -> bool:
+    """True when an entity appears to belong to one of the place tokens."""
+    if not place_tokens:
+        return True
+    blob = _entity_text_blob(entity)
+    return any(tok in blob for tok in place_tokens)
+
+
+def _suppress_search_pagination(loop_state: LoopState) -> None:
+    """Stop encouraging offset paging of unrelated entity-search results."""
+    loop_state.suppress_pagination = True
+    loop_state.pagination_pending = {}
+    loop_state.mcp_guidance = [
+        hint
+        for hint in loop_state.mcp_guidance
+        if not str(hint).startswith("PAGINATION:")
+    ]
 
 
 def _entity_matches_reading_kind(entity: dict[str, Any], kind: str) -> bool:
@@ -1158,24 +1248,41 @@ def _empty_entity_search_hint(
     reading_kind = _infer_reading_kind(loop_state.plan_goal) or _infer_reading_kind(
         query
     )
+    place_tokens = _goal_place_tokens(
+        loop_state.plan_goal or query,
+        reading_kind,
+    )
     parts = [
         f"SEARCH RESULT: no matching entities (retry {attempt}/"
         f"{_MAX_EMPTY_ENTITY_SEARCH_TRIES})."
     ]
     if attempt < _MAX_EMPTY_ENTITY_SEARCH_TRIES:
-        if reading_kind and (
-            not has_domain or len(tokens) > 1 or reading_kind not in query.lower()
-        ):
+        # Prefer a place/person token (jonathan) over paging the reading type
+        # (temperature) — multi-word "jonathan temperature" often returns 0.
+        if place_tokens and (len(tokens) > 1 or not has_domain or reading_kind):
+            primary = place_tokens[0]
+            kind_bit = (
+                f" Then pick the {reading_kind} entity for that place "
+                "(READING CANDIDATES / name match) and ha_get_state it."
+                if reading_kind
+                else " Then ha_get_state the best match."
+            )
             parts.append(
-                f"Retry with single-token query=`{reading_kind}` and "
-                "domain_filter=`sensor`, then pick the place match from the list "
-                f"(do not invent a {reading_kind} value)."
+                f"Retry with single-token query=`{primary}` and "
+                f"domain_filter=`sensor`.{kind_bit} Do not invent a value; "
+                "do not page through unrelated sensors."
             )
         elif not has_domain:
             parts.append(
                 "Retry with a shorter single-token query and set "
                 "`domain_filter` to the entity domain that matches the goal "
                 "(often `sensor` for readings)."
+            )
+        elif reading_kind and reading_kind not in query.lower():
+            parts.append(
+                f"Retry with single-token query=`{reading_kind}` and "
+                "domain_filter=`sensor`, then pick the place match from the list "
+                f"(do not invent a {reading_kind} value)."
             )
         elif len(tokens) > 1:
             alt = " / ".join(f"`{tok}`" for tok in tokens[:4])
@@ -1261,10 +1368,38 @@ def analyze_search_tool_result(
     reading_kind = _infer_reading_kind(loop_state.plan_goal) or _infer_reading_kind(
         str(arguments.get("query") or "")
     )
+    place_tokens = _goal_place_tokens(loop_state.plan_goal, reading_kind)
     if _is_entity_search_result(tool_name, data) and reading_kind:
         matches = _reading_matches_from_entries(entries, reading_kind)
-        if matches:
-            listed = "; ".join(_format_reading_candidate(item) for item in matches)
+        place_matches = [
+            item for item in matches if _entity_matches_place(item, place_tokens)
+        ]
+        if place_tokens and matches and not place_matches:
+            # e.g. query=temperature returned attic/guestroom — not Jonathan.
+            primary = place_tokens[0]
+            _suppress_search_pagination(loop_state)
+            hint = (
+                f"Found {reading_kind} sensors but none matching "
+                f"{'/'.join(place_tokens)} ({len(entries)} hits). "
+                f"Retry ha_search with query=`{primary}` and "
+                "domain_filter=`sensor`, then ha_get_state the place "
+                f"{reading_kind} entity. Do not paginate unrelated "
+                f"{reading_kind} sensors; do not invent a value."
+            )
+            if hint not in loop_state.mcp_guidance:
+                loop_state.mcp_guidance.insert(0, hint)
+            mark_plan_tool_unproductive(
+                loop_state,
+                tool_name,
+                f"search missed place {reading_kind} sensors",
+            )
+            return True
+        ranked = place_matches or matches
+        if ranked:
+            # Stop paging once we have a place-matched reading candidate.
+            if place_matches:
+                _suppress_search_pagination(loop_state)
+            listed = "; ".join(_format_reading_candidate(item) for item in ranked)
             hint = (
                 f"READING CANDIDATES ({reading_kind}): {listed}. "
                 f"Call ha_get_state on the best place match. Do not use "
@@ -1277,17 +1412,23 @@ def analyze_search_tool_result(
             )
             return False
         # Hits exist but none match the asked reading — keep searching.
-        next_query = reading_kind
+        next_query = place_tokens[0] if place_tokens else reading_kind
         hint = (
             f"No {reading_kind} sensors in these results "
             f"({len(entries)} unrelated hits). Retry ha_search with "
             f"query=`{next_query}` and domain_filter=`sensor`"
-            + (", or paginate has_more" if has_more else "")
+            + (
+                f". Prefer the place token over paging all {reading_kind} sensors"
+                if place_tokens
+                else (", or paginate has_more" if has_more else "")
+            )
             + f". Do not answer a {reading_kind} value from energy/voltage/"
             "other sensors."
         )
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
+        if place_tokens:
+            _suppress_search_pagination(loop_state)
         mark_plan_tool_unproductive(
             loop_state,
             tool_name,
@@ -1497,10 +1638,12 @@ def analyze_entity_lookup_result(
                 probe[key] = nested.get(key)
 
     kind = _infer_reading_kind(loop_state.plan_goal)
+    place_tokens = _goal_place_tokens(loop_state.plan_goal, kind)
     if kind and not _entity_matches_reading_kind(probe, kind):
+        place_q = place_tokens[0] if place_tokens else kind
         hint = (
             f"STATE MISMATCH: `{looked_up}` is not a {kind} sensor. "
-            f"ha_search for query=`{kind}` with domain_filter=`sensor`, pick a "
+            f"ha_search for query=`{place_q}` with domain_filter=`sensor`, pick a "
             f"{kind} entity for the place, then ha_get_state that id. Do not "
             f"report this value as {kind}."
         )
@@ -1510,6 +1653,24 @@ def analyze_entity_lookup_result(
             loop_state,
             tool_name,
             f"state mismatch for {kind}: {looked_up}",
+        )
+        return True
+
+    if kind and place_tokens and not _entity_matches_place(probe, place_tokens):
+        primary = place_tokens[0]
+        hint = (
+            f"STATE PLACE MISMATCH: `{looked_up}` is a {kind} sensor but does "
+            f"not match {'/'.join(place_tokens)}. ha_search query=`{primary}` "
+            f"with domain_filter=`sensor`, then ha_get_state the matching "
+            f"{kind} entity. Do not report this value as "
+            f"{'/'.join(place_tokens)}'s {kind}."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        mark_plan_tool_unproductive(
+            loop_state,
+            tool_name,
+            f"place mismatch for {kind}: {looked_up}",
         )
         return True
 
