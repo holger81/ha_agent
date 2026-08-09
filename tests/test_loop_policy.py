@@ -185,12 +185,13 @@ def test_mark_reasoning_stuck_sets_message() -> None:
 
 
 def test_mark_iteration_outcome_stops_after_repeated_blocks() -> None:
-    """Two unproductive duplicate-block iterations force stuck."""
+    """Repeated unproductive duplicate-block iterations force stuck."""
     policy = _load_loop_policy()
     state = policy.LoopState()
-    state.iteration_had_duplicate_block = True
-    policy.mark_iteration_outcome(state)
-    assert state.stuck is False
+    for _ in range(policy._MAX_UNPRODUCTIVE_ITERATIONS - 1):
+        state.iteration_had_duplicate_block = True
+        policy.mark_iteration_outcome(state)
+        assert state.stuck is False
     state.iteration_had_duplicate_block = True
     policy.mark_iteration_outcome(state)
     assert state.stuck is True
@@ -1191,19 +1192,123 @@ def test_analyze_search_tool_result_empty_ha_search_soft_recovery() -> None:
         }
     )
 
-    policy.analyze_search_tool_result(
+    unproductive = policy.analyze_search_tool_result(
         state,
         "home_assistant__ha_search",
         output,
         {"query": "jonathan temperature"},
     )
 
+    assert unproductive is True
+    assert state.empty_entity_search_attempts == 1
     assert state.mcp_guidance
     hint = state.mcp_guidance[0]
     assert "no matching entities" in hint
     assert "domain_filter" in hint
     assert "single-token" in hint
+    assert "Do not answer yet" in hint
     assert "Answer the user from these results" not in hint
+
+
+def test_analyze_search_tool_result_allows_multiple_empty_retries() -> None:
+    """Empty entity searches get several progressive retries before giving up."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps(
+        {
+            "success": True,
+            "query": "outdoor aqi",
+            "entities": [],
+            "entity_total_matches": 0,
+        }
+    )
+    args = {"query": "outdoor aqi", "domain_filter": "sensor"}
+
+    for _ in range(3):
+        assert (
+            policy.analyze_search_tool_result(
+                state, "home_assistant__ha_search", output, args
+            )
+            is True
+        )
+
+    assert state.empty_entity_search_attempts == 3
+    # Latest hint should be the exhausted-retry message.
+    assert any("Do not repeat the same" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_entity_lookup_miss_nudges_comparable_search() -> None:
+    """Missing entity_id reopens the plan and points at comparable ha_search."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="anything about outdoor aqi?",
+        route="action",
+        tool_steps=[
+            {"toolName": "home_assistant__ha_get_state"},
+            {"toolName": "home_assistant__ha_search"},
+        ],
+    )
+    # Pretend the skill step was marked done from a "successful" MCP envelope.
+    state.plan_step_statuses[0] = "done"
+    state.plan_completed_tools.append("home_assistant__ha_get_state")
+
+    output = json.dumps(
+        {
+            "success": False,
+            "error": {
+                "code": "ENTITY_NOT_FOUND",
+                "message": "Entity not found",
+            },
+            "entity_id": "sensor.purpleair_san_jose_home_outdoor_5min_mean",
+        }
+    )
+    unproductive = policy.analyze_entity_lookup_result(
+        state,
+        "home_assistant__ha_get_state",
+        output,
+        {
+            "data": {
+                "entity_id": "sensor.purpleair_san_jose_home_outdoor_5min_mean",
+            }
+        },
+    )
+
+    assert unproductive is True
+    assert state.plan_step_statuses[0] == "needs_work"
+    assert "home_assistant__ha_get_state" not in state.plan_completed_tools
+    assert state.mcp_guidance
+    hint = state.mcp_guidance[0]
+    assert "ENTITY LOOKUP FAILED" in hint
+    assert "domain_filter=`sensor`" in hint
+    assert "ha_search" in hint
+    assert "unit_of_measurement" in hint
+    assert "Do not answer yet" in hint
+
+
+def test_analyze_entity_lookup_unavailable_state_nudges_search() -> None:
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "outdoor air quality"
+    output = json.dumps(
+        {
+            "data": {
+                "entity_id": "sensor.purpleair_airquality_a",
+                "state": "unavailable",
+            }
+        }
+    )
+    assert (
+        policy.analyze_entity_lookup_result(
+            state,
+            "home_assistant__ha_get_state",
+            output,
+            {"entity_id": "sensor.purpleair_airquality_a"},
+        )
+        is True
+    )
+    assert any("comparable" in hint for hint in state.mcp_guidance)
 
 
 def test_analyze_search_tool_result_counts_ha_search_entities() -> None:

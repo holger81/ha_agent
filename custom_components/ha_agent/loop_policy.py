@@ -59,6 +59,7 @@ class LoopState:
     last_draft_answer: str = ""
     override_block_count: int = 0
     discovery_streak: int = 0
+    empty_entity_search_attempts: int = 0
     mcp_tool_catalog: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
@@ -99,7 +100,8 @@ _REASONING_TOOL_MENTION = re.compile(
     r"\b([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)\b",
     re.IGNORECASE,
 )
-_MAX_UNPRODUCTIVE_ITERATIONS = 2
+_MAX_UNPRODUCTIVE_ITERATIONS = 4
+_MAX_EMPTY_ENTITY_SEARCH_TRIES = 3
 _REASONING_WILL_CALL = re.compile(
     r"\b(?:will|should|i'?ll|going to)\s+call\s+`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?",
     re.IGNORECASE,
@@ -955,29 +957,47 @@ def _is_entity_search_result(tool_name: str, data: dict[str, Any]) -> bool:
 
 
 def _empty_entity_search_hint(
+    loop_state: LoopState,
     tool_name: str,
     arguments: dict[str, Any],
 ) -> str:
-    """Soft recovery when entity search returns no matches."""
+    """Soft recovery when entity search returns no matches (progressive tries)."""
     query = str(arguments.get("query") or "").strip()
     domain = arguments.get("domain_filter") or arguments.get("domain")
     has_domain = bool(str(domain or "").strip())
-    multi_token = len(query.split()) > 1
-    parts = ["SEARCH RESULT: no matching entities."]
-    if not has_domain:
-        parts.append(
-            "Retry once with a shorter single-token query and set "
-            "`domain_filter` from the tool MCP params to the entity domain "
-            "that matches the user's goal."
-        )
-    elif multi_token:
-        parts.append(
-            "Retry once with a shorter single-token query; keep domain_filter."
-        )
+    tokens = [tok for tok in re.findall(r"[a-z0-9]{3,}", query.lower()) if tok]
+    attempt = loop_state.empty_entity_search_attempts
+    parts = [
+        f"SEARCH RESULT: no matching entities (retry {attempt}/"
+        f"{_MAX_EMPTY_ENTITY_SEARCH_TRIES})."
+    ]
+    if attempt < _MAX_EMPTY_ENTITY_SEARCH_TRIES:
+        if not has_domain:
+            parts.append(
+                "Retry with a shorter single-token query and set "
+                "`domain_filter` to the entity domain that matches the goal "
+                "(often `sensor` for readings)."
+            )
+        elif len(tokens) > 1:
+            alt = " / ".join(f"`{tok}`" for tok in tokens[:4])
+            parts.append(
+                f"Retry with one distinctive token ({alt}); keep domain_filter. "
+                "Multi-word phrases often miss entities whose names interleave "
+                "other words."
+            )
+        else:
+            parts.append(
+                "Retry with a different distinctive token from the user goal "
+                "(not the full sentence), keep domain_filter, and scan the "
+                "full entity list — match friendly_name / unit_of_measurement "
+                "to the requested reading."
+            )
+        parts.append("Do not answer yet; search again with different arguments.")
     else:
         parts.append(
-            f"Do not repeat the same `{tool_name}` query. Try a different "
-            "distinctive token, or tell the user no matching entity was found."
+            f"Do not repeat the same `{tool_name}` query. If still empty after "
+            "varied short tokens + domain_filter, tell the user no matching "
+            "entity was found."
         )
     return " ".join(parts)
 
@@ -987,17 +1007,17 @@ def analyze_search_tool_result(
     tool_name: str,
     output: str,
     arguments: dict[str, Any],
-) -> None:
-    """Summarize list/search tool output and point at MCP metadata for the next step."""
+) -> bool:
+    """Summarize list/search tool output. Return True when the call was unproductive."""
     if output.startswith("Tool error:"):
-        return
+        return False
     data = _parse_tool_result_json(output)
     if not data:
-        return
+        return False
 
     entries = _search_result_entries(data)
     if entries is None:
-        return
+        return False
 
     filtered = _coerce_bool(arguments.get("unread_only") or arguments.get("unreadOnly"))
     has_more = _coerce_bool(data.get("hasMore") or data.get("has_more"))
@@ -1007,10 +1027,16 @@ def analyze_search_tool_result(
         empty = True
 
     if empty and _is_entity_search_result(tool_name, data):
-        hint = _empty_entity_search_hint(tool_name, arguments)
+        loop_state.empty_entity_search_attempts += 1
+        hint = _empty_entity_search_hint(loop_state, tool_name, arguments)
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
-        return
+        mark_plan_tool_unproductive(
+            loop_state,
+            tool_name,
+            "empty entity search — retry with shorter tokens",
+        )
+        return True
 
     if empty:
         summary = "SEARCH RESULT: the query returned no items."
@@ -1021,7 +1047,11 @@ def analyze_search_tool_result(
             lead_in=summary,
             after_tool=tool_name,
         )
-        return
+        return True
+
+    # A productive entity search resets the empty-retry ladder.
+    if _is_entity_search_result(tool_name, data):
+        loop_state.empty_entity_search_attempts = 0
 
     summary = f"SEARCH RESULT: returned {len(entries)} item(s)."
     if filtered:
@@ -1030,6 +1060,163 @@ def analyze_search_tool_result(
         summary += " More pages are available per the tool result metadata."
 
     _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)
+    return False
+
+
+def _entity_id_from_arguments(arguments: dict[str, Any]) -> str | None:
+    """Pull an entity_id from common MCP argument shapes."""
+    for key in ("entity_id", "entityId"):
+        value = arguments.get(key)
+        if isinstance(value, str) and "." in value.strip():
+            return value.strip()
+        if isinstance(value, list) and value:
+            first = value[0]
+            if isinstance(first, str) and "." in first.strip():
+                return first.strip()
+    data = arguments.get("data")
+    if isinstance(data, dict):
+        nested = data.get("entity_id") or data.get("entityId")
+        if isinstance(nested, str) and "." in nested.strip():
+            return nested.strip()
+    return None
+
+
+def _entity_lookup_failed_id(
+    tool_name: str,
+    output: str,
+    arguments: dict[str, Any],
+) -> str | None:
+    """Return entity_id when a state/entity lookup missed or is unusable."""
+    entity_id = _entity_id_from_arguments(arguments)
+    if not entity_id:
+        return None
+    lowered = tool_name.lower()
+    if not any(
+        marker in lowered
+        for marker in ("get_state", "ha_get_entity", "get_entity")
+    ):
+        return None
+
+    if output.startswith("Tool error:"):
+        err = output.lower()
+        if "not found" in err or "unavailable" in err or "unknown entity" in err:
+            return entity_id
+        return None
+
+    data = _parse_tool_result_json(output)
+    if not data:
+        return None
+
+    if data.get("success") is False:
+        error = data.get("error")
+        code = ""
+        message = ""
+        if isinstance(error, dict):
+            code = str(error.get("code") or "")
+            message = str(error.get("message") or "")
+        else:
+            message = str(error or "")
+        blob = f"{code} {message}".lower()
+        if (
+            "not_found" in code.lower()
+            or "not found" in blob
+            or "unavailable" in blob
+            or "unknown entity" in blob
+        ):
+            return entity_id
+
+    state_payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    if isinstance(state_payload, dict):
+        state = str(state_payload.get("state") or "").strip().lower()
+        if state in {"unavailable", "unknown"}:
+            return entity_id
+    return None
+
+
+def _comparable_entity_search_hint(entity_id: str, goal: str) -> str:
+    """Guide a search for replacements when a concrete entity_id failed."""
+    domain = entity_id.split(".", 1)[0] if "." in entity_id else "sensor"
+    id_tokens = [
+        tok
+        for tok in re.findall(r"[a-z0-9]{3,}", entity_id.lower().replace(".", " "))
+        if tok not in {domain, "home", "mean", "min", "san", "jose"}
+    ]
+    goal_tokens = [
+        tok
+        for tok in re.findall(r"[a-z0-9]{3,}", (goal or "").lower())
+        if tok
+        not in {
+            "the",
+            "and",
+            "for",
+            "with",
+            "what",
+            "how",
+            "about",
+            "anything",
+            "please",
+        }
+    ]
+    # Prefer goal tokens; fall back to entity-id fragments.
+    candidates = list(dict.fromkeys([*goal_tokens, *id_tokens]))[:5]
+    token_hint = (
+        ", ".join(f"`{tok}`" for tok in candidates)
+        if candidates
+        else "a short distinctive token from the user goal"
+    )
+    return (
+        f"ENTITY LOOKUP FAILED: `{entity_id}` is missing or unusable. "
+        "Do not conclude the capability is gone. Call ha_search for comparable "
+        f"entity ids: domain_filter=`{domain}`, try short tokens ({token_hint}), "
+        "and review the full returned list. Prefer candidates whose "
+        "friendly_name / unit_of_measurement match the requested reading type, "
+        "then ha_get_state the best match. Do not answer yet."
+    )
+
+
+def analyze_entity_lookup_result(
+    loop_state: LoopState,
+    tool_name: str,
+    output: str,
+    arguments: dict[str, Any],
+) -> bool:
+    """Detect failed entity lookups and nudge a comparable-entity search."""
+    entity_id = _entity_lookup_failed_id(tool_name, output, arguments)
+    if not entity_id:
+        return False
+    hint = _comparable_entity_search_hint(entity_id, loop_state.plan_goal)
+    if hint not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(0, hint)
+    mark_plan_tool_unproductive(
+        loop_state,
+        tool_name,
+        f"entity lookup failed for {entity_id}",
+    )
+    return True
+
+
+def mark_plan_tool_unproductive(
+    loop_state: LoopState,
+    tool_name: str,
+    note: str,
+) -> None:
+    """Re-open a plan step that completed without useful progress."""
+    if tool_name in loop_state.plan_completed_tools:
+        loop_state.plan_completed_tools = [
+            name for name in loop_state.plan_completed_tools if name != tool_name
+        ]
+    step_index = _match_plan_step_index(loop_state, tool_name)
+    if step_index is None:
+        return
+    loop_state.plan_step_statuses[step_index] = "needs_work"
+    if step_index < len(loop_state.plan_step_notes):
+        loop_state.plan_step_notes[step_index] = note.strip()[:200]
+    else:
+        loop_state.plan_step_notes.extend(
+            [""] * (step_index - len(loop_state.plan_step_notes) + 1)
+        )
+        loop_state.plan_step_notes[step_index] = note.strip()[:200]
+    loop_state.plan_current_step_index = step_index
 
 
 def _normalize_tool_query(query: str) -> str:

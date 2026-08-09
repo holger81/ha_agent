@@ -50,6 +50,7 @@ from .loop_policy import (
     LoopState,
     TurnOutcome,
     analyze_discovery_tool_result,
+    analyze_entity_lookup_result,
     analyze_search_tool_result,
     build_empty_response_nudge,
     build_failed_tools_answer_nudge,
@@ -579,6 +580,7 @@ def _handle_tool_result(
     )
     phase = "error" if output.startswith("Tool error:") else "done"
     verification_failed = False
+    logical_fail = False
     if phase == "done":
         loop_state.iteration_had_successful_tool = True
         if is_discovery_tool_name(tool_name):
@@ -604,18 +606,25 @@ def _handle_tool_result(
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
     record_pagination_state(loop_state, tool_name, output, arguments)
+    record_mcp_guidance(loop_state, tool_name, output)
+    if phase == "done":
+        analyze_discovery_tool_result(loop_state, tool_name, output, arguments)
+        if analyze_search_tool_result(loop_state, tool_name, output, arguments):
+            logical_fail = True
+        if analyze_entity_lookup_result(loop_state, tool_name, output, arguments):
+            logical_fail = True
+        note_executed_tool(loop_state, tool_name, succeeded=not logical_fail)
     record_plan_tool_result(
         loop_state,
         tool_name,
         arguments,
-        succeeded=phase == "done",
+        succeeded=phase == "done" and not logical_fail,
         verification_failed=verification_failed,
     )
-    record_mcp_guidance(loop_state, tool_name, output)
-    if phase == "done":
-        analyze_discovery_tool_result(loop_state, tool_name, output, arguments)
-        analyze_search_tool_result(loop_state, tool_name, output, arguments)
-        note_executed_tool(loop_state, tool_name, succeeded=True)
+    if logical_fail:
+        # Empty search / missing entity_id already re-opened the plan step; keep
+        # the iteration from counting as productive tool progress.
+        loop_state.iteration_had_successful_tool = False
     messages.append(tool_result_message(call, output))
     return phase, AgentDelta(
         tool=_tool_event(
