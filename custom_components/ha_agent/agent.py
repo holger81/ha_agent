@@ -73,6 +73,7 @@ from .loop_policy import (
     mark_reasoning_stuck,
     maybe_omit_plan_steps_from_reasoning,
     maybe_suspend_skill_plan_from_reasoning,
+    note_executed_tool,
     reasoning_execution_mismatch,
     reconcile_plan_after_tools,
     reconcile_plan_before_answer,
@@ -614,6 +615,7 @@ def _handle_tool_result(
     if phase == "done":
         analyze_discovery_tool_result(loop_state, tool_name, output, arguments)
         analyze_search_tool_result(loop_state, tool_name, output, arguments)
+        note_executed_tool(loop_state, tool_name, succeeded=True)
     messages.append(tool_result_message(call, output))
     return phase, AgentDelta(
         tool=_tool_event(

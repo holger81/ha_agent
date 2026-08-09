@@ -988,8 +988,76 @@ def test_analyze_discovery_tool_result_prompts_direct_call() -> None:
         output,
         {"query": "mail_mcp__imap_bulk_update_flags"},
     )
-    assert any("Call this tool directly now" in hint for hint in state.mcp_guidance)
+    assert any("Call this tool via callTool now" in hint for hint in state.mcp_guidance)
     assert any("message_ids" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_discovery_misses_doc_only_tool_name_hits() -> None:
+    """searchTool(short name) often returns docs that mention it, not the tool."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps(
+        [
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "description": "Use ha_search() to find entity IDs first.",
+            },
+            {
+                "toolName": "home_assistant__ha_get_entity",
+                "description": "Related: ha_search() finds entities by name.",
+            },
+        ]
+    )
+    policy.analyze_discovery_tool_result(
+        state,
+        "searchTool",
+        output,
+        {"query": "ha_search", "domain": "smart-home"},
+    )
+    assert state.mcp_guidance
+    assert any("did not return a tool named" in hint for hint in state.mcp_guidance)
+    # Prefix inferred from returned hits — not hard-coded per domain.
+    assert any("home_assistant__ha_search" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_discovery_miss_infers_prefix_from_any_server() -> None:
+    """Doc-only misses use the server prefix from whatever tools were returned."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps(
+        [
+            {
+                "toolName": "mail_mcp__imap_get_message",
+                "description": "Fetch one message. Prefer imap_search_messages first.",
+            }
+        ]
+    )
+    policy.analyze_discovery_tool_result(
+        state,
+        "searchTool",
+        output,
+        {"query": "imap_search_messages", "domain": "email"},
+    )
+    assert any("mail_mcp__imap_search_messages" in hint for hint in state.mcp_guidance)
+
+
+def test_analyze_discovery_streak_stops_loops() -> None:
+    """Repeated discovery without a concrete call injects a stop-looping hint."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    output = json.dumps(
+        [{"toolName": "home_assistant__ha_call_service", "description": "control"}]
+    )
+    policy.analyze_discovery_tool_result(
+        state, "searchTool", output, {"query": "temperature"}
+    )
+    policy.analyze_discovery_tool_result(
+        state, "searchTool", output, {"query": "get_state"}
+    )
+    assert state.discovery_streak >= 2
+    assert any("Stop discovery loops" in hint for hint in state.mcp_guidance)
+    assert any("home_assistant__" in hint for hint in state.mcp_guidance)
+    assert not any("ha_search" in hint for hint in state.mcp_guidance)
 
 
 def test_build_mcp_tool_adherence_hint_uses_catalog() -> None:

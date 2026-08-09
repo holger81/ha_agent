@@ -58,6 +58,7 @@ class LoopState:
     preserve_stream_ui: bool = False
     last_draft_answer: str = ""
     override_block_count: int = 0
+    discovery_streak: int = 0
     mcp_tool_catalog: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
@@ -1031,6 +1032,101 @@ def analyze_search_tool_result(
     _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)
 
 
+def _normalize_tool_query(query: str) -> str:
+    return query.strip().lower().replace("-", "_")
+
+
+def _tool_name_matches_query(tool_name: str, query: str) -> bool:
+    """True when discovery query names this tool (not merely mentions it in docs)."""
+    if not query or not tool_name:
+        return False
+    if _tool_names_match(tool_name, query):
+        return True
+    name = tool_name.lower()
+    q = _normalize_tool_query(query)
+    tail = name.split("__")[-1]
+    return tail == q or name.endswith("__" + q) or name == q
+
+
+def _best_discovered_tool_for_query(
+    entries: list[dict[str, Any]],
+    query: str,
+) -> str | None:
+    """Pick a returned toolName that is the query target, if any."""
+    if not query:
+        return None
+    weak: str | None = None
+    q = _normalize_tool_query(query)
+    for entry in entries:
+        name = entry.get("toolName") or entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        cleaned = name.strip()
+        if _tool_name_matches_query(cleaned, query):
+            return cleaned
+        # Weak: query is a long-enough substring of the toolName itself.
+        if len(q) >= 4 and q in cleaned.lower().replace("-", "_"):
+            weak = weak or cleaned
+    return weak
+
+
+def _query_looks_like_tool_name(query: str) -> bool:
+    """True for snake_case / server__tool identifiers (any MCP server)."""
+    q = _normalize_tool_query(query)
+    if not q or " " in q.strip():
+        return False
+    if not re.fullmatch(r"[a-z0-9_]+", q):
+        return False
+    # Require a separator so plain words ("temperature") are not treated as tools.
+    return "__" in q or "_" in q
+
+
+def _server_prefix_from_tool_names(names: list[str]) -> str | None:
+    """Most common `server` prefix from `server__tool` names, if any."""
+    counts: dict[str, int] = {}
+    for name in names:
+        cleaned = name.strip()
+        if "__" not in cleaned:
+            continue
+        prefix = cleaned.split("__", 1)[0].strip()
+        if prefix:
+            counts[prefix] = counts.get(prefix, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def _infer_server_prefix(
+    loop_state: LoopState,
+    entries: list[dict[str, Any]],
+) -> str | None:
+    """Infer MCP server id from discovery hits, else the cached tool catalog."""
+    names: list[str] = []
+    for entry in entries:
+        name = entry.get("toolName") or entry.get("name")
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    prefix = _server_prefix_from_tool_names(names)
+    if prefix:
+        return prefix
+    return _server_prefix_from_tool_names(list(loop_state.mcp_tool_catalog.keys()))
+
+
+def note_executed_tool(
+    loop_state: LoopState,
+    tool_name: str,
+    *,
+    succeeded: bool,
+) -> None:
+    """Reset discovery-loop counters after a concrete upstream tool succeeds."""
+    if not succeeded:
+        return
+    lowered = tool_name.lower()
+    if "searchtool" in lowered or "searchtoolsfordomain" in lowered:
+        return
+    loop_state.discovery_streak = 0
+
+
 def analyze_discovery_tool_result(
     loop_state: LoopState,
     tool_name: str,
@@ -1043,22 +1139,63 @@ def analyze_discovery_tool_result(
     lowered = tool_name.lower()
     if "searchtool" not in lowered and "searchtoolsfordomain" not in lowered:
         return
+    entries = _discovery_tool_entries(output)
     cache_discovery_tool_catalog(loop_state, output)
+    loop_state.discovery_streak += 1
     query = str(arguments.get("query") or arguments.get("domain") or "").strip()
-    if "searchtool" in lowered and query:
-        for key in loop_state.mcp_tool_catalog:
-            if _tool_names_match(key, query):
-                hint = build_mcp_tool_adherence_hint(
-                    loop_state,
-                    key,
-                    lead_in=(
-                        f"searchTool loaded `{key}`. Call this tool directly now "
-                        "— do not repeat searchTool for the same tool name."
-                    ),
-                )
-                if hint not in loop_state.mcp_guidance:
-                    loop_state.mcp_guidance.insert(0, hint)
-                return
+    server_prefix = _infer_server_prefix(loop_state, entries)
+
+    matched: str | None = None
+    if query:
+        matched = _best_discovered_tool_for_query(entries, query)
+        if matched is None:
+            for key in loop_state.mcp_tool_catalog:
+                if _tool_name_matches_query(key, query):
+                    matched = key
+                    break
+
+    if matched:
+        hint = build_mcp_tool_adherence_hint(
+            loop_state,
+            matched,
+            lead_in=(
+                f"searchTool loaded `{matched}`. Call this tool via callTool now "
+                "— do not repeat searchTool for the same tool name."
+            ),
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        return
+
+    if query and _query_looks_like_tool_name(query) and entries:
+        # Proxy search often ranks tools that *mention* the name in docs above
+        # the tool whose toolName actually matches.
+        q = _normalize_tool_query(query)
+        full_name = f"{server_prefix}__{q}" if server_prefix else f"server__{q}"
+        hint = (
+            f"searchTool did not return a tool named `{query}` (only docs that "
+            f"mention it). Retry once with full toolName `{full_name}`, "
+            "then callTool — do not re-search."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        # Still fall through for streak>=2 so doc-only tool-name searches
+        # cannot loop forever on miss-hints alone.
+
+    if loop_state.discovery_streak >= 2:
+        example = (
+            f" (e.g. `{server_prefix}__…` from prior hits)"
+            if server_prefix
+            else " from prior hits or session tools"
+        )
+        hint = (
+            "Stop discovery loops. callTool a concrete toolName"
+            f"{example} — not another searchTool."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+        return
+
     if loop_state.skill_plan_override:
         next_tool = _infer_next_catalog_tool(loop_state, after_tool=tool_name)
         if next_tool:
