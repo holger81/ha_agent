@@ -407,6 +407,90 @@ def test_skill_matches_route_rejects_email_on_news() -> None:
     )
 
 
+def test_skill_matches_route_rejects_ha_status_on_email_hint() -> None:
+    """HA entity-lookup skills must not serve an email soft-domain ask."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    status = Skill(
+        id="status-1",
+        slug="look-up-sensor-or-entity-status",
+        title="Look up sensor or entity status",
+        description="Status lookup",
+        triggers=["temperature", "status", "look up"],
+        body="",
+        tool_steps=[{"toolName": "home_assistant__ha_search"}],
+        route_scope="chat",
+    )
+    assert selection.skill_matches_route(status, "chat", domain_hint="email") is False
+    assert selection.infer_soft_domain_hint("do I have new emails?") == "email"
+
+
+@pytest.mark.asyncio
+async def test_email_ask_does_not_select_ha_status_skill(monkeypatch) -> None:
+    """Email questions must not pin the HA status skill without a domain_hint."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+
+    status = Skill(
+        id="status-1",
+        slug="look-up-sensor-or-entity-status",
+        title="Look up sensor or entity status",
+        description="Parameterized status lookup",
+        triggers=[
+            "what is the temperature in {{query}}",
+            "status of {{query}}",
+            "look up {{query}} sensor",
+        ],
+        body="",
+        tool_steps=[{"toolName": "home_assistant__ha_search"}],
+        route_scope="action",
+    )
+    email = Skill(
+        id="email-1",
+        slug="check-and-read-unread-emails",
+        title="Check and Read Unread Emails",
+        description="Check inbox",
+        triggers=["check email", "new emails", "unread"],
+        body="",
+        tool_steps=[{"toolName": "mail_mcp__imap_search_messages"}],
+        route_scope="email",
+    )
+
+    store = MagicMock()
+    store.list_enabled.return_value = [status, email]
+    store.search.return_value = [MagicMock(id=status.id), MagicMock(id=email.id)]
+    store.load_skills_by_ids.side_effect = lambda ids: [
+        skill for skill in (status, email) if skill.id in ids
+    ]
+
+    async def _executor(func):
+        return func()
+
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(side_effect=_executor)
+    monkeypatch.setattr(selection, "get_skill_store", MagicMock(return_value=store))
+
+    llm = MagicMock()
+    llm.chat = AsyncMock()
+
+    result = await selection.resolve_skills_for_turn(
+        hass,
+        "entry",
+        llm,
+        MagicMock(),
+        "do I have new emails?",
+        route="chat",
+        domain_hint=None,
+    )
+
+    assert all(skill.slug != status.slug for skill in result.skills)
+    if result.skills:
+        assert result.skills[0].slug == email.slug
+
+
 def test_skill_matches_route_rejects_email_tools_on_action() -> None:
     """Email tool_steps must not match the action route even without keywords."""
     selection = _load("skills.selection")

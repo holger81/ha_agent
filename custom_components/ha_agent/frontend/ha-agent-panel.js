@@ -81,6 +81,7 @@ class HaAgentPanel extends HTMLElement {
     this._memoryUserId = "";
     this._memoryFilter = "all";
     this._memoryNotice = null;
+    this._editingMemory = null;
     this._identityEnrollment = null;
     this._identityOverrideUserId = "";
     this._identityNotice = null;
@@ -735,6 +736,7 @@ class HaAgentPanel extends HTMLElement {
     this.shadowRoot
       .querySelector('[data-action="memory-reload"]')
       ?.addEventListener("click", async () => {
+        this._editingMemory = null;
         await this._loadMemoriesTab();
         this._render();
       });
@@ -801,6 +803,105 @@ class HaAgentPanel extends HTMLElement {
         }
       });
 
+    this.shadowRoot.querySelectorAll("[data-action='memory-edit']").forEach((el) => {
+      el.addEventListener("click", () => {
+        const scope = el.getAttribute("data-scope");
+        const key = el.getAttribute("data-key");
+        const userId = el.getAttribute("data-user-id") || "";
+        if (!scope || !key) return;
+        const source =
+          scope === "system"
+            ? (this._systemMemory || []).find((entry) => entry.key === key)
+            : (this._allUserMemory || []).find(
+                (entry) =>
+                  entry.key === key &&
+                  String(entry.agent_user_id || "") === String(userId),
+              );
+        if (!source) {
+          this._memoryNotice = `Could not load ${key} for editing.`;
+          this._render();
+          return;
+        }
+        this._editingMemory = {
+          id: this._memoryEditId(scope, userId, key),
+          scope,
+          key,
+          agent_user_id: userId,
+          value: this._formatMemoryValue(source.value),
+          route_scope: source.route_scope || "",
+          notes: source.notes || "",
+        };
+        this._memoryNotice = null;
+        this._render();
+      });
+    });
+
+    this.shadowRoot
+      .querySelector('[data-action="memory-cancel"]')
+      ?.addEventListener("click", () => {
+        this._editingMemory = null;
+        this._render();
+      });
+
+    this.shadowRoot
+      .querySelector('[data-action="memory-save"]')
+      ?.addEventListener("click", async () => {
+        const draft = this._editingMemory;
+        if (!draft) return;
+        const row = this.shadowRoot.querySelector("tr.memory-edit-row");
+        const key =
+          row?.querySelector('[data-memory-edit="key"]')?.value?.trim() || "";
+        const valueRaw =
+          row?.querySelector('[data-memory-edit="value"]')?.value ?? "";
+        const route =
+          row?.querySelector('[data-memory-edit="route"]')?.value?.trim() || "";
+        const notes =
+          row?.querySelector('[data-memory-edit="notes"]')?.value?.trim() || "";
+        // Keep typed fields if we need to re-render after validation/API errors.
+        this._editingMemory = {
+          ...draft,
+          key: key || draft.key,
+          value: valueRaw,
+          route_scope: route,
+          notes,
+        };
+        if (!key) {
+          this._memoryNotice = "Key is required.";
+          this._render();
+          return;
+        }
+        try {
+          await this._call("ha_agent/memory/set", {
+            entry_id: this._entryId,
+            entry: {
+              scope: draft.scope,
+              agent_user_id:
+                draft.scope === "user" ? draft.agent_user_id : undefined,
+              key,
+              value: parseValue(valueRaw),
+              route_scope: route || null,
+              notes,
+            },
+          });
+          if (key !== draft.key) {
+            await this._call("ha_agent/memory/delete", {
+              entry_id: this._entryId,
+              scope: draft.scope,
+              key: draft.key,
+              agent_user_id:
+                draft.scope === "user" ? draft.agent_user_id : undefined,
+            });
+          }
+          this._editingMemory = null;
+          this._memoryNotice = `Updated ${key}.`;
+          await this._loadMemoriesTab();
+          this._render();
+        } catch (err) {
+          this._memoryNotice = this._formatApiError(err, "ha_agent/memory/set");
+          this._render();
+        }
+      });
+
     this.shadowRoot.querySelectorAll("[data-action='memory-delete']").forEach((el) => {
       el.addEventListener("click", async () => {
         const key = el.getAttribute("data-key");
@@ -814,6 +915,14 @@ class HaAgentPanel extends HTMLElement {
             key,
             agent_user_id: scope === "user" ? userId : undefined,
           });
+          if (
+            this._editingMemory &&
+            this._editingMemory.scope === scope &&
+            this._editingMemory.key === key &&
+            String(this._editingMemory.agent_user_id || "") === String(userId || "")
+          ) {
+            this._editingMemory = null;
+          }
           this._memoryNotice = `Forgot ${key}.`;
           await this._loadMemoriesTab();
           this._render();
@@ -823,6 +932,10 @@ class HaAgentPanel extends HTMLElement {
         }
       });
     });
+  }
+
+  _memoryEditId(scope, agentUserId, key) {
+    return `${scope}:${agentUserId || ""}:${key}`;
   }
 
   async _setIdentityOverride(agentUserId) {
@@ -3202,6 +3315,24 @@ class HaAgentPanel extends HTMLElement {
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--divider-color, #ddd); vertical-align: top; }
       tr.active-skill-row { background: color-mix(in srgb, var(--primary-color) 12%, transparent); }
+      tr.memory-edit-row { background: color-mix(in srgb, var(--primary-color) 10%, transparent); }
+      .memory-edit-input {
+        width: 100%;
+        min-width: 6rem;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--divider-color, #ccc);
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, inherit);
+      }
+      .memory-edit-value { min-width: 10rem; }
+      .memory-row-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        white-space: nowrap;
+      }
       .status-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
       .chip { padding: 6px 10px; border-radius: 999px; background: var(--secondary-background-color, #eee); font-size: 0.9em; }
       .banner { padding: 10px; border-radius: 8px; background: #fff4d6; margin-bottom: 12px; }
@@ -4618,6 +4749,24 @@ class HaAgentPanel extends HTMLElement {
   }
 
   _renderMemoryRow(entry, scope, ownerLabel) {
+    const userId = entry.agent_user_id || "";
+    const editId = this._memoryEditId(scope, userId, entry.key);
+    const editing = this._editingMemory && this._editingMemory.id === editId;
+    if (editing) {
+      const draft = this._editingMemory;
+      return `<tr class="memory-edit-row">
+      <td>${this._escape(scope === "system" ? "Household" : "User")}</td>
+      <td>${this._escape(ownerLabel || "—")}</td>
+      <td><input class="memory-edit-input" data-memory-edit="key" value="${this._escape(draft.key)}" /></td>
+      <td><input class="memory-edit-input memory-edit-value" data-memory-edit="value" value="${this._escape(draft.value)}" /></td>
+      <td><input class="memory-edit-input" data-memory-edit="route" value="${this._escape(draft.route_scope)}" placeholder="route" /></td>
+      <td><input class="memory-edit-input" data-memory-edit="notes" value="${this._escape(draft.notes)}" placeholder="notes" /></td>
+      <td class="memory-row-actions">
+        <button type="button" data-action="memory-save">Save</button>
+        <button type="button" data-action="memory-cancel">Cancel</button>
+      </td>
+    </tr>`;
+    }
     return `<tr>
       <td>${this._escape(scope === "system" ? "Household" : "User")}</td>
       <td>${this._escape(ownerLabel || "—")}</td>
@@ -4625,7 +4774,10 @@ class HaAgentPanel extends HTMLElement {
       <td>${this._escape(this._formatMemoryValue(entry.value))}</td>
       <td>${this._escape(entry.route_scope || "—")}</td>
       <td>${this._escape(entry.notes || "—")}</td>
-      <td><button type="button" data-action="memory-delete" data-scope="${scope}" data-key="${this._escape(entry.key)}" data-user-id="${this._escape(entry.agent_user_id || "")}">Forget</button></td>
+      <td class="memory-row-actions">
+        <button type="button" data-action="memory-edit" data-scope="${scope}" data-key="${this._escape(entry.key)}" data-user-id="${this._escape(userId)}">Edit</button>
+        <button type="button" data-action="memory-delete" data-scope="${scope}" data-key="${this._escape(entry.key)}" data-user-id="${this._escape(userId)}">Forget</button>
+      </td>
     </tr>`;
   }
 

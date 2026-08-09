@@ -38,13 +38,14 @@ _SELECT_PROMPT = (
     "control/mutation skills (turn on/off, toggle).\n"
     "- Never pick an unrelated device, area, or domain skill.\n"
     "- When a domain_hint is present, prefer skills for that domain.\n"
-    "- Never pick an action/device skill for an email or news request, or an "
-    "email/news skill for a device-control request."
+    "- Never pick a skill whose tools/domain conflict with the request "
+    "(e.g. Home Assistant entity search for an email ask, or mail tools for "
+    "a device-control request)."
 )
 
 _ROUTE_DOMAIN_MARKERS: dict[str, re.Pattern[str]] = {
     "email": re.compile(
-        r"\b(email|e-?mail|inbox|imap|mailbox|unread)\b",
+        r"\b(emails?|e-?mails?|inbox|imap|mailbox|unread)\b",
         re.IGNORECASE,
     ),
     "news": re.compile(
@@ -71,10 +72,14 @@ _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
     "email": re.compile(r"mail|imap|inbox|email|mailbox", re.IGNORECASE),
     "news": re.compile(r"news|curate|headline|rss", re.IGNORECASE),
     "action": re.compile(
-        r"ha_call_service|turn_on|turn_off|snapshot|open_cover|close_cover",
+        r"ha_call_service|turn_on|turn_off|snapshot|open_cover|close_cover|"
+        r"home_assistant|ha_search|ha_get_|ha_bulk_|ha_set_",
         re.IGNORECASE,
     ),
 }
+
+# Soft workflow domains on chat (not device-control/action).
+_SOFT_DOMAIN_HINTS = frozenset(key for key in _ROUTE_DOMAIN_MARKERS if key != "action")
 
 _CATALOG_LIMIT = 30
 # Minimum Jaccard overlap between user tokens and skill triggers/title before
@@ -167,9 +172,7 @@ def skill_applies_to_user_text(user_text: str, skill: Skill) -> bool:
     return _jaccard_content_overlap(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
 
 
-def _prefer_overlapping_catalog(
-    user_text: str, catalog: list[Skill]
-) -> list[Skill]:
+def _prefer_overlapping_catalog(user_text: str, catalog: list[Skill]) -> list[Skill]:
     """Prefer skills that apply; else any content overlap; else full catalog."""
     if not catalog:
         return catalog
@@ -208,6 +211,42 @@ def _skill_text(skill: Skill) -> str:
     )
 
 
+def infer_soft_domain_hint(user_text: str) -> str | None:
+    """Infer a soft chat-domain hint from user text via shared markers.
+
+    Returns a domain only when exactly one soft domain matches (not action).
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return None
+    hits = [
+        domain
+        for domain in _SOFT_DOMAIN_HINTS
+        if _ROUTE_DOMAIN_MARKERS[domain].search(text)
+    ]
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def _skill_step_names(skill: Skill) -> list[str]:
+    return [
+        str(step.get("toolName") or "")
+        for step in (skill.tool_steps or [])
+        if step.get("toolName")
+    ]
+
+
+def _skill_tool_domains(skill: Skill) -> set[str]:
+    """Specialized domains implied by a skill's concrete tool steps."""
+    domains: set[str] = set()
+    for name in _skill_step_names(skill):
+        for domain, pattern in _ROUTE_TOOL_MARKERS.items():
+            if pattern.search(name):
+                domains.add(domain)
+    return domains
+
+
 def skill_matches_route(
     skill: Skill,
     route: str | None,
@@ -219,25 +258,26 @@ def skill_matches_route(
     hint = (domain_hint or "").lower()
     scope = (skill.route_scope or "").lower()
 
-    # Soft domain hint on chat: prefer matching scope, reject obvious conflicts.
-    if route_key in {"", "chat"} and hint in {"email", "news"}:
-        if scope and scope != hint and scope in {"email", "news", "action"}:
+    # Soft domain on chat: prefer matching scope/tools; reject other domains.
+    if route_key in {"", "chat"} and hint in _SOFT_DOMAIN_HINTS:
+        if scope and scope != hint and scope in _SPECIALIZED_ROUTES:
             return False
         if scope == hint:
             return True
         target = _ROUTE_DOMAIN_MARKERS.get(hint)
         if target and target.search(_skill_text(skill)):
             return True
-        step_names = [
-            str(step.get("toolName") or "")
-            for step in (skill.tool_steps or [])
-            if step.get("toolName")
-        ]
+        step_names = _skill_step_names(skill)
         marker = _ROUTE_TOOL_MARKERS.get(hint)
         if marker and any(marker.search(name) for name in step_names):
             return True
-        # Keep non-domain skills eligible; FTS/LLM can still reject them.
-        return scope not in {"email", "news", "action"} or not scope
+        tool_domains = _skill_tool_domains(skill)
+        # Concrete tools for a different specialized domain cannot serve this hint
+        # (e.g. ha_search status skill on an email ask).
+        if tool_domains and hint not in tool_domains:
+            return False
+        # Keep unmarked / tool-less skills eligible for FTS/LLM.
+        return scope not in _SPECIALIZED_ROUTES or not scope
 
     if route_key not in _SPECIALIZED_ROUTES:
         return True
@@ -357,6 +397,7 @@ async def select_skills_with_llm(
     structured_output_enabled: bool = True,
     history: list[dict[str, str]] | None = None,
     trace: Any | None = None,
+    domain_hint: str | None = None,
 ) -> tuple[list[Skill], str]:
     """Ask the classifier model which catalog skill(s) apply; return (skills, raw)."""
     from ..llm_telemetry import record_llm_call
@@ -395,6 +436,8 @@ async def select_skills_with_llm(
         "route": route or "general",
         "available_skills": entries,
     }
+    if domain_hint:
+        payload["domain_hint"] = domain_hint
     if recent_messages:
         payload["recent_messages"] = recent_messages
     messages = [
@@ -594,6 +637,11 @@ async def resolve_skills_for_turn(
         )
 
     store = get_skill_store(hass, entry_id)
+    # Prefer router/prepass hint; otherwise infer from user text markers so
+    # soft-domain asks (any scope) cannot pin conflicting HA/status skills.
+    effective_hint = (domain_hint or "").strip().lower() or infer_soft_domain_hint(
+        user_text
+    )
 
     # Cheap unsupervised pins on chat (domain hint / strong FTS). Weak or
     # ambiguous FTS hits fall through to the LLM intent classifier below.
@@ -604,7 +652,7 @@ async def resolve_skills_for_turn(
                 store,
                 user_text,
                 max_inject=max_inject,
-                domain_hint=domain_hint,
+                domain_hint=effective_hint,
             )
 
         chat_result = await hass.async_add_executor_job(_chat_only)
@@ -623,8 +671,8 @@ async def resolve_skills_for_turn(
         )
 
     candidates, fts_matches = await hass.async_add_executor_job(_load)
-    candidates = _filter_by_route(candidates, route, domain_hint=domain_hint)
-    fts_matches = _filter_by_route(fts_matches, route, domain_hint=domain_hint)
+    candidates = _filter_by_route(candidates, route, domain_hint=effective_hint)
+    fts_matches = _filter_by_route(fts_matches, route, domain_hint=effective_hint)
     if not candidates and not fts_matches:
         if is_chat_route(route):
             return SkillSelectionResult(
@@ -661,7 +709,7 @@ async def resolve_skills_for_turn(
     catalog = _filter_by_route(
         _merge_catalog(fts_matches, candidates),
         route,
-        domain_hint=domain_hint,
+        domain_hint=effective_hint,
     )
     if not catalog:
         return SkillSelectionResult(
@@ -685,13 +733,14 @@ async def resolve_skills_for_turn(
         structured_output_enabled=structured_output_enabled,
         history=history,
         trace=trace,
+        domain_hint=effective_hint,
     )
     raw_preview = raw[:240] if raw else None
     if selected:
         # Trust the classifier's intent pick; only apply route/domain filters.
-        filtered = _filter_by_route(
-            selected, route, domain_hint=domain_hint
-        )[:max_inject]
+        filtered = _filter_by_route(selected, route, domain_hint=effective_hint)[
+            :max_inject
+        ]
         if not filtered:
             return SkillSelectionResult(
                 skills=[],

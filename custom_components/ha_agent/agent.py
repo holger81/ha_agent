@@ -177,7 +177,11 @@ from .skills.runtime import (
     override_turn_eligible_for_learning,
     should_offer_skill_creation,
 )
-from .skills.selection import resolve_skills_for_turn
+from .skills.selection import (
+    infer_soft_domain_hint,
+    resolve_skills_for_turn,
+    skill_matches_route,
+)
 from .skills.store import get_skill_store
 from .status import record_route, update_agent_status
 from .subagent import WorkerResult, run_worker
@@ -1673,6 +1677,31 @@ async def run_agent(
             structured_output_enabled=structured,
             trace=trace,
         )
+
+    # Soft-domain markers in the user text fill domain_hint when the router
+    # omitted one (keeps email/news/… asks from pinning HA status skills).
+    if not route_resolution.domain_hint:
+        inferred_hint = infer_soft_domain_hint(turn_goal or user_text)
+        if inferred_hint:
+            route_resolution = RouteResolution(
+                route=route_resolution.route,
+                method=route_resolution.method,
+                classifier_summary=route_resolution.classifier_summary,
+                classifier_detail=route_resolution.classifier_detail,
+                keyword_hint=route_resolution.keyword_hint,
+                classifier_raw=route_resolution.classifier_raw,
+                domain_hint=inferred_hint,
+            )
+    if matched_skills and route_resolution.domain_hint:
+        matched_skills = [
+            skill
+            for skill in matched_skills
+            if skill_matches_route(
+                skill,
+                route.value,
+                domain_hint=route_resolution.domain_hint,
+            )
+        ]
 
     # Resolve skills before route alignment so any matched skill can own the route.
     if skills_config.use_enabled and (
