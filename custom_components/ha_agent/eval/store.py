@@ -229,6 +229,129 @@ class EvalStore:
         )
         return [dict(row) for row in rows]
 
+    def list_model_scores(
+        self,
+        *,
+        sort_by: str = "mean_score",
+        descending: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return latest eval scores for every previously benchmarked model.
+
+        Uses each model's most recent ``model_benchmarks`` run (by ``run_at``),
+        aggregates case scores into per-task means, then ranks models.
+        """
+        from .models import EVAL_TASKS
+
+        conn = self._connection()
+        rows = conn.execute(
+            "SELECT model_id, task, case_id, score, passed, latency_ms, "
+            "run_id, run_at FROM model_benchmarks ORDER BY run_at DESC, run_id DESC"
+        ).fetchall()
+        if not rows:
+            return []
+
+        latest_run_by_model: dict[str, str] = {}
+        latest_at_by_model: dict[str, float] = {}
+        for row in rows:
+            model_id = str(row["model_id"])
+            if model_id in latest_run_by_model:
+                continue
+            latest_run_by_model[model_id] = str(row["run_id"])
+            latest_at_by_model[model_id] = float(row["run_at"] or 0.0)
+
+        # (model_id, task) -> list of case rows from that model's latest run
+        grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in rows:
+            model_id = str(row["model_id"])
+            if str(row["run_id"]) != latest_run_by_model[model_id]:
+                continue
+            grouped.setdefault((model_id, str(row["task"])), []).append(row)
+
+        download_rows = conn.execute(
+            "SELECT model_id, status, eval_score FROM model_downloads"
+        ).fetchall()
+        downloads = {str(row["model_id"]): dict(row) for row in download_rows}
+
+        models: list[dict[str, Any]] = []
+        for model_id, run_id in latest_run_by_model.items():
+            task_scores: list[dict[str, Any]] = []
+            task_map: dict[str, float] = {}
+            total_cases = 0
+            total_passed = 0
+            for task in EVAL_TASKS:
+                items = grouped.get((model_id, task))
+                if not items:
+                    continue
+                latencies = [
+                    float(item["latency_ms"])
+                    for item in items
+                    if item["latency_ms"] is not None
+                ]
+                passed_count = sum(1 for item in items if item["passed"])
+                score = sum(float(item["score"]) for item in items) / len(items)
+                task_scores.append(
+                    {
+                        "task": task,
+                        "model": model_id,
+                        "score": score,
+                        "case_count": len(items),
+                        "passed_count": passed_count,
+                        "avg_latency_ms": (
+                            sum(latencies) / len(latencies) if latencies else None
+                        ),
+                    }
+                )
+                task_map[task] = score
+                total_cases += len(items)
+                total_passed += passed_count
+
+            if not task_scores:
+                continue
+            mean_score = sum(item["score"] for item in task_scores) / len(task_scores)
+            download = downloads.get(model_id) or {}
+            models.append(
+                {
+                    "model_id": model_id,
+                    "mean_score": mean_score,
+                    "task_scores": task_scores,
+                    "scores_by_task": task_map,
+                    "case_count": total_cases,
+                    "passed_count": total_passed,
+                    "last_run_id": run_id,
+                    "last_run_at": latest_at_by_model.get(model_id),
+                    "download_status": download.get("status"),
+                }
+            )
+
+        sort_key = (sort_by or "mean_score").strip().lower()
+        task_sort = (
+            sort_key.removeprefix("task:")
+            if sort_key.startswith("task:")
+            else (sort_key if sort_key in EVAL_TASKS else None)
+        )
+
+        def _sort_key(item: dict[str, Any]) -> tuple[int, float]:
+            """(missing_flag, ordered_value) — missing task scores always last."""
+            if sort_key == "last_run_at":
+                value = float(item.get("last_run_at") or 0.0)
+                ordered = -value if descending else value
+                return (0, ordered)
+            if task_sort:
+                scores = item.get("scores_by_task") or {}
+                if task_sort not in scores:
+                    return (1, 0.0)
+                value = float(scores[task_sort])
+                ordered = -value if descending else value
+                return (0, ordered)
+            value = float(item.get("mean_score") or 0.0)
+            ordered = -value if descending else value
+            return (0, ordered)
+
+        models.sort(key=_sort_key)
+        for index, item in enumerate(models, start=1):
+            item["rank"] = index
+        return models
+
     def has_benchmarked_model(self, model_id: str) -> bool:
         row = (
             self._connection()

@@ -321,3 +321,77 @@ def test_eval_store_persists_runs_and_download_history() -> None:
         assert latest is not None
         assert latest["status"] == "completed"
         store.close()
+
+
+def test_list_model_scores_ranks_all_previously_evaluated_models() -> None:
+    """Leaderboard keeps every model's latest scores, not only the last suite."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "eval.db"
+        store = eval_store.EvalStore(db_path)
+        store.connect()
+
+        run_a = store.create_run("entry-1")
+        run_a.status = "completed"
+        run_a.case_scores = [
+            eval_models.EvalCaseScore(
+                case_id="chat_1",
+                task="chat",
+                model="alpha",
+                score=0.5,
+                passed=False,
+            ),
+            eval_models.EvalCaseScore(
+                case_id="action_1",
+                task="action",
+                model="alpha",
+                score=0.5,
+                passed=False,
+            ),
+        ]
+        store.finish_run(run_a)
+
+        run_b = store.create_run("entry-1")
+        run_b.status = "completed"
+        run_b.case_scores = [
+            eval_models.EvalCaseScore(
+                case_id="chat_1",
+                task="chat",
+                model="beta",
+                score=1.0,
+                passed=True,
+            ),
+            eval_models.EvalCaseScore(
+                case_id="action_1",
+                task="action",
+                model="beta",
+                score=0.8,
+                passed=True,
+            ),
+            eval_models.EvalCaseScore(
+                case_id="chat_1",
+                task="chat",
+                model="alpha",
+                score=0.7,
+                passed=True,
+            ),
+        ]
+        store.finish_run(run_b)
+
+        ranked = store.list_model_scores(sort_by="mean_score", descending=True)
+        assert [item["model_id"] for item in ranked] == ["beta", "alpha"]
+        assert ranked[0]["rank"] == 1
+        assert ranked[0]["mean_score"] == pytest.approx(0.9)
+        assert ranked[0]["scores_by_task"]["chat"] == pytest.approx(1.0)
+        assert ranked[0]["scores_by_task"]["action"] == pytest.approx(0.8)
+        # Alpha's latest run only has chat (0.7); older action score is not mixed in.
+        assert ranked[1]["scores_by_task"] == {"chat": pytest.approx(0.7)}
+        assert ranked[1]["mean_score"] == pytest.approx(0.7)
+
+        by_chat = store.list_model_scores(sort_by="task:chat", descending=True)
+        assert by_chat[0]["model_id"] == "beta"
+        by_action = store.list_model_scores(sort_by="action", descending=True)
+        assert by_action[0]["model_id"] == "beta"
+        assert by_action[1]["model_id"] == "alpha"
+        assert "action" not in by_action[1]["scores_by_task"]
+
+        store.close()

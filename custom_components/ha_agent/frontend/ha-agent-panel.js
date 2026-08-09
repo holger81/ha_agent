@@ -56,6 +56,8 @@ class HaAgentPanel extends HTMLElement {
     this._evalCases = [];
     this._evalPollTimer = null;
     this._evalStatusFingerprint = "";
+    this._evalRankSortBy = "mean_score";
+    this._evalRankSortDesc = true;
     this._activityNotice = null;
     this._discoverRequireDownloadApproval = true;
     this._discoverRequireTrialApproval = true;
@@ -1084,7 +1086,56 @@ class HaAgentPanel extends HTMLElement {
       runCompletedCases: runProgress.completed_cases,
       runProgressPct: runProgress.progress_percent ?? null,
       taskScoresLen: (run.task_scores || []).length,
+      modelScoresLen: (data.model_scores || []).length,
+      topModel: (data.model_scores || [])[0]?.model_id || "",
+      topMean: (data.model_scores || [])[0]?.mean_score ?? null,
     });
+  }
+
+  _rankedModelScores(modelScores) {
+    const sortBy = this._evalRankSortBy || "mean_score";
+    const descending = this._evalRankSortDesc !== false;
+    const tasks = ["chat", "action", "email", "news", "planner", "verifier"];
+    const taskSort = sortBy.startsWith("task:")
+      ? sortBy.slice(5)
+      : tasks.includes(sortBy)
+        ? sortBy
+        : null;
+    const rows = [...(modelScores || [])];
+    const valueFor = (item) => {
+      if (sortBy === "last_run_at") return Number(item.last_run_at || 0);
+      if (taskSort) {
+        const scores = item.scores_by_task || {};
+        return Object.prototype.hasOwnProperty.call(scores, taskSort)
+          ? Number(scores[taskSort])
+          : null;
+      }
+      return Number(item.mean_score || 0);
+    };
+    rows.sort((a, b) => {
+      const av = valueFor(a);
+      const bv = valueFor(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return descending ? bv - av : av - bv;
+    });
+    return rows.map((item, index) => ({ ...item, rank: index + 1 }));
+  }
+
+  _evalRankSortHeader(label, sortBy) {
+    const active = this._evalRankSortBy === sortBy;
+    const arrow = active ? (this._evalRankSortDesc ? " ▼" : " ▲") : "";
+    return `<th class="eval-rank-sort${active ? " active" : ""}" data-action="eval-rank-sort" data-sort-by="${this._escape(sortBy)}" title="Sort by ${this._escape(label)}">${this._escape(label)}${arrow}</th>`;
+  }
+
+  _formatEvalRunAt(epoch) {
+    if (!epoch) return "—";
+    try {
+      return new Date(Number(epoch) * 1000).toLocaleString();
+    } catch (_err) {
+      return "—";
+    }
   }
 
   _clearEvalPoll() {
@@ -3308,6 +3359,18 @@ class HaAgentPanel extends HTMLElement {
       .eval-table-wrap table {
         min-width: 640px;
       }
+      .eval-table-wrap table.eval-rank-table {
+        min-width: 820px;
+      }
+      th.eval-rank-sort {
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+      }
+      th.eval-rank-sort:hover,
+      th.eval-rank-sort.active {
+        color: var(--primary-color);
+      }
       .eval-section .activity-hint {
         margin-top: 0;
         margin-bottom: 8px;
@@ -4609,6 +4672,11 @@ class HaAgentPanel extends HTMLElement {
     const progress = run.progress || {};
     const recommendation = run.settings_recommendation || {};
     const taskScores = run.task_scores || [];
+    const rankedModels = this._rankedModelScores(this._evalStatus?.model_scores || []);
+    const scoreByModelId = Object.fromEntries(
+      rankedModels.map((item) => [item.model_id, item]),
+    );
+    const rankTasks = ["chat", "action", "email", "news", "planner", "verifier"];
     const caps = this._evalCapabilities || run.server_capabilities || {};
     const summary = caps.summary || {};
     const settings = (recommendation.recommendations || [])
@@ -4634,6 +4702,32 @@ class HaAgentPanel extends HTMLElement {
         </tr>`,
       )
       .join("");
+    const rankRows = rankedModels
+      .map((item) => {
+        const taskCells = rankTasks
+          .map((task) => {
+            const score = item.scores_by_task?.[task];
+            return `<td>${score == null ? "—" : Number(score).toFixed(2)}</td>`;
+          })
+          .join("");
+        return `<tr>
+          <td>${item.rank}</td>
+          <td class="model-id-short" title="${this._escape(item.model_id)}">${this._escape(this._shortModelId(item.model_id))}</td>
+          <td><strong>${Number(item.mean_score || 0).toFixed(2)}</strong></td>
+          ${taskCells}
+          <td>${item.passed_count || 0}/${item.case_count || 0}</td>
+          <td>${this._escape(this._formatEvalRunAt(item.last_run_at))}</td>
+        </tr>`;
+      })
+      .join("");
+    const rankHeaders = [
+      "<th>#</th>",
+      "<th>Model</th>",
+      this._evalRankSortHeader("Mean", "mean_score"),
+      ...rankTasks.map((task) => this._evalRankSortHeader(task, `task:${task}`)),
+      "<th>Passed</th>",
+      this._evalRankSortHeader("Last run", "last_run_at"),
+    ].join("");
     const presetIni = recommendation.preset_ini || "";
     const applyMode =
       recommendation.apply_mode || (summary.props_writable ? "props" : "preset");
@@ -4663,6 +4757,9 @@ class HaAgentPanel extends HTMLElement {
         const source = item.is_preset ? "preset" : item.source || "—";
         const progressText = this._formatCatalogProgress(item.progress);
         const loaded = loadedModels.includes(item.model_id);
+        const prior = scoreByModelId[item.model_id];
+        const scoreText =
+          prior?.mean_score != null ? Number(prior.mean_score).toFixed(2) : "—";
         const canRetry =
           item.failed ||
           item.status === "downloading" ||
@@ -4683,6 +4780,7 @@ class HaAgentPanel extends HTMLElement {
         return `<tr>
           <td class="model-id-short">${this._escape(this._shortModelId(item.model_id))}</td>
           <td>${this._escape(item.status || "—")}</td>
+          <td>${this._escape(scoreText)}</td>
           <td>${this._escape(source)}</td>
           <td>${this._escape(this._formatModalities(item.input_modalities))}</td>
           <td>${this._escape(this._formatModalities(item.output_modalities))}</td>
@@ -4761,7 +4859,18 @@ class HaAgentPanel extends HTMLElement {
         </section>
 
         <section class="eval-section">
-          <h3>Eval results</h3>
+          <h3>Model ranking</h3>
+          <p class="activity-hint">Latest scores for every previously evaluated model. Click a column header to rank by mean, task, or last run.</p>
+          <div class="eval-table-wrap">
+            <table class="eval-rank-table">
+              <thead><tr>${rankHeaders}</tr></thead>
+              <tbody>${rankRows || `<tr><td colspan="${3 + rankTasks.length + 2}">No evaluated models yet. Run an eval suite to populate rankings.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="eval-section">
+          <h3>Latest eval run</h3>
           <p class="activity-hint">Benchmarks loaded models by default. Preload or Discover to try catalog models on your router.</p>
           ${recommendation.summary ? `<p>${this._escape(recommendation.summary)}</p>` : ""}
           ${settings ? `<h4>Recommended server settings</h4><ul>${settings}</ul>` : ""}
@@ -4781,8 +4890,8 @@ class HaAgentPanel extends HTMLElement {
           <p class="activity-hint">All models known to the llama.cpp router. Use Eval to benchmark one model; Retry for failed downloads.</p>
           <div class="eval-table-wrap">
             <table>
-              <thead><tr><th>Model</th><th>Status</th><th>Source</th><th>Input</th><th>Output</th><th>Progress</th><th>Failed</th><th></th></tr></thead>
-              <tbody>${catalogRows || '<tr><td colspan="8">Probe the server to load the model catalog.</td></tr>'}</tbody>
+              <thead><tr><th>Model</th><th>Status</th><th>Mean score</th><th>Source</th><th>Input</th><th>Output</th><th>Progress</th><th>Failed</th><th></th></tr></thead>
+              <tbody>${catalogRows || '<tr><td colspan="9">Probe the server to load the model catalog.</td></tr>'}</tbody>
             </table>
           </div>
         </section>
@@ -4827,6 +4936,18 @@ class HaAgentPanel extends HTMLElement {
   }
 
   _bindEvalEvents() {
+    this.shadowRoot.querySelectorAll('[data-action="eval-rank-sort"]').forEach((header) => {
+      header.addEventListener("click", () => {
+        const sortBy = header.getAttribute("data-sort-by") || "mean_score";
+        if (this._evalRankSortBy === sortBy) {
+          this._evalRankSortDesc = !this._evalRankSortDesc;
+        } else {
+          this._evalRankSortBy = sortBy;
+          this._evalRankSortDesc = true;
+        }
+        this._render();
+      });
+    });
     this.shadowRoot
       .querySelector('[data-action="eval-probe"]')
       ?.addEventListener("click", async () => {

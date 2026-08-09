@@ -63,6 +63,7 @@ async def get_eval_status(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
 
     store = get_eval_store(hass, entry_id)
     latest = await hass.async_add_executor_job(store.latest_run)
+    model_scores = await hass.async_add_executor_job(store.list_model_scores)
     return {
         "running": discover_active or eval_active,
         "pipeline": (
@@ -70,7 +71,24 @@ async def get_eval_status(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
         ),
         "discover": discover_status_dict(discover_state),
         "run": eval_run_to_dict(eval_state) if eval_active and eval_state else latest,
+        "model_scores": model_scores,
     }
+
+
+async def list_model_scores(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    sort_by: str = "mean_score",
+    descending: bool = True,
+) -> list[dict[str, Any]]:
+    """Return ranked latest scores for all previously evaluated models."""
+    store = get_eval_store(hass, entry_id)
+
+    def _load() -> list[dict[str, Any]]:
+        return store.list_model_scores(sort_by=sort_by, descending=descending)
+
+    return await hass.async_add_executor_job(_load)
 
 
 async def list_eval_runs(

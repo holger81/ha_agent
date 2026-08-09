@@ -107,6 +107,7 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_threads_update)
     websocket_api.async_register_command(hass, ws_threads_delete)
     websocket_api.async_register_command(hass, ws_eval_status)
+    websocket_api.async_register_command(hass, ws_eval_model_scores)
     websocket_api.async_register_command(hass, ws_eval_runs_list)
     websocket_api.async_register_command(hass, ws_eval_run_get)
     websocket_api.async_register_command(hass, ws_eval_start)
@@ -1457,6 +1458,31 @@ async def ws_eval_status(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
     result = await eval_api.get_eval_status(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/eval/models/scores",
+        **_entry_id_schema(
+            {
+                vol.Optional("sort_by"): str,
+                vol.Optional("descending"): bool,
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_eval_model_scores(hass: HomeAssistant, connection, msg: dict) -> None:
+    require_admin(connection)
+    models = await eval_api.list_model_scores(
+        hass,
+        msg["entry_id"],
+        sort_by=str(msg.get("sort_by") or "mean_score"),
+        descending=bool(msg.get("descending", True)),
+    )
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"models": models})
+    )
 
 
 @websocket_api.websocket_command(
