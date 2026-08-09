@@ -117,8 +117,8 @@ def test_reset_restores_default(tmp_path) -> None:
 
 
 def test_create_and_delete_custom_hint(tmp_path) -> None:
-    """Custom rules can be added and removed; built-ins cannot be deleted."""
-    _rh, store = _store(tmp_path)
+    """Custom and built-in rules can be deleted from the store."""
+    rh, store = _store(tmp_path)
     try:
         created = store.create_hint(
             title="Calendar",
@@ -133,9 +133,46 @@ def test_create_and_delete_custom_hint(tmp_path) -> None:
         ids = [h.rule_id for h in store.list_hints()]
         assert created.rule_id in ids
 
-        assert store.delete_hint("missing_field") is False  # built-in protected
+        assert store.delete_hint("missing_field") is True
+        assert store.get_hint("missing_field") is None
         assert store.delete_hint(created.rule_id) is True
         assert store.custom_count() == 0
+
+        # Deleted built-ins stay gone across reconnect (tombstone).
+        store.close()
+        store = rh.RecoveryHintStore(tmp_path / "recovery_hints.db")
+        store.connect()
+        assert store.get_hint("missing_field") is None
+    finally:
+        store.close()
+
+
+def test_purge_removes_retired_search_entities_hint(tmp_path) -> None:
+    """Retired built-ins like ha_search_entities_unavailable are dropped on connect."""
+    rh, store = _store(tmp_path)
+    try:
+        conn = store._connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO recovery_hints "
+            "(rule_id, title, tool_substring, error_pattern, body, "
+            "enabled, is_builtin, priority, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 1, 5, 0)",
+            (
+                "ha_search_entities_unavailable",
+                "ha_search_entities unavailable",
+                "search_entities",
+                r"unknown tool|not found|unavailable",
+                "Skip entity search.",
+            ),
+        )
+        conn.commit()
+        assert store.get_hint("ha_search_entities_unavailable") is not None
+
+        store.close()
+        store = rh.RecoveryHintStore(tmp_path / "recovery_hints.db")
+        store.connect()
+        assert store.get_hint("ha_search_entities_unavailable") is None
+        assert store.get_hint("unknown_tool") is not None
     finally:
         store.close()
 

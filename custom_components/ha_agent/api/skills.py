@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -578,4 +579,219 @@ async def apply_skill_generalize(
         "survivor": result,
         "archived_skill_ids": archived,
         "merged_count": len(members),
+    }
+
+
+async def propose_skill_simplify(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> dict[str, Any]:
+    """Ask a strong model how to simplify/combine skills (preview only)."""
+    from ..skills.simplify import (
+        propose_skill_simplification,
+        resolve_strong_simplify_backend,
+    )
+
+    store = get_skill_store(hass, entry_id)
+
+    def _load() -> list[Skill]:
+        total = max(store.count_skills(), 1)
+        return store.list_recent(limit=total)
+
+    skills = await hass.async_add_executor_job(_load)
+    session = async_get_clientsession(hass)
+    llm = LlmClient(session)
+    backend, model_label = await resolve_strong_simplify_backend(hass, entry_id)
+    try:
+        return await propose_skill_simplification(
+            hass,
+            entry_id,
+            llm,
+            backend,
+            skills=skills,
+            model_label=model_label,
+        )
+    except HomeAssistantError:
+        raise
+    except Exception as err:
+        raise HomeAssistantError(
+            f"Skill simplification propose failed: {err}"
+        ) from err
+
+
+async def apply_skill_simplify(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    proposal_id: str,
+) -> dict[str, Any]:
+    """Apply a previously proposed simplify/combine draft."""
+    from ..skills.simplify import (
+        SkillSimplifyUndo,
+        get_simplify_state,
+        undo_to_dict,
+    )
+
+    state = get_simplify_state(hass, entry_id)
+    proposal = next(
+        (item for item in state.proposals if item.proposal_id == proposal_id),
+        None,
+    )
+    if proposal is None:
+        raise HomeAssistantError(
+            "Simplify proposal not found. Run Simplify skills again."
+        )
+
+    store = get_skill_store(hass, entry_id)
+
+    def _load_members() -> list[Skill]:
+        members: list[Skill] = []
+        for skill_id in proposal.skill_ids:
+            skill = store.get_skill(skill_id)
+            if skill is None:
+                raise HomeAssistantError(f"Skill not found: {skill_id}")
+            if skill.is_builtin:
+                raise HomeAssistantError(
+                    f"Cannot simplify built-in skill: {skill.slug}"
+                )
+            members.append(skill)
+        return members
+
+    members = await hass.async_add_executor_job(_load_members)
+    by_id = {skill.id: skill for skill in members}
+    survivor = by_id.get(proposal.survivor_id) or members[0]
+
+    draft = normalize_skill_draft(proposal.draft, explicit_tool_steps=True)
+    updated = await save_skill_from_draft(
+        hass,
+        entry_id,
+        draft,
+        update_existing=survivor,
+        revision_reason=f"Skill {proposal.action}",
+    )
+
+    def _latest_revision_id() -> str | None:
+        revisions = store.list_revisions(updated.id, limit=1)
+        return revisions[0].id if revisions else None
+
+    revision_id = await hass.async_add_executor_job(_latest_revision_id)
+    if not revision_id:
+        raise HomeAssistantError("Could not record revision for undo.")
+
+    archived_meta: list[dict[str, Any]] = []
+    if proposal.action == "combine" and len(members) > 1:
+
+        def _archive() -> list[dict[str, Any]]:
+            done: list[dict[str, Any]] = []
+            for skill in members:
+                if skill.id == updated.id:
+                    continue
+                done.append(
+                    {
+                        "id": skill.id,
+                        "enabled": bool(skill.enabled),
+                        "parent_id": skill.parent_id,
+                    }
+                )
+                skill.parent_id = updated.id
+                skill.enabled = False
+                store.update_skill(skill)
+            return done
+
+        archived_meta = await hass.async_add_executor_job(_archive)
+        for item in archived_meta:
+            child = await hass.async_add_executor_job(store.get_skill, item["id"])
+            if child is not None:
+                await async_mirror_skill_to_file(hass, entry_id, child)
+
+    state.undo = SkillSimplifyUndo(
+        survivor_id=updated.id,
+        revision_id=revision_id,
+        archived=archived_meta,
+        proposal_id=proposal.proposal_id,
+        summary=(
+            f"{proposal.action.title()}: {updated.title}"
+            + (
+                f" (archived {len(archived_meta)})"
+                if archived_meta
+                else ""
+            )
+        ),
+        created_at=time.time(),
+    )
+    state.proposals = [
+        item for item in state.proposals if item.proposal_id != proposal_id
+    ]
+
+    result = skill_to_dict(updated)
+    result["markdown"] = skill_to_markdown(updated)
+    result["file_path"] = str(
+        skill_file_path(skills_directory(hass, entry_id), updated.slug)
+    )
+    return {
+        "survivor": result,
+        "archived_skill_ids": [item["id"] for item in archived_meta],
+        "action": proposal.action,
+        "undo": undo_to_dict(state.undo),
+        "remaining_proposals": len(state.proposals),
+    }
+
+
+async def undo_skill_simplify(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> dict[str, Any]:
+    """Reverse the last applied simplification (restore survivor + siblings)."""
+    from ..skills.simplify import get_simplify_state, undo_to_dict
+
+    state = get_simplify_state(hass, entry_id)
+    undo = state.undo
+    if undo is None:
+        raise HomeAssistantError("Nothing to undo.")
+
+    store = get_skill_store(hass, entry_id)
+    restored = await restore_skill_revision(hass, entry_id, undo.revision_id)
+
+    def _restore_archived() -> list[str]:
+        restored_ids: list[str] = []
+        for item in undo.archived:
+            skill = store.get_skill(str(item["id"]))
+            if skill is None:
+                continue
+            skill.enabled = bool(item.get("enabled", True))
+            skill.parent_id = item.get("parent_id")
+            store.update_skill(skill)
+            restored_ids.append(skill.id)
+        return restored_ids
+
+    restored_ids = await hass.async_add_executor_job(_restore_archived)
+    for skill_id in restored_ids:
+        child = await hass.async_add_executor_job(store.get_skill, skill_id)
+        if child is not None:
+            await async_mirror_skill_to_file(hass, entry_id, child)
+
+    summary = undo.summary
+    state.undo = None
+    return {
+        "survivor": restored,
+        "restored_skill_ids": restored_ids,
+        "summary": summary,
+        "undo": undo_to_dict(state.undo),
+    }
+
+
+async def get_skill_simplify_status(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> dict[str, Any]:
+    """Return current simplify proposals and undo availability."""
+    from ..skills.simplify import get_simplify_state, proposal_to_dict, undo_to_dict
+
+    state = get_simplify_state(hass, entry_id)
+    return {
+        "proposals": [proposal_to_dict(item) for item in state.proposals],
+        "count": len(state.proposals),
+        "summary": state.summary,
+        "model_used": state.model_used,
+        "undo": undo_to_dict(state.undo),
     }

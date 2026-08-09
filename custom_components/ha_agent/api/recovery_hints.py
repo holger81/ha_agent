@@ -57,13 +57,11 @@ async def delete_recovery_hint(
     entry_id: str,
     rule_id: str,
 ) -> bool:
-    """Delete a custom recovery-hint rule (built-ins cannot be deleted)."""
+    """Delete a recovery-hint rule (built-in or custom)."""
     store = get_recovery_hint_store(hass, entry_id)
     deleted = await hass.async_add_executor_job(store.delete_hint, rule_id)
     if not deleted:
-        raise HomeAssistantError(
-            f"Cannot delete recovery hint (not found or built-in): {rule_id}"
-        )
+        raise HomeAssistantError(f"Recovery hint not found: {rule_id}")
     return True
 
 

@@ -81,6 +81,10 @@ def async_register_handlers(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_skills_revisions_restore)
     websocket_api.async_register_command(hass, ws_skills_generalize_propose)
     websocket_api.async_register_command(hass, ws_skills_generalize_apply)
+    websocket_api.async_register_command(hass, ws_skills_simplify_propose)
+    websocket_api.async_register_command(hass, ws_skills_simplify_apply)
+    websocket_api.async_register_command(hass, ws_skills_simplify_undo)
+    websocket_api.async_register_command(hass, ws_skills_simplify_status)
     websocket_api.async_register_command(hass, ws_route_keywords_list)
     websocket_api.async_register_command(hass, ws_route_keywords_update)
     websocket_api.async_register_command(hass, ws_route_keywords_set_enabled)
@@ -933,6 +937,71 @@ async def ws_skills_generalize_apply(
         survivor_id=msg.get("survivor_id"),
         archive_others=bool(msg.get("archive_others", True)),
     )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/simplify/propose",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_skills_simplify_propose(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await skills_api.propose_skill_simplify(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/simplify/apply",
+        vol.Required("entry_id"): str,
+        vol.Required("proposal_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_skills_simplify_apply(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await skills_api.apply_skill_simplify(
+        hass,
+        msg["entry_id"],
+        proposal_id=str(msg["proposal_id"]),
+    )
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/simplify/undo",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_skills_simplify_undo(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await skills_api.undo_skill_simplify(hass, msg["entry_id"])
+    connection.send_message(websocket_api.result_message(msg["id"], result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_agent/skills/simplify/status",
+        **_entry_id_schema(),
+    }
+)
+@websocket_api.async_response
+async def ws_skills_simplify_status(
+    hass: HomeAssistant, connection, msg: dict
+) -> None:
+    require_admin(connection)
+    result = await skills_api.get_skill_simplify_status(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
 

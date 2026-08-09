@@ -2,8 +2,9 @@
 
 Recovery hints are short directives appended to a failed tool result to help
 the model change strategy. The default rules ship with the integration in
-``loop_policy.enrich_tool_output`` but are fully editable, addable, deletable,
-and resettable from the console UI and persisted per config entry in SQLite.
+``loop_policy.enrich_tool_output`` but are fully editable, addable, deletable
+(including shipped defaults), and resettable from the console UI and persisted
+per config entry in SQLite. Retired built-ins are purged on connect.
 
 Each rule fires on a failed tool result when its (optional) tool-name substring
 and (optional) error-text pattern both match. When the store is unavailable the
@@ -94,6 +95,11 @@ CREATE TABLE IF NOT EXISTS recovery_hints (
     priority INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recovery_hint_tombstones (
+    rule_id TEXT PRIMARY KEY,
+    deleted_at REAL NOT NULL
+);
 """
 
 
@@ -159,6 +165,7 @@ class RecoveryHintStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._seed_defaults()
+        self._purge_obsolete_builtins()
         self._conn.commit()
 
     def close(self) -> None:
@@ -173,18 +180,30 @@ class RecoveryHintStore:
         assert self._conn is not None
         return self._conn
 
+    def _tombstoned_ids(self) -> set[str]:
+        conn = self._conn
+        assert conn is not None
+        rows = conn.execute(
+            "SELECT rule_id FROM recovery_hint_tombstones"
+        ).fetchall()
+        return {str(row["rule_id"]) for row in rows}
+
     def _seed_defaults(self) -> None:
         conn = self._conn
         assert conn is not None
         now = time.time()
+        tombstoned = self._tombstoned_ids()
         for default in DEFAULT_RECOVERY_HINTS:
+            rule_id = str(default["rule_id"])
+            if rule_id in tombstoned:
+                continue
             conn.execute(
                 "INSERT OR IGNORE INTO recovery_hints "
                 "(rule_id, title, tool_substring, error_pattern, body, "
                 "enabled, is_builtin, priority, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)",
                 (
-                    default["rule_id"],
+                    rule_id,
                     default["title"],
                     default["tool_substring"],
                     default["error_pattern"],
@@ -193,6 +212,30 @@ class RecoveryHintStore:
                     now,
                 ),
             )
+
+    def _purge_obsolete_builtins(self) -> None:
+        """Drop shipped built-ins that are no longer in DEFAULT_RECOVERY_HINTS.
+
+        Older installs keep retired rows (e.g. ha_search_entities_unavailable)
+        because seeding uses INSERT OR IGNORE and never removes them.
+        """
+        conn = self._conn
+        assert conn is not None
+        keep = tuple(_DEFAULT_BY_ID.keys())
+        if not keep:
+            return
+        placeholders = ", ".join("?" for _ in keep)
+        conn.execute(
+            f"DELETE FROM recovery_hints WHERE is_builtin = 1 "
+            f"AND rule_id NOT IN ({placeholders})",
+            keep,
+        )
+        # Drop tombstones for rules that are no longer shipped defaults.
+        conn.execute(
+            f"DELETE FROM recovery_hint_tombstones "
+            f"WHERE rule_id NOT IN ({placeholders})",
+            keep,
+        )
 
     def list_hints(self) -> list[RecoveryHint]:
         """Return built-in hints in canonical order then custom rules."""
@@ -278,12 +321,21 @@ class RecoveryHintStore:
         return hint
 
     def delete_hint(self, rule_id: str) -> bool:
-        """Delete a custom recovery-hint rule. Built-ins cannot be deleted."""
+        """Delete a recovery-hint rule (built-in or custom).
+
+        Built-ins are tombstoned so seeding does not recreate them on reload.
+        """
         hint = self.get_hint(rule_id)
-        if hint is None or hint.is_builtin:
+        if hint is None:
             return False
         conn = self._connection()
         conn.execute("DELETE FROM recovery_hints WHERE rule_id = ?", (rule_id,))
+        if hint.is_builtin or rule_id in _DEFAULT_BY_ID:
+            conn.execute(
+                "INSERT OR REPLACE INTO recovery_hint_tombstones "
+                "(rule_id, deleted_at) VALUES (?, ?)",
+                (rule_id, time.time()),
+            )
         conn.commit()
         return True
 

@@ -41,6 +41,11 @@ class HaAgentPanel extends HTMLElement {
     this._skillRevisions = [];
     this._skillNotice = null;
     this._skillMergeClusters = null;
+    this._skillSimplifyProposals = null;
+    this._skillSimplifySummary = "";
+    this._skillSimplifyModel = "";
+    this._skillSimplifyUndo = null;
+    this._skillSimplifyBusy = false;
     this._pendingDraftPreviewOpen = true;
     this._skillsDirectory = "";
     this._skillTemplate = "";
@@ -3671,6 +3676,60 @@ class HaAgentPanel extends HTMLElement {
       </div>`;
   }
 
+  _renderSkillSimplifyProposals() {
+    const undo = this._skillSimplifyUndo;
+    const undoBar = undo
+      ? `<div class="actions" style="margin-top:8px">
+          <button data-action="skill-simplify-undo">Undo last simplification</button>
+          <span class="hint">${this._escape(undo.summary || "Restore previous skill state")}</span>
+        </div>`
+      : "";
+    if (!this._skillSimplifyProposals) {
+      return undoBar ? `<div style="margin-top:16px">${undoBar}</div>` : "";
+    }
+    const proposals = this._skillSimplifyProposals;
+    if (!proposals.length) {
+      return `
+        <div style="margin-top:16px">
+          <h3>Skill simplification</h3>
+          <p class="hint">${this._escape(this._skillSimplifySummary || "No proposals.")}</p>
+          ${this._skillSimplifyModel ? `<p class="hint">Model: ${this._escape(this._skillSimplifyModel)}</p>` : ""}
+          ${undoBar}
+        </div>`;
+    }
+    const cards = proposals
+      .map((proposal, index) => {
+        const titles = (proposal.member_titles || [])
+          .map((t) => this._escape(t))
+          .join(", ");
+        const actionLabel =
+          proposal.action === "combine" ? "Combine & archive others" : "Apply simplification";
+        return `
+      <div class="skill-editor" style="margin-top:12px">
+        <h3>${this._escape((proposal.action || "simplify").toString())} proposal ${index + 1}</h3>
+        <p class="hint">${this._escape(proposal.reason || "")}</p>
+        <p><strong>Skills:</strong> ${titles}</p>
+        ${this._renderSkillDraftPreview(proposal.draft || {})}
+        <div class="actions" style="margin-top:8px">
+          <button data-action="skill-simplify-apply" data-proposal-id="${this._escape(proposal.proposal_id)}">${actionLabel}</button>
+          <button data-action="skill-simplify-dismiss" data-proposal-id="${this._escape(proposal.proposal_id)}">Dismiss</button>
+        </div>
+      </div>`;
+      })
+      .join("");
+    return `
+      <div style="margin-top:16px">
+        <h3>Skill simplification</h3>
+        <p class="hint">${this._escape(this._skillSimplifySummary || "Review proposals before applying. Nothing is saved until you confirm.")}</p>
+        ${this._skillSimplifyModel ? `<p class="hint">Model: ${this._escape(this._skillSimplifyModel)}</p>` : ""}
+        ${undoBar}
+        ${cards}
+        <div class="actions" style="margin-top:8px">
+          <button data-action="skill-simplify-clear">Clear proposals</button>
+        </div>
+      </div>`;
+  }
+
   _renderSkills() {
     const notice = this._skillNotice
       ? `<div class="skill-notice">${this._escape(this._skillNotice)}</div>`
@@ -3699,6 +3758,7 @@ class HaAgentPanel extends HTMLElement {
         <button data-action="skill-search">Search</button>
         <button data-action="skill-new">New skill</button>
         <button data-action="skill-find-merges">Find merges</button>
+        <button data-action="skill-simplify" ${this._skillSimplifyBusy ? "disabled" : ""}>${this._skillSimplifyBusy ? "Simplifying…" : "Simplify skills"}</button>
         <button data-action="skill-sync">Sync from disk</button>
         <button data-action="skill-export-md">Export MD</button>
         <button data-action="skill-export">Export JSON</button>
@@ -3709,6 +3769,7 @@ class HaAgentPanel extends HTMLElement {
         <thead><tr><th>Title</th><th>Enabled</th><th>Uses</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="4">No skills yet.</td></tr>'}</tbody>
       </table>
+      ${this._renderSkillSimplifyProposals()}
       ${this._renderSkillMergeProposals()}
       ${this._renderSkillDetail()}
       ${this._renderSkillEditor()}`;
@@ -3793,7 +3854,8 @@ class HaAgentPanel extends HTMLElement {
           <label><input type="checkbox" id="hint-enabled" ${hint.enabled !== false ? "checked" : ""}/> Enabled</label>
           <div class="actions">
             <button data-action="hint-save">Save</button>
-            ${isNew ? "" : isBuiltin ? '<button data-action="hint-reset">Reset to default</button>' : '<button data-action="hint-delete">Delete</button>'}
+            ${isNew ? "" : isBuiltin ? '<button data-action="hint-reset">Reset to default</button>' : ""}
+            ${isNew ? "" : '<button data-action="hint-delete">Delete</button>'}
             <button data-action="hint-cancel">Cancel</button>
           </div>
         </div>
@@ -3816,7 +3878,8 @@ class HaAgentPanel extends HTMLElement {
         <td class="actions">
           <button data-hint-edit="${this._escape(h.rule_id)}">Edit</button>
           <button data-hint-toggle="${this._escape(h.rule_id)}">${h.enabled ? "Disable" : "Enable"}</button>
-          ${h.is_builtin ? `<button data-hint-reset="${this._escape(h.rule_id)}">Reset</button>` : `<button data-hint-delete="${this._escape(h.rule_id)}">Delete</button>`}
+          ${h.is_builtin ? `<button data-hint-reset="${this._escape(h.rule_id)}">Reset</button>` : ""}
+          <button data-hint-delete="${this._escape(h.rule_id)}">Delete</button>
         </td>
       </tr>`
       )
@@ -3979,12 +4042,24 @@ class HaAgentPanel extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-hint-delete]").forEach((el) => {
       el.onclick = async () => {
         const ruleId = el.getAttribute("data-hint-delete");
-        await this._call("ha_agent/recovery_hints/delete", {
-          entry_id: this._entryId,
-          rule_id: ruleId,
-        });
-        this._hintNotice = "Deleted custom recovery hint.";
-        if (this._editingHint?.rule_id === ruleId) this._editingHint = null;
+        const hint = this._recoveryHints.find((h) => h.rule_id === ruleId);
+        if (
+          !confirm(
+            `Delete recovery hint "${hint?.title || ruleId}"? This cannot be undone.`,
+          )
+        ) {
+          return;
+        }
+        try {
+          await this._call("ha_agent/recovery_hints/delete", {
+            entry_id: this._entryId,
+            rule_id: ruleId,
+          });
+          this._hintNotice = `Deleted ${hint?.title || ruleId}.`;
+          if (this._editingHint?.rule_id === ruleId) this._editingHint = null;
+        } catch (err) {
+          this._hintNotice = `Could not delete recovery hint: ${err?.message || err}`;
+        }
         await this._loadRecoveryHints();
         this._render();
       };
@@ -4029,12 +4104,20 @@ class HaAgentPanel extends HTMLElement {
       ?.addEventListener("click", async () => {
         if (!this._editingHint?.rule_id) return;
         const ruleId = this._editingHint.rule_id;
-        await this._call("ha_agent/recovery_hints/delete", {
-          entry_id: this._entryId,
-          rule_id: ruleId,
-        });
-        this._hintNotice = "Deleted custom recovery hint.";
-        this._editingHint = null;
+        const title = this._editingHint.title || ruleId;
+        if (!confirm(`Delete recovery hint "${title}"? This cannot be undone.`)) {
+          return;
+        }
+        try {
+          await this._call("ha_agent/recovery_hints/delete", {
+            entry_id: this._entryId,
+            rule_id: ruleId,
+          });
+          this._hintNotice = `Deleted ${title}.`;
+          this._editingHint = null;
+        } catch (err) {
+          this._hintNotice = `Could not delete recovery hint: ${err?.message || err}`;
+        }
         await this._loadRecoveryHints();
         this._render();
       });
@@ -5535,6 +5618,109 @@ class HaAgentPanel extends HTMLElement {
         this._render();
       } catch (err) {
         this._skillNotice = `Find merges failed: ${err?.message || err}`;
+        this._render();
+      }
+    });
+
+    this.shadowRoot.querySelector('[data-action="skill-simplify"]')?.addEventListener("click", async () => {
+      this._skillSimplifyBusy = true;
+      this._skillNotice = "Asking a strong model for simplification proposals…";
+      this._render();
+      try {
+        const data = await this._call("ha_agent/skills/simplify/propose", {
+          entry_id: this._entryId,
+        });
+        this._skillSimplifyProposals = data.proposals || [];
+        this._skillSimplifySummary = data.summary || "";
+        this._skillSimplifyModel = data.model_used || "";
+        this._skillSimplifyUndo = data.undo || null;
+        this._skillNotice =
+          this._skillSimplifyProposals.length === 0
+            ? data.summary || "No simplification proposals."
+            : `Found ${this._skillSimplifyProposals.length} simplification proposal(s). Review before applying.`;
+      } catch (err) {
+        this._skillNotice = `Simplify skills failed: ${err?.message || err}`;
+      } finally {
+        this._skillSimplifyBusy = false;
+        this._render();
+      }
+    });
+
+    this.shadowRoot.querySelectorAll('[data-action="skill-simplify-apply"]').forEach((el) => {
+      el.addEventListener("click", async () => {
+        const proposalId = el.getAttribute("data-proposal-id");
+        const proposal = (this._skillSimplifyProposals || []).find(
+          (item) => item.proposal_id === proposalId,
+        );
+        if (!proposal) return;
+        const titles = (proposal.member_titles || []).join(", ");
+        const verb = proposal.action === "combine" ? "combine" : "simplify";
+        if (
+          !confirm(
+            `Apply this ${verb} proposal?\n\n${titles}\n\nYou can undo afterward.`,
+          )
+        ) {
+          return;
+        }
+        try {
+          const data = await this._call("ha_agent/skills/simplify/apply", {
+            entry_id: this._entryId,
+            proposal_id: proposalId,
+          });
+          this._skillSimplifyUndo = data.undo || null;
+          this._skillSimplifyProposals = (this._skillSimplifyProposals || []).filter(
+            (item) => item.proposal_id !== proposalId,
+          );
+          const archived = (data.archived_skill_ids || []).length;
+          this._skillNotice = `Applied ${data.action || "simplification"} to "${data.survivor?.title || "skill"}"${
+            archived ? ` · archived ${archived} sibling(s)` : ""
+          }. Use Undo if needed.`;
+          this._viewingSkill = data.survivor || null;
+          await this._loadSkills();
+          this._render();
+        } catch (err) {
+          this._skillNotice = `Apply simplification failed: ${err?.message || err}`;
+          this._render();
+        }
+      });
+    });
+
+    this.shadowRoot.querySelectorAll('[data-action="skill-simplify-dismiss"]').forEach((el) => {
+      el.addEventListener("click", () => {
+        const proposalId = el.getAttribute("data-proposal-id");
+        this._skillSimplifyProposals = (this._skillSimplifyProposals || []).filter(
+          (item) => item.proposal_id !== proposalId,
+        );
+        if (!this._skillSimplifyProposals.length) {
+          this._skillSimplifyProposals = null;
+        }
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelector('[data-action="skill-simplify-clear"]')?.addEventListener("click", () => {
+      this._skillSimplifyProposals = null;
+      this._skillSimplifySummary = "";
+      this._render();
+    });
+
+    this.shadowRoot.querySelector('[data-action="skill-simplify-undo"]')?.addEventListener("click", async () => {
+      if (!this._skillSimplifyUndo) return;
+      if (!confirm("Undo the last skill simplification? This restores the previous skill revision and re-enables archived siblings.")) {
+        return;
+      }
+      try {
+        const data = await this._call("ha_agent/skills/simplify/undo", {
+          entry_id: this._entryId,
+        });
+        this._skillSimplifyUndo = data.undo || null;
+        const restored = (data.restored_skill_ids || []).length;
+        this._skillNotice = `Undid simplification${restored ? ` · restored ${restored} sibling(s)` : ""}.`;
+        this._viewingSkill = data.survivor || null;
+        await this._loadSkills();
+        this._render();
+      } catch (err) {
+        this._skillNotice = `Undo failed: ${err?.message || err}`;
         this._render();
       }
     });
