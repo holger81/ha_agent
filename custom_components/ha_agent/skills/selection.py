@@ -25,9 +25,13 @@ _SELECT_PROMPT = (
     "Rules:\n"
     "- Pick at most {max_select} skill(s).\n"
     "- Only use slugs from AVAILABLE SKILLS.\n"
-    "- Prefer a skill when the request clearly matches its title, triggers, or "
-    "description.\n"
-    "- Return [] when no skill applies or a generic reply suffices.\n"
+    "- Pick a skill only when its title/triggers clearly match this request "
+    "(same intent and same kind of device/area/topic).\n"
+    "- Return [] when no skill applies, the match is weak, or a generic reply "
+    "suffices.\n"
+    "- Return [] for status/read questions (temperature, state, 'what is') when "
+    "the only candidates are control/mutation skills (turn on/off, toggle).\n"
+    "- Never pick an unrelated device or area skill.\n"
     "- When a domain_hint is email or news, prefer skills for that domain.\n"
     "- Never pick an action/device skill for an email or news request, or an "
     "email/news skill for a device-control request."
@@ -71,10 +75,39 @@ _CATALOG_LIMIT = 30
 # Minimum Jaccard overlap between user tokens and skill triggers/title before
 # FTS alone may pin a skill as an active plan (without LLM confirmation).
 _MIN_FTS_TRIGGER_SCORE = 0.22
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "are",
+        "was",
+        "what",
+        "how",
+        "who",
+        "when",
+        "where",
+        "why",
+        "can",
+        "you",
+        "please",
+        "just",
+        "into",
+        "about",
+    }
+)
 
 
 def _tokenize(text: str) -> set[str]:
     return {tok for tok in re.findall(r"[a-z0-9]{3,}", text.lower()) if tok}
+
+
+def _content_tokens(text: str) -> set[str]:
+    return _tokenize(text) - _STOPWORDS
 
 
 def trigger_overlap_score(user_text: str, skill: Skill) -> float:
@@ -97,9 +130,49 @@ def trigger_overlap_score(user_text: str, skill: Skill) -> float:
     return len(overlap) / max(len(user_tokens), 1)
 
 
+def _skill_content_tokens(skill: Skill) -> set[str]:
+    # Title + triggers only: descriptions add unrelated tokens that dilute overlap.
+    return _content_tokens(
+        " ".join([skill.title, *[str(trigger) for trigger in skill.triggers]])
+    )
+
+
+def _jaccard_content_overlap(user_text: str, skill: Skill) -> float:
+    user_tokens = _content_tokens(user_text)
+    skill_tokens = _skill_content_tokens(skill)
+    if not user_tokens or not skill_tokens:
+        return 0.0
+    overlap = user_tokens & skill_tokens
+    if not overlap:
+        return 0.0
+    return len(overlap) / len(user_tokens | skill_tokens)
+
+
 def _strong_fts_match(user_text: str, skill: Skill) -> bool:
     """Return True when FTS match is strong enough to pin without LLM."""
     return trigger_overlap_score(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
+
+
+def skill_applies_to_user_text(user_text: str, skill: Skill) -> bool:
+    """Return True when content-token Jaccard overlap is strong enough to apply."""
+    return _jaccard_content_overlap(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
+
+
+def _prefer_overlapping_catalog(
+    user_text: str, catalog: list[Skill]
+) -> list[Skill]:
+    """Prefer skills that apply; else any content overlap; else full catalog."""
+    if not catalog:
+        return catalog
+    strong = [
+        skill for skill in catalog if skill_applies_to_user_text(user_text, skill)
+    ]
+    if strong:
+        return strong
+    overlapping = [
+        skill for skill in catalog if _jaccard_content_overlap(user_text, skill) > 0
+    ]
+    return overlapping if overlapping else catalog
 
 
 @dataclass(frozen=True, slots=True)
@@ -535,6 +608,7 @@ async def resolve_skills_for_turn(
             summary="no skill (route filter)",
             detail="Candidates were filtered out for the active route.",
         )
+    catalog = _prefer_overlapping_catalog(user_text, catalog)
 
     selected, raw = await select_skills_with_llm(
         llm,
@@ -548,9 +622,23 @@ async def resolve_skills_for_turn(
     )
     raw_preview = raw[:240] if raw else None
     if selected:
-        filtered = _filter_by_route(selected, route, domain_hint=domain_hint)[
-            :max_inject
-        ]
+        filtered = [
+            skill
+            for skill in _filter_by_route(selected, route, domain_hint=domain_hint)
+            if skill_applies_to_user_text(user_text, skill)
+        ][:max_inject]
+        if not filtered:
+            return SkillSelectionResult(
+                skills=[],
+                method="llm_empty",
+                summary="LLM → none (weak overlap)",
+                detail=(
+                    f"Classifier picked skill(s) from {len(catalog)} candidate(s), "
+                    "but none had strong enough trigger overlap with the request."
+                ),
+                candidate_count=len(catalog),
+                classifier_raw=raw_preview,
+            )
         slugs = ", ".join(skill.slug for skill in filtered)
         return SkillSelectionResult(
             skills=filtered,

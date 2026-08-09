@@ -174,6 +174,7 @@ def test_prepass_aligns_action_to_skill_scope() -> None:
         catalog_by_slug={"news-briefing": skill},
         keyword_decision=keyword,
         heuristic=prepass.Complexity.SINGLE,
+        user_text="what are today's news",
     )
     assert result is not None
     assert result.route_resolution.route == prepass.TaskRoute.CHAT
@@ -212,7 +213,43 @@ def test_prepass_aligns_from_custom_skill_scope_alone() -> None:
         catalog_by_slug={"weekly-digest": skill},
         keyword_decision=keyword,
         heuristic=prepass.Complexity.SINGLE,
+        user_text="make a weekly digest",
     )
     assert result is not None
     assert result.route_resolution.route == prepass.TaskRoute.CHAT
     assert result.route_resolution.domain_hint == "digest"
+
+
+def test_prepass_drops_skill_with_weak_trigger_overlap() -> None:
+    prepass = _load("prepass")
+    models = _load("skills.models")
+    skill = models.Skill(
+        id="1",
+        slug="turn-off-dining-room-lights",
+        title="Turn off Dining Room Lights",
+        description="Turn off dining room lights",
+        triggers=["turn off dining room lights", "dining lights off"],
+        body="# Turn off lights",
+        tool_steps=[{"toolName": "HassTurnOff", "arguments": {}}],
+        route_scope="action",
+    )
+    keyword = SimpleNamespace(
+        summary="default chat",
+        domain_hint=None,
+        route=prepass.TaskRoute.HA_ACTION,
+    )
+    result = prepass._parse_prepass_payload(
+        {
+            "route": "action",
+            "complexity": "single",
+            "skill_slug": "turn-off-dining-room-lights",
+            "slot_bindings": {"entity_id": "Jonathan"},
+        },
+        catalog_by_slug={"turn-off-dining-room-lights": skill},
+        keyword_decision=keyword,
+        heuristic=prepass.Complexity.SINGLE,
+        user_text="what is the temperature in Jonathans room",
+    )
+    assert result is not None
+    assert result.skill_selection is None
+    assert "weak trigger overlap" in result.orch_plan.reason

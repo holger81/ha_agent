@@ -131,6 +131,19 @@ def _had_successful_control_tool(tool_calls: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _had_successful_mcp_workflow_tool(tool_calls: list[dict[str, Any]]) -> bool:
+    """Return True for a successful MCP-shaped or HA control workflow tool."""
+    for call in tool_calls:
+        if call.get("succeeded") is False:
+            continue
+        name = str(call.get("toolName") or call.get("name") or "")
+        if not name or is_discovery_tool(name):
+            continue
+        if "__" in name or _CONTROL_TOOL_TAIL.search(name):
+            return True
+    return False
+
+
 def should_offer_skill_creation(
     trace: TurnTrace,
     *,
@@ -155,7 +168,8 @@ def should_offer_skill_creation(
         return False
     if not trace.tool_calls:
         return False
-    if trace.matched_learned_skill_ids:
+    # A matched skill that was not followed does not cover this turn.
+    if trace.matched_learned_skill_ids and trace.skill_followed is not False:
         return False
     if not trace.assistant_text.strip():
         return False
@@ -168,9 +182,10 @@ def should_offer_skill_creation(
     if _is_content_extraction_turn(trace):
         return False
     if route == "action" and not (
-        _had_successful_control_tool(trace.tool_calls) or trace.controlled_entity_ids
+        _had_successful_mcp_workflow_tool(trace.tool_calls)
+        or trace.controlled_entity_ids
     ):
-        # Discovery-only or invalid toolName turns must not become skills.
+        # Discovery-only or non-MCP junk tool names must not become skills.
         return False
 
     if trace.tool_errors > 0:

@@ -143,12 +143,60 @@ def test_should_offer_tool_with_history() -> None:
 
 
 def test_should_not_offer_when_learned_skill_matched() -> None:
-    """Matched learned skills skip creation."""
+    """Matched learned skills skip creation when followed/unknown."""
     trace = TurnTrace(
         user_text="turn on lights",
         history_len=4,
         tool_calls=[{"toolName": "a"}, {"toolName": "b"}],
         matched_learned_skill_ids=["existing"],
+        assistant_text="Done.",
+        iterations=2,
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is False
+
+
+def test_should_offer_when_matched_skill_not_followed() -> None:
+    """Wrong matched skill that was not followed allows new skill learning."""
+    trace = TurnTrace(
+        user_text="what is the temperature in Jonathans room",
+        history_len=0,
+        route="action",
+        matched_learned_skill_ids=["dining-lights"],
+        skill_followed=False,
+        tool_calls=[
+            {"toolName": "searchTool", "succeeded": True},
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": True,
+            },
+            {
+                "toolName": "home_assistant__ha_get_state",
+                "succeeded": True,
+            },
+        ],
+        assistant_text="The temperature in Jonathan's room is 25.0°C.",
+        iterations=4,
+        tool_errors=1,
+        outcome="partial",
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is True
+
+
+def test_should_not_offer_when_matched_skill_followed() -> None:
+    """Followed learned skills still block new skill creation."""
+    trace = TurnTrace(
+        user_text="turn off dining room lights",
+        history_len=0,
+        route="action",
+        matched_learned_skill_ids=["dining-lights"],
+        skill_followed=True,
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "succeeded": True,
+            },
+        ],
+        controlled_entity_ids=["light.dining"],
         assistant_text="Done.",
         iterations=2,
     )
@@ -298,8 +346,8 @@ def test_should_not_offer_when_assistant_admits_failure() -> None:
     assert should_offer_skill_creation(trace, learning_enabled=True) is False
 
 
-def test_should_not_offer_action_without_control_tool() -> None:
-    """Action route needs a real control tool or controlled entities."""
+def test_should_not_offer_action_without_mcp_workflow_tool() -> None:
+    """Action route needs MCP-shaped tools, not junk names."""
     trace = TurnTrace(
         user_text="turn off dining room lights",
         history_len=0,
@@ -308,11 +356,28 @@ def test_should_not_offer_action_without_control_tool() -> None:
             {"toolName": "light.dining_room", "succeeded": True},
             {"toolName": "searchToolsForDomain", "succeeded": True},
         ],
-        assistant_text="No matching tool found.",
+        assistant_text="Tried a local shortcut.",
         iterations=3,
         outcome="success",
     )
     assert should_offer_skill_creation(trace, learning_enabled=True) is False
+
+
+def test_should_offer_action_with_read_mcp_tools() -> None:
+    """Action-route status reads with MCP tools are learnable."""
+    trace = TurnTrace(
+        user_text="what is the temperature in Jonathans room",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {"toolName": "home_assistant__ha_search", "succeeded": True},
+            {"toolName": "home_assistant__ha_get_state", "succeeded": True},
+        ],
+        assistant_text="The temperature is 25.0°C.",
+        iterations=2,
+        outcome="success",
+    )
+    assert should_offer_skill_creation(trace, learning_enabled=True) is True
 
 
 def test_should_offer_action_with_control_tool() -> None:

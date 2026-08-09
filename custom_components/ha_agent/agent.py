@@ -1062,6 +1062,7 @@ async def _post_turn_skills(
     primary_learned = resolved_skills[0] if resolved_skills else None
 
     if primary_learned and skills_config.use_enabled:
+        skill_mismatched = trace.skill_followed is False
         repair_issues = detect_repairable_issues(trace, primary_learned)
         if repair_issues:
             meta_patch = {
@@ -1071,52 +1072,53 @@ async def _post_turn_skills(
                 }
             }
 
-        repair_result = await hass.async_add_executor_job(
-            auto_repair_skill,
-            hass,
-            entry_id,
-            primary_learned,
-            trace,
-        )
-        if repair_result is not None:
-            suffix = (
-                f" Updated skill: {repair_result.skill.title} "
-                f"(v{repair_result.from_version}→v{repair_result.skill.version}) "
-                f"— {repair_result.reason}."
-            )
-            meta_patch = {
-                **(meta_patch or {}),
-                "skill_update": {
-                    "title": repair_result.skill.title,
-                    "from_version": repair_result.from_version,
-                    "to_version": repair_result.skill.version,
-                    "reason": repair_result.reason,
-                    "revision_id": repair_result.revision_id,
-                },
-            }
-            update_agent_status(
+        if not skill_mismatched:
+            repair_result = await hass.async_add_executor_job(
+                auto_repair_skill,
                 hass,
                 entry_id,
-                last_skill_improved=repair_result.skill.title,
+                primary_learned,
+                trace,
             )
-
-        async def _evaluate() -> None:
-            if trace.skill_plan_override:
-                return
-            try:
-                await evaluate_skill_use(
+            if repair_result is not None:
+                suffix = (
+                    f" Updated skill: {repair_result.skill.title} "
+                    f"(v{repair_result.from_version}→v{repair_result.skill.version}) "
+                    f"— {repair_result.reason}."
+                )
+                meta_patch = {
+                    **(meta_patch or {}),
+                    "skill_update": {
+                        "title": repair_result.skill.title,
+                        "from_version": repair_result.from_version,
+                        "to_version": repair_result.skill.version,
+                        "reason": repair_result.reason,
+                        "revision_id": repair_result.revision_id,
+                    },
+                }
+                update_agent_status(
                     hass,
                     entry_id,
-                    llm,
-                    backend,
-                    skill=primary_learned,
-                    trace=trace,
+                    last_skill_improved=repair_result.skill.title,
                 )
-                await _update_skill_status(hass, entry_id)
-            except Exception as err:
-                LOGGER.warning("Skill evaluation failed: %s", err)
 
-        hass.async_create_task(_evaluate())
+            async def _evaluate() -> None:
+                if trace.skill_plan_override:
+                    return
+                try:
+                    await evaluate_skill_use(
+                        hass,
+                        entry_id,
+                        llm,
+                        backend,
+                        skill=primary_learned,
+                        trace=trace,
+                    )
+                    await _update_skill_status(hass, entry_id)
+                except Exception as err:
+                    LOGGER.warning("Skill evaluation failed: %s", err)
+
+            hass.async_create_task(_evaluate())
 
         if (
             trace.skill_plan_override
@@ -1222,7 +1224,8 @@ async def _post_turn_skills(
                 )
 
         if (
-            trace.slot_bindings
+            not skill_mismatched
+            and trace.slot_bindings
             and bindings_diverge_from_defaults(primary_learned, trace.slot_bindings)
             and skills_config.learning_enabled
         ):

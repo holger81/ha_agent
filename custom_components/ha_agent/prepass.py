@@ -30,6 +30,7 @@ from .skills.selection import (
     _merge_catalog,
     _resolve_chat_route_skills,
     is_chat_route,
+    skill_applies_to_user_text,
 )
 from .skills.store import get_skill_store
 from .structured_output import PREPASS_SCHEMA, json_schema_format
@@ -87,6 +88,7 @@ def _parse_prepass_payload(
     catalog_by_slug: dict[str, Skill],
     keyword_decision,
     heuristic: Complexity,
+    user_text: str = "",
 ) -> TurnPrepassResult | None:
     route_value = str(data.get("route", "")).strip().lower()
     domain_hint = str(data.get("domain_hint") or "").strip().lower() or None
@@ -114,7 +116,15 @@ def _parse_prepass_payload(
 
     selected_skills: list[Skill] = []
     if skill_slug and skill_slug in catalog_by_slug:
-        selected_skills = [catalog_by_slug[skill_slug]]
+        candidate = catalog_by_slug[skill_slug]
+        if not str(user_text or "").strip() or skill_applies_to_user_text(
+            user_text, candidate
+        ):
+            selected_skills = [candidate]
+        else:
+            reason = (reason + "; ").lstrip("; ") + (
+                f"dropped skill {skill_slug!r} (weak trigger overlap)"
+            )
 
     skill_selection = None
     skill: Skill | None = None
@@ -349,6 +359,7 @@ async def run_turn_prepass(
         catalog_by_slug=catalog_by_slug,
         keyword_decision=keyword_decision,
         heuristic=heuristic,
+        user_text=user_text,
     )
     if parsed is None:
         return None
