@@ -57,12 +57,30 @@ def _load_runtime():
     sys.modules["ha_agent.skills.models"] = models
     spec.loader.exec_module(models)
 
+    # Minimal observer stub so runtime can import is_discovery_tool.
+    # Remove it after load so other test modules can import the real observer.
+    stubbed_observer = False
+    if "ha_agent.skills.observer" not in sys.modules:
+        obs = types.ModuleType("ha_agent.skills.observer")
+
+        def is_discovery_tool(name: str) -> bool:
+            lowered = (name or "").lower()
+            return "searchtool" in lowered or "tools/list" in lowered
+
+        obs.is_discovery_tool = is_discovery_tool
+        obs._is_test_stub = True  # type: ignore[attr-defined]
+        sys.modules["ha_agent.skills.observer"] = obs
+        stubbed_observer = True
+
     path = COMPONENT / "skills" / "runtime.py"
+    # Always reload so struggle helpers pick up source edits.
     spec = importlib.util.spec_from_file_location("ha_agent.skills.runtime", path)
     runtime = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
     sys.modules["ha_agent.skills.runtime"] = runtime
     spec.loader.exec_module(runtime)
+    if stubbed_observer:
+        del sys.modules["ha_agent.skills.observer"]
     return models, runtime
 
 
@@ -70,6 +88,8 @@ models_mod, runtime_mod = _load_runtime()
 TurnTrace = models_mod.TurnTrace
 should_offer_skill_creation = runtime_mod.should_offer_skill_creation
 override_turn_eligible_for_learning = runtime_mod.override_turn_eligible_for_learning
+struggle_event_count = runtime_mod.struggle_event_count
+is_hard_won_workflow = runtime_mod.is_hard_won_workflow
 
 
 def test_should_offer_multi_tool_turn() -> None:
@@ -255,6 +275,55 @@ def test_should_offer_email_multi_step_workflow() -> None:
         iterations=2,
     )
     assert should_offer_skill_creation(trace, learning_enabled=True) is True
+
+
+def test_struggle_and_hard_won_workflow() -> None:
+    """Hard-won requires struggle score >= 4 plus a successful MCP tool."""
+    easy = TurnTrace(
+        user_text="temp?",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": True,
+                "arguments": {"query": "x"},
+            }
+        ],
+        assistant_text="22C",
+        iterations=1,
+        tool_errors=0,
+    )
+    assert struggle_event_count(easy) == 0
+    assert is_hard_won_workflow(easy) is False
+
+    hard = TurnTrace(
+        user_text="what is the temperature in Jonathans room?",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": False,
+                "arguments": {"query": "jonathan temperature"},
+            },
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": False,
+                "arguments": {"query": "jonathan"},
+            },
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": True,
+                "arguments": {"query": "jonathan", "domain_filter": "sensor"},
+            },
+        ],
+        assistant_text="23.3C",
+        iterations=6,
+        tool_errors=2,
+    )
+    assert struggle_event_count(hard) >= 4
+    assert is_hard_won_workflow(hard) is True
 
 
 def test_manual_save_requires_successful_tools() -> None:

@@ -202,6 +202,28 @@ def test_build_observer_payload_includes_override_fields() -> None:
     assert "unread checks" in payload["skill_plan_override_reason"]
 
 
+def test_build_observer_payload_marks_hard_won_workflow() -> None:
+    """Hard-won struggle signals are exposed to the observer prompt."""
+    trace = TurnTrace(
+        user_text="what is the temperature in Jonathans room?",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": True,
+                "arguments": {"query": "jonathan", "domain_filter": "sensor"},
+            }
+        ],
+        assistant_text="23.3C",
+        iterations=7,
+        tool_errors=0,
+    )
+    payload = build_observer_payload(trace, [])
+    assert payload["hard_won_workflow"] is True
+    assert payload["struggle_events"] >= 4
+
+
 @pytest.mark.asyncio
 async def test_observe_skill_override_updates_parent() -> None:
     observer_mod = importlib.reload(sys.modules["ha_agent.skills.observer"])

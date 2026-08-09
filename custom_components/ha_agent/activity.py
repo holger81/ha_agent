@@ -80,6 +80,69 @@ def get_turn(
     return turns[0] if turns and latest else None
 
 
+def activity_turn_to_trace(data: dict[str, Any]) -> TurnTrace:
+    """Rebuild a TurnTrace from an activity log row."""
+    followed = data.get("skill_followed")
+    return TurnTrace(
+        user_text=str(data.get("user_text") or ""),
+        history_len=int(data.get("history_len") or 0),
+        tool_calls=list(data.get("tool_calls") or []),
+        tool_errors=int(data.get("tool_errors") or 0),
+        iterations=int(data.get("iterations") or 0),
+        fallback=bool(data.get("fallback")),
+        assistant_text=str(data.get("assistant_text") or ""),
+        matched_skill_ids=list(data.get("matched_skill_ids") or []),
+        controlled_entity_ids=list(data.get("controlled_entity_ids") or []),
+        conversation_id=data.get("conversation_id"),
+        outcome=str(data.get("outcome") or ""),
+        verification_notes=list(data.get("verification_notes") or []),
+        route=str(data.get("route") or ""),
+        exposed_entities=list(data.get("exposed_entities") or []),
+        complexity=str(data.get("complexity") or "simple"),
+        verifier_verdict=str(data.get("verifier_verdict") or ""),
+        verifier_detail=str(data.get("verifier_detail") or ""),
+        matched_learned_skill_ids=list(data.get("matched_learned_skill_ids") or []),
+        skill_followed=followed if isinstance(followed, bool) else None,
+        skill_plan_override=bool(data.get("skill_plan_override")),
+        skill_plan_override_reason=str(data.get("skill_plan_override_reason") or ""),
+        recovery_hints=list(data.get("recovery_hints") or []),
+        llm_calls=list(data.get("llm_calls") or []),
+        plan_progress=list(data.get("plan_progress") or []),
+    )
+
+
+@callback
+def find_prior_workflow_turn(
+    hass: HomeAssistant,
+    entry_id: str,
+    conversation_id: str | None,
+    *,
+    skip_user_texts: frozenset[str] | None = None,
+) -> dict[str, Any] | None:
+    """Return the newest prior turn in this conversation with tool activity.
+
+    Skips turns whose user text is in ``skip_user_texts`` (e.g. the current
+    "save this as a skill" request when it was already recorded).
+    """
+    turns, _total = list_turns(hass, entry_id, limit=DEFAULT_MAX_TURNS)
+    skip = {text.strip().lower() for text in (skip_user_texts or frozenset()) if text}
+    for turn in turns:
+        if conversation_id and turn.get("conversation_id") != conversation_id:
+            continue
+        user = str(turn.get("user_text") or "").strip()
+        if user.lower() in skip:
+            continue
+        tools = turn.get("tool_calls") or []
+        if not isinstance(tools, list) or not tools:
+            continue
+        if any(
+            isinstance(call, dict) and call.get("succeeded") is not False
+            for call in tools
+        ):
+            return turn
+    return None
+
+
 @callback
 def update_turn_identity(
     hass: HomeAssistant,

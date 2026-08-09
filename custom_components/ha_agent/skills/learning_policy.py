@@ -261,12 +261,46 @@ def draft_has_executable_tools(draft: SkillDraft) -> bool:
     return bool(_MCP_TOOL_NAME.search(draft.body or ""))
 
 
+def _tool_steps_preferring_filters(trace: TurnTrace) -> list[dict[str, Any]]:
+    """Like tool_steps_from_trace, but prefer search calls that used filters."""
+    by_tool: dict[str, dict[str, Any]] = {}
+    for call in trace.tool_calls:
+        if not call.get("succeeded"):
+            continue
+        name = _tool_name(call.get("toolName") or call.get("name"))
+        if not name or is_discovery_tool(name):
+            continue
+        args = call.get("arguments")
+        if not isinstance(args, dict):
+            continue
+        existing = by_tool.get(name)
+        if existing is None:
+            by_tool[name] = dict(args)
+            continue
+        # Prefer later args that include narrowing filters.
+        if any(
+            args.get(key)
+            for key in ("domain_filter", "area_filter", "state_filter", "domain")
+        ) and not any(
+            existing.get(key)
+            for key in ("domain_filter", "area_filter", "state_filter", "domain")
+        ):
+            by_tool[name] = dict(args)
+    return [{"toolName": name, "arguments": args} for name, args in by_tool.items()]
+
+
 def prepare_learned_draft(draft: SkillDraft, trace: TurnTrace) -> SkillDraft | None:
     """Ground a draft in successful trace tools or reject prose-only skills.
 
     Returns None when the turn has no reusable non-discovery workflow.
     """
-    trace_steps = tool_steps_from_trace(trace)
+    from .runtime import is_hard_won_workflow
+
+    trace_steps = (
+        _tool_steps_preferring_filters(trace)
+        if is_hard_won_workflow(trace)
+        else tool_steps_from_trace(trace)
+    )
     if not trace_steps:
         return None
 
@@ -282,9 +316,136 @@ def prepare_learned_draft(draft: SkillDraft, trace: TurnTrace) -> SkillDraft | N
         route_scope=draft.route_scope or (str(trace.route).strip() or None),
     )
     grounded = _slotify_action_entity_ids(grounded, trace)
+    grounded = _slotify_status_search_args(grounded)
     if not draft_has_executable_tools(grounded):
         return None
     return grounded
+
+
+def _slotify_status_search_args(draft: SkillDraft) -> SkillDraft:
+    """Replace concrete ha_search query strings with a {{query}} slot."""
+    from .models import SkillSlot
+
+    has_search_query = False
+    new_steps: list[dict[str, Any]] = []
+    for step in draft.tool_steps:
+        if not isinstance(step, dict):
+            continue
+        step_copy = dict(step)
+        name = str(step_copy.get("toolName") or "").lower()
+        args = step_copy.get("arguments")
+        if (
+            isinstance(args, dict)
+            and "ha_search" in name
+            and isinstance(args.get("query"), str)
+            and args.get("query")
+            and "{{" not in args["query"]
+        ):
+            merged = dict(args)
+            merged["query"] = "{{query}}"
+            step_copy["arguments"] = merged
+            has_search_query = True
+        new_steps.append(step_copy)
+
+    if not has_search_query:
+        return draft
+
+    slots = list(draft.slots)
+    if not any(slot.name == "query" for slot in slots):
+        slots.append(
+            SkillSlot(
+                name="query",
+                description="Search term for the place, person, or device",
+                source="user",
+                default=None,
+            )
+        )
+    body = draft.body or ""
+    if "{{query}}" not in body and "ha_search" in body.lower():
+        body = (
+            body.rstrip()
+            + "\n\nUse `query={{query}}` (and `domain_filter` when it narrows "
+            "results) for the search step."
+        )
+    return SkillDraft(
+        title=draft.title,
+        description=draft.description,
+        triggers=draft.triggers,
+        body=body,
+        tool_steps=new_steps,
+        slots=slots,
+        preconditions=draft.preconditions,
+        parent_id=draft.parent_id,
+        route_scope=draft.route_scope,
+    )
+
+
+def build_deterministic_hard_won_result(trace: TurnTrace) -> Any | None:
+    """Distill a parameterized status/lookup skill after a costly success.
+
+    Used when the LLM observer rejects a hard-won turn as one-off Q&A.
+    """
+    from .observer import SkillObserverResult
+    from .runtime import is_hard_won_workflow, struggle_event_count
+
+    if not is_hard_won_workflow(trace):
+        return None
+    steps = _tool_steps_preferring_filters(trace)
+    if not steps:
+        return None
+
+    goal = (trace.user_text or "").strip()
+    title = "Look up sensor or entity status"
+    description = (
+        "Parameterized status lookup distilled after a hard-won successful "
+        f"turn ({struggle_event_count(trace)} struggle events)."
+    )
+    triggers = [
+        phrase
+        for phrase in (
+            goal,
+            "what is the temperature in {{query}}",
+            "status of {{query}}",
+            "look up {{query}} sensor",
+        )
+        if phrase
+    ]
+    body_lines = [
+        "# Look up status",
+        "",
+        "When the user asks for a reading or status for a place/person/device:",
+        "",
+    ]
+    for index, step in enumerate(steps, start=1):
+        name = str(step.get("toolName") or "")
+        body_lines.append(
+            f"{index}. Call `{name}` using slot values and prior tool results."
+        )
+    body_lines.extend(
+        [
+            "",
+            "Prefer a short `query={{query}}` plus `domain_filter` when searching.",
+            "Answer from tool results; do not invent values.",
+        ]
+    )
+    draft = SkillDraft(
+        title=title,
+        description=description[:512],
+        triggers=triggers[:8],
+        body="\n".join(body_lines),
+        tool_steps=steps,
+        route_scope=str(trace.route).strip() or "action",
+    )
+    draft = _slotify_status_search_args(draft)
+    draft = _slotify_action_entity_ids(draft, trace)
+    return SkillObserverResult(
+        learn=True,
+        reason=(
+            "Deterministic hard-won status distillation "
+            f"({struggle_event_count(trace)} struggle events)."
+        ),
+        draft=draft,
+    )
 
 
 def _slotify_action_entity_ids(draft: SkillDraft, trace: TurnTrace) -> SkillDraft:

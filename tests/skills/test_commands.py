@@ -95,4 +95,51 @@ def test_is_skill_admin_query() -> None:
     """Admin phrases are detected."""
     assert commands.is_skill_admin_query("disable the dining room lights skill")
     assert commands.is_skill_admin_query("list my skills")
+    assert commands.is_skill_admin_query("save this as a skill")
     assert not commands.is_skill_admin_query("turn on the lights")
+
+
+@pytest.mark.asyncio
+async def test_try_handle_manual_skill_save_uses_prior_turn() -> None:
+    """Manual save uses the prior workflow turn, not the empty save request."""
+    prior_trace = MagicMock()
+    prior_trace.user_text = "what is the temperature in Jonathans room?"
+    skill = MagicMock()
+    skill.title = "Jonathan room temperature"
+
+    with (
+        patch.object(
+            commands,
+            "find_prior_workflow_turn",
+            return_value={"user_text": prior_trace.user_text},
+        ),
+        patch.object(
+            commands,
+            "activity_turn_to_trace",
+            return_value=prior_trace,
+        ),
+        patch.object(
+            commands,
+            "should_offer_skill_creation",
+            return_value=True,
+        ),
+        patch.object(
+            commands,
+            "create_skill_from_trace",
+            new=AsyncMock(return_value=skill),
+        ) as create,
+    ):
+        reply = await commands.try_handle_manual_skill_save(
+            MagicMock(),
+            "entry",
+            "c1",
+            "save this as a skill",
+            llm=MagicMock(),
+            backend=MagicMock(),
+            history=[],
+        )
+
+    assert reply == "Saved skill: Jonathan room temperature."
+    create.assert_awaited_once()
+    assert create.await_args.kwargs["trace"] is prior_trace
+    assert create.await_args.kwargs["manual_save"] is True

@@ -144,6 +144,39 @@ def _had_successful_mcp_workflow_tool(tool_calls: list[dict[str, Any]]) -> bool:
     return False
 
 
+# Failed tool calls + LLM loop reassessments (iterations after the first).
+# Hard-won status/lookup skills are only auto-distilled at or above this score.
+_HARD_WON_MIN_STRUGGLE = 4
+
+
+def struggle_event_count(trace: TurnTrace) -> int:
+    """Count failed tools plus loop reassessments for hard-won learning."""
+    failed = sum(
+        1
+        for call in trace.tool_calls
+        if isinstance(call, dict) and call.get("succeeded") is False
+    )
+    failed = max(failed, int(trace.tool_errors or 0))
+    reassessments = max(0, int(trace.iterations or 0) - 1)
+    return failed + reassessments
+
+
+def is_hard_won_workflow(trace: TurnTrace) -> bool:
+    """Return True when success came only after substantial struggle.
+
+    Used to learn parameterized status/lookup skills that would otherwise be
+    rejected as one-off Q&A — but only when the path was costly enough to be
+    worth remembering (failed tools + reassessments).
+    """
+    if struggle_event_count(trace) < _HARD_WON_MIN_STRUGGLE:
+        return False
+    if trace.fallback or not (trace.assistant_text or "").strip():
+        return False
+    if _FAILURE_ADMISSION.search(trace.assistant_text or ""):
+        return False
+    return _had_successful_mcp_workflow_tool(trace.tool_calls)
+
+
 def should_offer_skill_creation(
     trace: TurnTrace,
     *,
@@ -179,7 +212,7 @@ def should_offer_skill_creation(
         return False
 
     route = (trace.route or "").lower()
-    if _is_content_extraction_turn(trace):
+    if _is_content_extraction_turn(trace) and not is_hard_won_workflow(trace):
         return False
     if route == "action" and not (
         _had_successful_mcp_workflow_tool(trace.tool_calls)
@@ -201,11 +234,11 @@ def should_offer_skill_creation(
             and _had_successful_workflow_tool(trace.tool_calls)
             and not _FAILURE_ADMISSION.search(trace.assistant_text)
         )
-        if not recovered:
+        if not recovered and not is_hard_won_workflow(trace):
             return False
 
     multi_step = len(trace.tool_calls) >= 2 or trace.iterations >= 2
-    return multi_step
+    return multi_step or is_hard_won_workflow(trace)
 
 
 def override_turn_eligible_for_learning(trace: TurnTrace) -> bool:

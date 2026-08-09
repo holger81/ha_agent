@@ -243,6 +243,60 @@ def test_draft_would_regress_parent_when_steps_wiped() -> None:
     assert policy.draft_would_regress_parent(parent, draft) is True
 
 
+def test_build_deterministic_hard_won_result_parameterizes_search() -> None:
+    """Hard-won status turns distill a slotted ha_search workflow."""
+    # Reload policy so new helpers are available.
+    import importlib
+
+    policy_mod = importlib.reload(sys.modules["ha_agent.skills.learning_policy"])
+    # Ensure runtime helpers are available to the reloaded policy.
+    if "ha_agent.skills.runtime" in sys.modules:
+        importlib.reload(sys.modules["ha_agent.skills.runtime"])
+
+    trace = TurnTrace(
+        user_text="what is the temperature in Jonathans room?",
+        history_len=0,
+        route="action",
+        tool_calls=[
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": True,
+                "arguments": {"query": "jonathan"},
+            },
+            {
+                "toolName": "home_assistant__ha_search",
+                "succeeded": True,
+                "arguments": {"query": "jonathan", "domain_filter": "sensor"},
+            },
+            {
+                "toolName": "searchTool",
+                "succeeded": True,
+                "arguments": {"query": "ha_search"},
+                "discovery": True,
+            },
+        ],
+        assistant_text="23.3C",
+        iterations=8,
+        tool_errors=0,
+        outcome="success",
+    )
+    result = policy_mod.build_deterministic_hard_won_result(trace)
+    assert result is not None
+    assert result.learn is True
+    assert result.draft is not None
+    prepared = policy_mod.prepare_learned_draft(result.draft, trace)
+    assert prepared is not None
+    assert any(slot.name == "query" for slot in prepared.slots)
+    search_steps = [
+        step
+        for step in prepared.tool_steps
+        if "ha_search" in str(step.get("toolName") or "")
+    ]
+    assert search_steps
+    assert search_steps[0]["arguments"].get("query") == "{{query}}"
+    assert search_steps[0]["arguments"].get("domain_filter") == "sensor"
+
+
 def test_build_deterministic_override_result_forks_child() -> None:
     """Deterministic fallback creates a child skill with trace tool_steps."""
     parent = _email_check_skill()

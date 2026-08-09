@@ -46,13 +46,18 @@ _OBSERVER_PROMPT = (
     "- EXCLUDE discovery/searchToolsForDomain/searchTool from body unless core.\n"
     "- Do not copy email bodies, headlines, or assistant reply text into body.\n"
     "- Use entity_id values only from controlled_entity_ids or tool arguments.\n"
+    "- When hard_won_workflow=true: prefer learn=true. Distill a parameterized "
+    "status/lookup procedure (slots like {{query}} / {{entity_id}}), keep the "
+    "successful MCP tools (e.g. ha_search with domain_filter, ha_get_state), "
+    "and drop discovery spam and one-off numeric answers.\n"
     "Rules for learn=false:\n"
     "- One-off Q&A, chit-chat, news/email summaries (unless manual_save_requested "
-    "and a clear reusable procedure exists).\n"
-    "- Single lookup with no durable workflow.\n"
+    "or hard_won_workflow, and a clear reusable procedure exists).\n"
+    "- Easy single lookup with no durable workflow (hard_won_workflow=false).\n"
     "- Failed or empty runs with nothing reusable.\n"
     "- Assistant admitted failure, invalid/unknown toolName, or no successful "
-    "mutating/control tool for a device-control goal.\n"
+    "mutating/control tool for a device-control goal (status lookups may still "
+    "learn when hard_won_workflow=true).\n"
     "When subtask_results are present, distill a multi-step orchestration "
     "procedure across domains."
 )
@@ -99,10 +104,16 @@ def build_observer_payload(
             }
         )
 
+    # Lazy import: runtime imports is_discovery_tool from this module.
+    from .runtime import is_hard_won_workflow, struggle_event_count
+
+    hard_won = is_hard_won_workflow(trace)
     return {
         "user_goal": trace.user_text,
         "route": trace.route,
         "manual_save_requested": manual_save,
+        "hard_won_workflow": hard_won,
+        "struggle_events": struggle_event_count(trace),
         "assistant_summary": (trace.assistant_text or "")[:1500],
         "history": history[-6:],
         "tools": tools,

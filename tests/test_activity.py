@@ -113,3 +113,53 @@ def test_get_turn_by_timestamp_and_latest() -> None:
     latest = activity.get_turn(hass, "entry-1", latest=True)
     assert latest is not None
     assert latest["user_text"] == "weather"
+
+
+def test_find_prior_workflow_turn_skips_manual_save() -> None:
+    """Manual-save requests are skipped in favor of the prior tool turn."""
+    activity = _load_activity_module()
+    TurnTrace = sys.modules["ha_agent.skills.models"].TurnTrace
+
+    hass = MagicMock()
+    hass.data = {}
+    activity.record_turn(
+        hass,
+        "entry-1",
+        TurnTrace(
+            user_text="what is the temperature in Jonathans room?",
+            history_len=2,
+            assistant_text="23.3C",
+            conversation_id="c1",
+            route="action",
+            tool_calls=[
+                {
+                    "toolName": "home_assistant__ha_search",
+                    "succeeded": True,
+                    "arguments": {"query": "jonathan"},
+                }
+            ],
+            iterations=3,
+        ),
+    )
+    activity.record_turn(
+        hass,
+        "entry-1",
+        TurnTrace(
+            user_text="save this as a skill",
+            history_len=4,
+            assistant_text="ok",
+            conversation_id="c1",
+            tool_calls=[],
+        ),
+    )
+    prior = activity.find_prior_workflow_turn(
+        hass,
+        "entry-1",
+        "c1",
+        skip_user_texts=frozenset({"save this as a skill"}),
+    )
+    assert prior is not None
+    assert "temperature" in prior["user_text"]
+    trace = activity.activity_turn_to_trace(prior)
+    assert trace.tool_calls
+    assert trace.route == "action"

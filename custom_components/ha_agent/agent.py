@@ -133,12 +133,14 @@ from .skills.commands import (
     is_skill_admin_query,
     queue_pending_save,
     try_confirm_pending_save,
+    try_handle_manual_skill_save,
     try_handle_skill_command,
 )
 from .skills.creator import persist_skill_draft
 from .skills.discovery import build_skill_hints
 from .skills.evaluator import evaluate_skill_use
 from .skills.learning_policy import (
+    build_deterministic_hard_won_result,
     build_deterministic_override_result,
     prepare_learned_draft,
     resolve_override_observer_result,
@@ -159,6 +161,7 @@ from .skills.params import (
 )
 from .skills.repair import auto_repair_skill, detect_repairable_issues
 from .skills.runtime import (
+    is_hard_won_workflow,
     override_turn_eligible_for_learning,
     should_offer_skill_creation,
 )
@@ -1345,21 +1348,41 @@ async def _post_turn_skills(
                 )
 
     manual_save = bool(_MANUAL_SAVE.search(trace.user_text))
+    learn_trace = trace
+    if manual_save:
+        # "save this as a skill" has no tools — distill the prior workflow turn.
+        from .activity import activity_turn_to_trace, find_prior_workflow_turn
+
+        prior = find_prior_workflow_turn(
+            hass,
+            entry_id,
+            trace.conversation_id,
+            skip_user_texts=frozenset({trace.user_text}),
+        )
+        if prior is None:
+            return (
+                " I couldn't save that — no recent successful tool workflow in "
+                "this conversation.",
+                meta_patch,
+            )
+        learn_trace = activity_turn_to_trace(prior)
+
     if not manual_save and is_preference_shaped_turn(trace.user_text):
         # Preferences belong in durable memory, not skills.
         return suffix, meta_patch
     if manual_save:
         if not should_offer_skill_creation(
-            trace,
+            learn_trace,
             learning_enabled=skills_config.learning_enabled,
             manual_save=True,
         ):
             return (
-                " I couldn't save that — this turn has no successful tool workflow.",
+                " I couldn't save that — the previous turn has no successful "
+                "tool workflow.",
                 meta_patch,
             )
     elif not should_offer_skill_creation(
-        trace,
+        learn_trace,
         learning_enabled=skills_config.learning_enabled,
     ):
         return suffix, meta_patch
@@ -1367,10 +1390,18 @@ async def _post_turn_skills(
     observed = await observe_skill_candidate(
         llm,
         observer_backend,
-        trace=trace,
+        trace=learn_trace,
         history=history,
         manual_save=manual_save,
     )
+    if (
+        (not observed.learn or observed.draft is None)
+        and not manual_save
+        and is_hard_won_workflow(learn_trace)
+    ):
+        hard_won = build_deterministic_hard_won_result(learn_trace)
+        if hard_won is not None:
+            observed = hard_won
     if not observed.learn or observed.draft is None:
         if manual_save:
             return (
@@ -1380,24 +1411,25 @@ async def _post_turn_skills(
             )
         return suffix, meta_patch
 
-    prepared = prepare_learned_draft(observed.draft, trace)
+    prepared = prepare_learned_draft(observed.draft, learn_trace)
     if prepared is None:
         if manual_save:
             return (
-                " I couldn't save that — this turn has no executable tool workflow.",
+                " I couldn't save that — the previous turn has no executable "
+                "tool workflow.",
                 meta_patch,
             )
         return suffix, meta_patch
 
     if manual_save or skills_config.auto_save:
 
-        async def _save(*, _draft=prepared) -> None:
+        async def _save(*, _draft=prepared, _trace=learn_trace) -> None:
             try:
                 await persist_skill_draft(
                     hass,
                     entry_id,
                     _draft,
-                    trace=trace,
+                    trace=_trace,
                     apply_quality_gate=False,
                 )
                 await _update_skill_status(hass, entry_id)
@@ -1411,7 +1443,7 @@ async def _post_turn_skills(
         hass,
         entry_id,
         trace.conversation_id,
-        trace=trace,
+        trace=learn_trace,
         history=history,
         skill_draft=prepared,
         observer_reason=observed.reason,
@@ -1471,6 +1503,30 @@ async def run_agent(
         yield AgentDelta(content=confirm)
         return
 
+    role_registry = collapse_identical_roles(
+        build_role_registry(backend, router_config)
+    )
+    if reply := await try_handle_manual_skill_save(
+        hass,
+        entry_id,
+        conversation_id,
+        user_text,
+        llm=llm,
+        backend=role_registry.backend_for(ModelRole.OBSERVER),
+        history=history,
+    ):
+        append_turn(
+            hass,
+            conversation_id,
+            user_text,
+            reply,
+            max_turns=agent_config.history_turns,
+            entry_id=entry_id,
+        )
+        await _update_skill_status(hass, entry_id)
+        yield AgentDelta(content=reply)
+        return
+
     if is_skill_admin_query(user_text) and (
         reply := await try_handle_skill_command(hass, entry_id, user_text)
     ):
@@ -1488,9 +1544,6 @@ async def run_agent(
 
     route_keywords = await async_route_keyword_map(hass, entry_id)
     classifier_backend = router_config.classifier_backend or backend
-    role_registry = collapse_identical_roles(
-        build_role_registry(backend, router_config)
-    )
     structured = agent_config.structured_output_enabled
     trace = TurnTrace(
         user_text=user_text,

@@ -7,11 +7,16 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 
+from ..activity import activity_turn_to_trace, find_prior_workflow_turn
 from ..const import DATA_KEY, DOMAIN, LOGGER
 from ..context import is_affirmative
 from .creator import create_skill_from_trace
 from .models import PendingSkillDraft
-from .runtime import pop_pending_draft, set_pending_draft
+from .runtime import (
+    pop_pending_draft,
+    set_pending_draft,
+    should_offer_skill_creation,
+)
 from .store import get_skill_store
 
 _ENABLE = re.compile(
@@ -95,6 +100,65 @@ async def try_handle_skill_command(
     if _DELETE.search(user_text):
         return await _cmd_delete_skill(hass, entry_id, user_text)
     return None
+
+
+async def try_handle_manual_skill_save(
+    hass: HomeAssistant,
+    entry_id: str,
+    conversation_id: str | None,
+    user_text: str,
+    *,
+    llm,
+    backend,
+    history: list[dict[str, str]],
+) -> str | None:
+    """Save a skill from the prior successful turn when the user asks to.
+
+    Uses the previous conversation turn's tools — not the empty "save this as
+    a skill" turn — and short-circuits so the action LLM does not invent a
+    refusal.
+    """
+    if not _MANUAL_SAVE.search(user_text):
+        return None
+
+    prior = find_prior_workflow_turn(
+        hass,
+        entry_id,
+        conversation_id,
+        skip_user_texts=frozenset({user_text}),
+    )
+    if prior is None:
+        return (
+            "I couldn't save that — no recent successful tool workflow in this "
+            "conversation."
+        )
+
+    trace = activity_turn_to_trace(prior)
+    if not should_offer_skill_creation(
+        trace,
+        learning_enabled=False,
+        manual_save=True,
+    ):
+        return (
+            "I couldn't save that — the previous turn has no successful tool "
+            "workflow."
+        )
+
+    skill = await create_skill_from_trace(
+        hass,
+        entry_id,
+        llm,
+        backend,
+        trace=trace,
+        history=history,
+        manual_save=True,
+    )
+    if skill is None:
+        return (
+            "I don't think that turn has a reusable workflow worth saving "
+            "as a skill."
+        )
+    return f"Saved skill: {skill.title}."
 
 
 async def try_confirm_pending_save(
