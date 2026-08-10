@@ -2053,9 +2053,10 @@ async def run_agent(
         trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
         if iteration > 0 and not loop_state.preserve_stream_ui:
+            # Clear prior draft answer text between steps, but keep streamed
+            # reasoning for the whole turn (clearing it made panels vanish
+            # mid-turn after tools / before a stuck message).
             yield AgentDelta(content_clear=True)
-            if agent_config.show_reasoning_in_chat:
-                yield AgentDelta(thinking_clear=True)
         loop_state.preserve_stream_ui = False
         inject_loop_context(messages, loop_state)
         if agent_config.turn_token_budget > 0:
@@ -2143,8 +2144,8 @@ async def run_agent(
                 aborted=session.aborted_reasoning_loop,
             )
             if stream_reasoning_action == "retry":
-                if agent_config.show_reasoning_in_chat:
-                    yield AgentDelta(thinking_clear=True)
+                # Keep streamed reasoning visible — clearing it made stuck turns
+                # look like reasoning never happened.
                 messages.append(
                     {
                         "role": INTERNAL_GUIDANCE_ROLE,
@@ -2156,8 +2157,6 @@ async def run_agent(
                 use_chat_backend = _stick_action_or_chat(route)
                 continue
             if stream_reasoning_action == "stuck":
-                if agent_config.show_reasoning_in_chat:
-                    yield AgentDelta(thinking_clear=True)
                 _attach_plan_progress(turn_meta, loop_state, trace)
                 yield AgentDelta(
                     content=_finalize_stuck_turn(trace, loop_state),
@@ -2367,8 +2366,7 @@ async def run_agent(
                 content=assistant_text,
             )
             if buffered_reasoning_action == "retry":
-                if agent_config.show_reasoning_in_chat:
-                    yield AgentDelta(thinking_clear=True)
+                # Keep prior reasoning in the console for diagnosis.
                 messages.append(
                     {
                         "role": INTERNAL_GUIDANCE_ROLE,
@@ -2380,8 +2378,6 @@ async def run_agent(
                 use_chat_backend = _stick_action_or_chat(route)
                 continue
             if buffered_reasoning_action == "stuck":
-                if agent_config.show_reasoning_in_chat:
-                    yield AgentDelta(thinking_clear=True)
                 _attach_plan_progress(turn_meta, loop_state, trace)
                 yield AgentDelta(
                     content=_finalize_stuck_turn(trace, loop_state),
