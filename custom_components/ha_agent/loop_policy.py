@@ -778,14 +778,94 @@ def redundant_override_tool_block(
 
 
 def _is_search_like_tool(tool_name: str) -> bool:
-    """Return True for list/search/discovery tools."""
+    """Return True for list/search/discovery tools (not detail fetches)."""
     lowered = tool_name.lower()
+    if _is_detail_fetch_tool(tool_name):
+        return False
     return bool(
         re.search(
-            r"(search|list|discover|tools/list|tools_list|mailbox_status|get_message)",
+            r"(search|list|discover|tools/list|tools_list|mailbox_status)",
             lowered,
         )
     )
+
+
+_DETAIL_FETCH_TOOL = re.compile(
+    r"get_message|fetch_message|read_message|get_item|fetch_item|get_body|fetch_body",
+    re.IGNORECASE,
+)
+# Explicit ask to open one message/item — keep detail-fetch plan steps.
+_EXPLICIT_ITEM_DETAIL_GOAL = re.compile(
+    r"\b("
+    r"read\s+(?:the\s+)?(?:first|second|third|fourth|fifth|last|latest|full|entire)|"
+    r"open\s+(?:the\s+)?(?:first|second|third|last|latest|message|email|mail)|"
+    r"show\s+(?:me\s+)?(?:the\s+)?(?:full\s+)?(?:body|content|message)|"
+    r"full\s+(?:message|email|content|body)|"
+    r"what\s+does\s+(?:it|the\s+(?:first|email|message))\s+say"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_detail_fetch_tool(tool_name: str) -> bool:
+    """True for per-item body/detail tools (not list/search or HA get_state)."""
+    lowered = (tool_name or "").lower()
+    if any(
+        marker in lowered
+        for marker in ("get_state", "ha_get_entity", "get_entity", "ha_search")
+    ):
+        return False
+    return bool(_DETAIL_FETCH_TOOL.search(lowered))
+
+
+def _goal_asks_for_item_detail(goal: str) -> bool:
+    return bool(_EXPLICIT_ITEM_DETAIL_GOAL.search(goal or ""))
+
+
+def reconcile_optional_detail_steps_after_list(
+    loop_state: LoopState,
+    *,
+    list_tool: str,
+    entry_count: int,
+) -> int:
+    """Omit trailing detail-fetch steps when a list already covers an overview goal.
+
+    Skills often include get_message after search. For \"do I have new emails\" the
+    search hits (count + subjects) are enough; forcing get_message caused
+    reasoning stalls when message_id was unbound.
+    """
+    if entry_count < 0 or loop_state.skill_plan_override or not loop_state.plan_steps:
+        return 0
+    if _goal_asks_for_item_detail(loop_state.plan_goal):
+        return 0
+    omitted = 0
+    for index, step in enumerate(loop_state.plan_steps):
+        status = (
+            loop_state.plan_step_statuses[index]
+            if index < len(loop_state.plan_step_statuses)
+            else "pending"
+        )
+        if status not in {"pending", "needs_work"}:
+            continue
+        name = str(step.get("toolName") or "")
+        if not _is_detail_fetch_tool(name):
+            continue
+        omit_plan_step(
+            loop_state,
+            index,
+            "Overview goal — list results are enough; detail fetch not required.",
+        )
+        omitted += 1
+    if omitted:
+        hint = (
+            f"LIST RESULT SUFFICIENT ({entry_count} item(s) from `{list_tool}`). "
+            "Detail-fetch plan steps were omitted. Answer the user now from the "
+            "list (count, subjects/titles, senders) — do not invent content; "
+            "do not call detail-fetch tools unless the user asked to open one."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, hint)
+    return omitted
 
 
 def _infer_next_catalog_tool(loop_state: LoopState, *, after_tool: str) -> str | None:
@@ -1126,6 +1206,12 @@ def _search_result_entries(data: dict[str, Any]) -> list[Any] | None:
         entries = data.get(key)
         if isinstance(entries, list):
             return entries
+    nested = data.get("data")
+    if isinstance(nested, dict):
+        for key in ("messages", "items", "results", "entities"):
+            entries = nested.get(key)
+            if isinstance(entries, list):
+                return entries
     return None
 
 
@@ -1688,6 +1774,12 @@ def analyze_search_tool_result(
         summary = "SEARCH RESULT: the query returned no items."
         if filtered:
             summary += " Active filters may still apply to follow-up calls."
+        if not _is_entity_search_result(tool_name, data):
+            reconcile_optional_detail_steps_after_list(
+                loop_state,
+                list_tool=tool_name,
+                entry_count=0,
+            )
         _inject_next_tool_adherence(
             loop_state,
             lead_in=summary,
@@ -1839,6 +1931,14 @@ def analyze_search_tool_result(
             "requested quantity in the user goal (e.g. temperature ≠ voltage). "
             "Then ha_get_state that entity_id — do not invent values from "
             "unrelated sensors."
+        )
+    elif entries is not None and not _is_entity_search_result(tool_name, data):
+        # Mail/news-style lists: overview asks do not need per-item get_*.
+        # Empty lists still answer "any new?" without opening a message.
+        reconcile_optional_detail_steps_after_list(
+            loop_state,
+            list_tool=tool_name,
+            entry_count=len(entries),
         )
 
     _inject_next_tool_adherence(loop_state, lead_in=summary, after_tool=tool_name)

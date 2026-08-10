@@ -363,6 +363,99 @@ def test_reconcile_plan_after_tools_omits_skipped_prerequisites() -> None:
     assert state.plan_current_step_index == 2
 
 
+def test_list_search_omits_detail_fetch_for_overview_goal() -> None:
+    """After imap_search, overview asks omit get_message and push an answer."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="do I have new emails",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_mailbox_status"},
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+    )
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+    output = json.dumps(
+        {
+            "data": {
+                "messages": [
+                    {
+                        "subject": "Shipped",
+                        "from": "amazon@example.com",
+                        "message_id": "imap:1",
+                    }
+                ],
+                "returned": 1,
+                "total": 1,
+            }
+        }
+    )
+    unproductive = policy.analyze_search_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "unread_only": True},
+    )
+    assert unproductive is False
+    assert state.plan_step_statuses[2] == "omitted"
+    assert any("LIST RESULT SUFFICIENT" in hint for hint in state.mcp_guidance)
+    assert "get_message" not in policy.describe_plan_next_action(state).lower()
+    assert "answer" in policy.describe_plan_next_action(state).lower()
+
+
+def test_list_search_keeps_detail_fetch_when_user_asks_to_read_one() -> None:
+    """Explicit 'read the first' keeps get_message on the plan."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="read the first unread email",
+        route="email",
+        tool_steps=[
+            {"toolName": "mail_mcp__imap_search_messages"},
+            {"toolName": "mail_mcp__imap_get_message"},
+        ],
+    )
+    policy.record_plan_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        {"mailbox": "INBOX", "unread_only": True},
+        succeeded=True,
+    )
+    output = json.dumps(
+        {
+            "data": {
+                "messages": [{"subject": "Hello", "message_id": "imap:1"}],
+                "returned": 1,
+            }
+        }
+    )
+    policy.analyze_search_tool_result(
+        state,
+        "mail_mcp__imap_search_messages",
+        output,
+        {"mailbox": "INBOX", "unread_only": True},
+    )
+    assert state.plan_step_statuses[1] == "pending"
+    assert "get_message" in policy.describe_plan_next_action(state).lower()
+
+
+def test_is_search_like_tool_excludes_detail_fetch() -> None:
+    policy = _load_loop_policy()
+    assert policy._is_search_like_tool("mail_mcp__imap_search_messages") is True
+    assert policy._is_search_like_tool("mail_mcp__imap_get_message") is False
+    assert policy._is_detail_fetch_tool("mail_mcp__imap_get_message") is True
+    assert policy._is_detail_fetch_tool("home_assistant__ha_get_state") is False
+
+
 def test_reconcile_plan_before_answer_omits_remaining_pending() -> None:
     """Pending steps are omitted when the model is ready to answer."""
     policy = _load_loop_policy()
