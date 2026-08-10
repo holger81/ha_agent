@@ -328,34 +328,35 @@ def undo_to_dict(undo: SkillSimplifyUndo | None) -> dict[str, Any] | None:
     }
 
 
-async def resolve_strong_simplify_backend(
+async def resolve_simplify_backend(
     hass: HomeAssistant,
     entry_id: str,
+    *,
+    model_id: str | None = None,
 ) -> tuple[LlmBackend, str]:
-    """Prefer the top-ranked eval model, else the configured chat model."""
+    """Use chat model by default, or an explicit model id from the Skills UI."""
     from ..api.helpers import get_entry
 
     entry = get_entry(hass, entry_id)
     base = get_llm_backend(entry)
+    chosen = (model_id or "").strip() or base.model
     backend = replace(
         base,
+        model=chosen,
         max_tokens=max(int(base.max_tokens), 4096),
         temperature=min(float(base.temperature), 0.2),
     )
-    label = f"chat model ({backend.model})"
-    try:
-        from ..eval.store import get_eval_store
-
-        store = get_eval_store(hass, entry_id)
-        scores = await hass.async_add_executor_job(store.list_model_scores)
-        if scores:
-            top = str(scores[0].get("model_id") or "").strip()
-            if top:
-                backend = replace(backend, model=top)
-                label = f"top eval model ({top})"
-    except Exception as err:
-        LOGGER.debug("Simplify strong-model lookup skipped: %s", err)
+    label = f"chat model ({chosen})" if chosen == base.model else chosen
     return backend, label
+
+
+# Back-compat alias for older call sites / tests.
+async def resolve_strong_simplify_backend(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> tuple[LlmBackend, str]:
+    """Deprecated name — prefer :func:`resolve_simplify_backend`."""
+    return await resolve_simplify_backend(hass, entry_id)
 
 
 async def propose_skill_simplification(

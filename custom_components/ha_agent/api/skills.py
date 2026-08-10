@@ -585,11 +585,16 @@ async def apply_skill_generalize(
 async def propose_skill_simplify(
     hass: HomeAssistant,
     entry_id: str,
+    *,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
-    """Ask a strong model how to simplify/combine skills (preview only)."""
+    """Ask an LLM how to simplify/combine skills (preview only).
+
+    Defaults to the configured chat model; ``model_id`` selects any server model.
+    """
     from ..skills.simplify import (
         propose_skill_simplification,
-        resolve_strong_simplify_backend,
+        resolve_simplify_backend,
     )
 
     store = get_skill_store(hass, entry_id)
@@ -601,7 +606,9 @@ async def propose_skill_simplify(
     skills = await hass.async_add_executor_job(_load)
     session = async_get_clientsession(hass)
     llm = LlmClient(session)
-    backend, model_label = await resolve_strong_simplify_backend(hass, entry_id)
+    backend, model_label = await resolve_simplify_backend(
+        hass, entry_id, model_id=model_id
+    )
     try:
         return await propose_skill_simplification(
             hass,

@@ -944,6 +944,7 @@ async def ws_skills_generalize_apply(
     {
         vol.Required("type"): "ha_agent/skills/simplify/propose",
         **_entry_id_schema(),
+        vol.Optional("model_id"): str,
     }
 )
 @websocket_api.async_response
@@ -951,7 +952,11 @@ async def ws_skills_simplify_propose(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
-    result = await skills_api.propose_skill_simplify(hass, msg["entry_id"])
+    result = await skills_api.propose_skill_simplify(
+        hass,
+        msg["entry_id"],
+        model_id=str(msg["model_id"]) if msg.get("model_id") else None,
+    )
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
 

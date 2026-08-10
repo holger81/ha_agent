@@ -44,6 +44,7 @@ class HaAgentPanel extends HTMLElement {
     this._skillSimplifyProposals = null;
     this._skillSimplifySummary = "";
     this._skillSimplifyModel = "";
+    this._skillSimplifySelectedModel = "";
     this._skillSimplifyUndo = null;
     this._skillSimplifyBusy = false;
     this._pendingDraftPreviewOpen = true;
@@ -3973,11 +3974,15 @@ class HaAgentPanel extends HTMLElement {
 
     return `
       ${notice}
-      <div class="actions" style="margin-bottom:12px">
+      <div class="actions" style="margin-bottom:12px;flex-wrap:wrap;align-items:center">
         <input id="skill-search" placeholder="Search skills..." />
         <button data-action="skill-search">Search</button>
         <button data-action="skill-new">New skill</button>
         <button data-action="skill-find-merges">Find merges</button>
+        <label class="role-enable" style="display:inline-flex;align-items:center;gap:6px;margin:0">
+          Simplify model
+          ${this._renderSimplifyModelPicker()}
+        </label>
         <button data-action="skill-simplify" ${this._skillSimplifyBusy ? "disabled" : ""}>${this._skillSimplifyBusy ? "Simplifying…" : "Simplify skills"}</button>
         <button data-action="skill-sync">Sync from disk</button>
         <button data-action="skill-export-md">Export MD</button>
@@ -3993,6 +3998,35 @@ class HaAgentPanel extends HTMLElement {
       ${this._renderSkillMergeProposals()}
       ${this._renderSkillDetail()}
       ${this._renderSkillEditor()}`;
+  }
+
+  _simplifyModelChoices() {
+    const chat = String(this._config?.llm_model || "").trim();
+    const models = [...(this._llmModels || [])];
+    if (chat && !models.includes(chat)) models.unshift(chat);
+    return { chat, models };
+  }
+
+  _renderSimplifyModelPicker() {
+    const { chat, models } = this._simplifyModelChoices();
+    const selected =
+      String(this._skillSimplifySelectedModel || "").trim() || chat || "";
+    if (!models.length && !selected) {
+      return `<select id="skill-simplify-model" disabled><option value="">Refresh models in Settings…</option></select>`;
+    }
+    const options = models.length
+      ? models
+      : selected
+        ? [selected]
+        : [];
+    return `<select id="skill-simplify-model"${this._skillSimplifyBusy ? " disabled" : ""}>
+      ${options
+        .map((id) => {
+          const label = id === chat ? `${id} (chat)` : id;
+          return `<option value="${this._escape(id)}" ${id === selected ? "selected" : ""}>${this._escape(label)}</option>`;
+        })
+        .join("")}
+    </select>`;
   }
 
   _renderRouteEditor() {
@@ -4527,20 +4561,23 @@ class HaAgentPanel extends HTMLElement {
     enabledKey,
     modelKey,
     urlKey,
-    enabled,
+    enabled: _enabled,
     model,
     baseUrl,
     inheritHint,
   }) {
-    const dedicated = Boolean(enabled || (model || "").trim());
+    // Dedicated only when a concrete model is saved. enabled+empty used to
+    // render as checked+Inherit, which looked like a broken selection.
+    const modelId = String(model || "").trim();
+    const dedicated = Boolean(modelId);
     return `
       <div class="role-editor-row">
         <div class="role-editor-title">${this._escape(title)}</div>
         <div class="role-editor-fields">
           <label class="role-enable"><input type="checkbox" data-config-bool="${enabledKey}" data-role-enable="${enabledKey}" ${dedicated ? "checked" : ""}/> Dedicated</label>
-          <label>Model${this._renderModelPicker(modelKey, dedicated ? model : "", {
+          <label>Model${this._renderModelPicker(modelKey, dedicated ? modelId : "", {
             allowEmpty: true,
-            emptyLabel: inheritHint,
+            emptyLabel: dedicated ? "Select a model…" : inheritHint,
             disabled: !dedicated,
           })}</label>
           <label>Base URL<input data-config="${urlKey}" value="${this._escape(baseUrl || "")}" placeholder="defaults to chat base URL" ${dedicated ? "" : "disabled"} /></label>
@@ -4689,7 +4726,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.planner_model_enabled,
             model: c.planner_model,
             baseUrl: c.planner_llm_base_url,
-            inheritHint: "Inherit router / chat",
+            inheritHint: "Inherit router",
           })}
           ${this._renderRoleModelRow({
             title: "Verifier",
@@ -4699,7 +4736,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.verifier_model_enabled,
             model: c.verifier_model,
             baseUrl: c.verifier_llm_base_url,
-            inheritHint: "Inherit router / chat",
+            inheritHint: "Inherit router",
           })}
           ${this._renderRoleModelRow({
             title: "Observer",
@@ -4709,7 +4746,7 @@ class HaAgentPanel extends HTMLElement {
             enabled: c.observer_model_enabled,
             model: c.observer_model,
             baseUrl: c.observer_llm_base_url,
-            inheritHint: "Inherit router / chat",
+            inheritHint: "Inherit router",
           })}
         </div>
 
@@ -5692,11 +5729,15 @@ class HaAgentPanel extends HTMLElement {
         this._render();
         try {
           if (this._tab === "activity") await this._loadActivity();
-          if (this._tab === "skills") await this._loadSkills();
+          if (this._tab === "skills") {
+            await this._loadSkills();
+            void this._loadLlmModels();
+          }
           if (this._tab === "routes") await this._loadRouteKeywords();
           if (this._tab === "recovery") await this._loadRecoveryHints();
           if (this._tab === "eval") await this._loadEvalStatus();
           if (this._tab === "memory") await this._loadMemoriesTab();
+          if (this._tab === "settings") void this._loadLlmModels();
         } catch (err) {
           const message = err?.message || String(err);
           if (this._tab === "skills") {
@@ -5892,14 +5933,27 @@ class HaAgentPanel extends HTMLElement {
       }
     });
 
+    this.shadowRoot.querySelector("#skill-simplify-model")?.addEventListener("change", (ev) => {
+      this._skillSimplifySelectedModel = String(ev.target?.value || "").trim();
+    });
+
     this.shadowRoot.querySelector('[data-action="skill-simplify"]')?.addEventListener("click", async () => {
       this._skillSimplifyBusy = true;
-      this._skillNotice = "Asking a strong model for simplification proposals…";
+      const picker = this.shadowRoot.querySelector("#skill-simplify-model");
+      if (picker) {
+        this._skillSimplifySelectedModel = String(picker.value || "").trim();
+      }
+      const modelId =
+        this._skillSimplifySelectedModel ||
+        String(this._config?.llm_model || "").trim();
+      this._skillNotice = modelId
+        ? `Asking ${modelId} for simplification proposals…`
+        : "Asking the chat model for simplification proposals…";
       this._render();
       try {
-        const data = await this._call("ha_agent/skills/simplify/propose", {
-          entry_id: this._entryId,
-        });
+        const payload = { entry_id: this._entryId };
+        if (modelId) payload.model_id = modelId;
+        const data = await this._call("ha_agent/skills/simplify/propose", payload);
         this._skillSimplifyProposals = data.proposals || [];
         this._skillSimplifySummary = data.summary || "";
         this._skillSimplifyModel = data.model_used || "";
@@ -6343,8 +6397,16 @@ class HaAgentPanel extends HTMLElement {
         const on = checkbox.checked;
         row.querySelectorAll("select[data-config], input[data-config]").forEach((el) => {
           el.disabled = !on;
-          if (!on && el.tagName === "SELECT") {
+          if (el.tagName !== "SELECT") return;
+          if (!on) {
             el.value = "";
+            return;
+          }
+          // Turning Dedicated on with Inherit still selected looked broken —
+          // prefer the first concrete server model when available.
+          if (!el.value) {
+            const first = [...el.options].find((opt) => Boolean(opt.value));
+            if (first) el.value = first.value;
           }
         });
       });
