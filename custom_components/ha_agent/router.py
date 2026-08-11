@@ -55,9 +55,10 @@ _ROUTE_CLASSIFIER_PROMPT = (
     'Return ONLY valid JSON: {{"route": "chat"|"action"}}.\n'
     "Rules:\n"
     "- chat: greetings, jokes, chitchat, general questions, email, news, "
-    "capabilities, and anything that is not device control.\n"
-    "- action: control devices (lights, covers, locks, climate) or camera "
-    "snapshots.\n"
+    "stock, capabilities, device status questions (is X on?), and anything "
+    "that is not device control.\n"
+    "- action: control devices (turn on/off, open/close, set temperature, "
+    "lock/unlock) or camera snapshots.\n"
     "- Pick chat when the request is not clearly device control."
 )
 
@@ -71,8 +72,8 @@ _ROUTE_CLASSIFIER_CATALOG: tuple[tuple[str, str, str], ...] = (
     (
         "action",
         "Device action",
-        "The user asks to control or check a device, such as lights, "
-        "switches, covers, locks, climate, or a camera snapshot.",
+        "The user asks to control a device (lights, switches, covers, locks, "
+        "climate) or take a camera snapshot — not status questions.",
     ),
 )
 

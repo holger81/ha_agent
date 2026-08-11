@@ -23,11 +23,20 @@ def eval_case_to_dict(case: EvalCase) -> dict[str, Any]:
         "promoted_at": case.promoted_at,
         "source_timestamp": case.source_timestamp,
         "source_conversation_id": case.source_conversation_id,
+        "expected_route": case.expected_route,
+        "expected_domain_hint": case.expected_domain_hint,
+        "history": list(case.history),
     }
 
 
 def eval_case_from_dict(data: dict[str, Any]) -> EvalCase:
     """Deserialize a stored eval case."""
+    history_raw = data.get("history") or []
+    history = (
+        [dict(item) for item in history_raw if isinstance(item, dict)]
+        if isinstance(history_raw, list)
+        else []
+    )
     return EvalCase(
         id=str(data["id"]),
         task=str(data["task"]),
@@ -42,4 +51,15 @@ def eval_case_from_dict(data: dict[str, Any]) -> EvalCase:
         promoted_at=data.get("promoted_at"),
         source_timestamp=data.get("source_timestamp"),
         source_conversation_id=data.get("source_conversation_id"),
+        expected_route=(
+            str(data["expected_route"]).strip().lower()
+            if data.get("expected_route")
+            else None
+        ),
+        expected_domain_hint=(
+            str(data["expected_domain_hint"]).strip().lower()
+            if data.get("expected_domain_hint")
+            else None
+        ),
+        history=history,
     )

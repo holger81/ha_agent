@@ -96,9 +96,70 @@ def test_list_eval_cases_filters_tasks() -> None:
 def test_builtin_case_counts() -> None:
     action_cases = eval_cases.cases_for_task("action")
     chat_cases = eval_cases.cases_for_task("chat")
+    routing_cases = eval_cases.cases_for_task("routing")
     assert len(action_cases) == 6
     assert len(chat_cases) == 5
-    assert len(eval_cases.list_eval_cases()) == 16
+    assert len(routing_cases) == 13
+    assert len(eval_cases.list_eval_cases()) == 29
+
+
+def test_score_routing_case_label_match() -> None:
+    case = eval_cases.cases_for_task("routing")[0]
+    assert case.expected_route == "action"
+    score = eval_scorer.score_routing_case(
+        case,
+        model="test-model",
+        route="action",
+        domain_hint=None,
+        latency_ms=40.0,
+        method="llm",
+    )
+    assert score.passed is True
+    assert score.score == pytest.approx(1.0)
+    assert score.tool_match is True
+    assert score.text_match is True
+
+
+def test_score_routing_case_penalizes_wrong_hint() -> None:
+    case = next(
+        item
+        for item in eval_cases.cases_for_task("routing")
+        if item.expected_domain_hint == "email"
+    )
+    score = eval_scorer.score_routing_case(
+        case,
+        model="test-model",
+        route="chat",
+        domain_hint=None,
+        latency_ms=40.0,
+    )
+    assert score.passed is False
+    assert score.score == pytest.approx(0.7)
+    assert score.tool_match is True
+    assert score.text_match is False
+
+
+def test_fallback_assignments_map_routing_to_classifier() -> None:
+    task_scores = [
+        eval_models.EvalTaskScore(
+            task="routing",
+            model="fast-router",
+            score=0.95,
+            case_count=13,
+            passed_count=12,
+        ),
+        eval_models.EvalTaskScore(
+            task="chat",
+            model="gemma",
+            score=0.8,
+            case_count=5,
+            passed_count=4,
+        ),
+    ]
+    assignments = eval_recommender._fallback_assignments(task_scores)
+    assert assignments["classifier"]["model"] == "fast-router"
+    assert assignments["chat"]["model"] == "gemma"
+    assert "routing" not in assignments
 
 
 def test_score_case_passes_when_tool_and_text_match() -> None:

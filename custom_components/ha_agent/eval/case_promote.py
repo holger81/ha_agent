@@ -178,6 +178,7 @@ def build_case_from_turn(
     source_timestamp: float | None = None,
     case_id: str | None = None,
     task_override: str | None = None,
+    domain_hint: str | None = None,
 ) -> EvalCase:
     """Build a promoted eval case from a production turn trace."""
     validate_turn_for_promotion(trace)
@@ -194,6 +195,12 @@ def build_case_from_turn(
     promoted_at = time.time()
     resolved_id = case_id or f"promoted-{int((source_timestamp or promoted_at) * 1000)}"
     max_iterations = max(trace.iterations + 1, 6)
+    expected_route: str | None = None
+    expected_domain_hint: str | None = None
+    if task == "routing":
+        expected_route = (trace.route or "").strip().lower() or None
+        expected_domain_hint = (domain_hint or "").strip().lower() or None
+        max_iterations = 1
     return EvalCase(
         id=resolved_id,
         task=task,
@@ -208,4 +215,6 @@ def build_case_from_turn(
         promoted_at=promoted_at,
         source_timestamp=source_timestamp,
         source_conversation_id=trace.conversation_id,
+        expected_route=expected_route,
+        expected_domain_hint=expected_domain_hint,
     )

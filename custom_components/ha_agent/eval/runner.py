@@ -35,13 +35,21 @@ from ..llm_server import (
 from ..skills.models import TurnTrace
 from .cases import list_eval_cases_for_entry
 from .mcp_mock import EvalMcpClient
-from .models import EVAL_TASKS, EvalCaseScore, EvalRun, EvalRunState, EvalTaskScore
+from .models import (
+    EVAL_TASKS,
+    EvalCase,
+    EvalCaseScore,
+    EvalRun,
+    EvalRunState,
+    EvalTaskScore,
+)
 from .recommender import (
     finalize_settings_recommendation,
     recommend_settings,
     settings_recommendation_to_dict,
 )
-from .scorer import aggregate_task_scores, score_case
+from .routing_bench import run_routing_case
+from .scorer import aggregate_task_scores, score_case, score_routing_case
 from .store import get_eval_store
 
 EVAL_STATE_KEY = "eval_run_states"
@@ -134,8 +142,6 @@ async def run_eval_suite(
     preload_models_flag: bool = False,
 ) -> EvalRun:
     """Run benchmark cases across models and recommend settings."""
-    from ..agent import run_agent
-
     store = get_eval_store(hass, entry_id)
     state_store = _state_store(hass)
     existing = state_store.get(entry_id)
@@ -324,59 +330,19 @@ async def run_eval_suite(
                         responses=list(case.mock_mcp_responses),
                     )
                     conversation_id = f"eval-{run.id}-{case.id}-{model}"
-                    started = time.perf_counter()
-                    try:
-                        async for _delta in run_agent(
+                    run.case_scores.append(
+                        await _benchmark_case(
                             hass,
                             llm=llm,
-                            mcp_client=mcp,
-                            backend=model_backend,
-                            agent_config=eval_agent_config,
-                            router_config=_router_config_for_case(
-                                case.task, router_config
-                            ),
+                            mcp=mcp,
+                            model_backend=model_backend,
+                            eval_agent_config=eval_agent_config,
+                            router_config=router_config,
                             skills_config=skills_config,
                             entry_id=entry_id,
                             conversation_id=conversation_id,
-                            user_text=case.user_text,
-                            exposed_entities=list(case.exposed_entities),
-                        ):
-                            pass
-                    except Exception as err:
-                        LOGGER.warning(
-                            "Eval case %s failed for model %s: %s",
-                            case.id,
-                            model,
-                            err,
-                        )
-                        run.case_scores.append(
-                            EvalCaseScore(
-                                case_id=case.id,
-                                task=case.task,
-                                model=model,
-                                score=0.0,
-                                passed=False,
-                                latency_ms=(time.perf_counter() - started) * 1000,
-                                details=[str(err)],
-                            )
-                        )
-                        continue
-                    latency_ms = (time.perf_counter() - started) * 1000
-                    turns, _total = list_turns(hass, entry_id, limit=1)
-                    trace = (
-                        _trace_from_activity(turns[0])
-                        if turns
-                        else TurnTrace(
-                            user_text=case.user_text,
-                            history_len=0,
-                        )
-                    )
-                    run.case_scores.append(
-                        score_case(
-                            case,
+                            case=case,
                             model=model,
-                            trace=trace,
-                            latency_ms=latency_ms,
                         )
                     )
 
@@ -434,10 +400,120 @@ async def run_eval_suite(
     return run
 
 
-def _router_config_for_case(task: str, router_config: RouterConfig) -> RouterConfig:
+def _router_config_for_case(
+    task: str,
+    router_config: RouterConfig,
+    *,
+    model_backend: LlmBackend | None = None,
+) -> RouterConfig:
+    """Return per-case router settings.
+
+    Non-action agent benches disable action routing so the chat path is forced.
+    Routing microbenches keep action enabled (stubbing a backend if needed) so
+    the classifier catalog includes both chat and action.
+    """
+    if task == "routing":
+        action_backend = router_config.action_backend or model_backend
+        return RouterConfig(
+            action_enabled=True,
+            action_backend=action_backend,
+            classifier_backend=router_config.classifier_backend,
+            email_backend=router_config.email_backend,
+            news_backend=router_config.news_backend,
+            planner_backend=router_config.planner_backend,
+            verifier_backend=router_config.verifier_backend,
+            observer_backend=router_config.observer_backend,
+        )
     if task != "action":
         return RouterConfig(action_enabled=False, action_backend=None)
     return router_config
+
+
+async def _benchmark_case(
+    hass: HomeAssistant,
+    *,
+    llm: LlmClient,
+    mcp: EvalMcpClient,
+    model_backend: LlmBackend,
+    eval_agent_config: AgentConfig,
+    router_config: RouterConfig,
+    skills_config: SkillsConfig,
+    entry_id: str,
+    conversation_id: str,
+    case: EvalCase,
+    model: str,
+) -> EvalCaseScore:
+    """Run one eval case (routing microbench or full agent) and score it."""
+    from ..agent import run_agent
+
+    case_router = _router_config_for_case(
+        case.task, router_config, model_backend=model_backend
+    )
+    started = time.perf_counter()
+    try:
+        if case.task == "routing":
+            resolution = await run_routing_case(
+                llm,
+                model_backend,
+                case,
+                router_config=case_router,
+            )
+            return score_routing_case(
+                case,
+                model=model,
+                route=resolution.route.value,
+                domain_hint=resolution.domain_hint,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                method=resolution.method,
+            )
+
+        async for _delta in run_agent(
+            hass,
+            llm=llm,
+            mcp_client=mcp,
+            backend=model_backend,
+            agent_config=eval_agent_config,
+            router_config=case_router,
+            skills_config=skills_config,
+            entry_id=entry_id,
+            conversation_id=conversation_id,
+            user_text=case.user_text,
+            exposed_entities=list(case.exposed_entities),
+        ):
+            pass
+    except Exception as err:
+        LOGGER.warning(
+            "Eval case %s failed for model %s: %s",
+            case.id,
+            model,
+            err,
+        )
+        return EvalCaseScore(
+            case_id=case.id,
+            task=case.task,
+            model=model,
+            score=0.0,
+            passed=False,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            details=[str(err)],
+        )
+
+    latency_ms = (time.perf_counter() - started) * 1000
+    turns, _total = list_turns(hass, entry_id, limit=1)
+    trace = (
+        _trace_from_activity(turns[0])
+        if turns
+        else TurnTrace(
+            user_text=case.user_text,
+            history_len=0,
+        )
+    )
+    return score_case(
+        case,
+        model=model,
+        trace=trace,
+        latency_ms=latency_ms,
+    )
 
 
 async def benchmark_single_model(
@@ -449,8 +525,6 @@ async def benchmark_single_model(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[EvalCaseScore], list[EvalTaskScore]]:
     """Run all eval cases for one model (used by the discover pipeline)."""
-    from ..agent import run_agent
-
     entry = hass.config_entries.async_get_entry(entry_id)
     chat_backend = get_llm_backend(entry)
     agent_config = get_agent_config(entry)
@@ -503,52 +577,19 @@ async def benchmark_single_model(
                 responses=list(case.mock_mcp_responses),
             )
             conversation_id = f"discover-{entry_id}-{case.id}-{model}"
-            started = time.perf_counter()
-            try:
-                async for _delta in run_agent(
+            case_scores.append(
+                await _benchmark_case(
                     hass,
                     llm=llm,
-                    mcp_client=mcp,
-                    backend=model_backend,
-                    agent_config=eval_agent_config,
-                    router_config=_router_config_for_case(case.task, router_config),
+                    mcp=mcp,
+                    model_backend=model_backend,
+                    eval_agent_config=eval_agent_config,
+                    router_config=router_config,
                     skills_config=skills_config,
                     entry_id=entry_id,
                     conversation_id=conversation_id,
-                    user_text=case.user_text,
-                    exposed_entities=list(case.exposed_entities),
-                ):
-                    if cancel_check and cancel_check():
-                        break
-            except Exception as err:
-                case_scores.append(
-                    EvalCaseScore(
-                        case_id=case.id,
-                        task=case.task,
-                        model=model,
-                        score=0.0,
-                        passed=False,
-                        latency_ms=(time.perf_counter() - started) * 1000,
-                        details=[str(err)],
-                    )
-                )
-                continue
-            latency_ms = (time.perf_counter() - started) * 1000
-            turns, _total = list_turns(hass, entry_id, limit=1)
-            trace = (
-                _trace_from_activity(turns[0])
-                if turns
-                else TurnTrace(
-                    user_text=case.user_text,
-                    history_len=0,
-                )
-            )
-            case_scores.append(
-                score_case(
-                    case,
+                    case=case,
                     model=model,
-                    trace=trace,
-                    latency_ms=latency_ms,
                 )
             )
 

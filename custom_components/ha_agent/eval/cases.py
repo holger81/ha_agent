@@ -232,6 +232,134 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
         mock_mcp_responses=[],
         max_iterations=1,
     ),
+    # Route-classifier microbench (label match; no agent loop).
+    EvalCase(
+        id="routing_action_lights",
+        task="routing",
+        user_text="turn off the dining room lights",
+        exposed_entities=[
+            {
+                "entity_id": "light.dining",
+                "name": "Dining",
+                "state": "on",
+                "area_name": "Dining room",
+            }
+        ],
+        expected_route="action",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_action_cover",
+        task="routing",
+        user_text="open the patio cover",
+        expected_route="action",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_action_camera",
+        task="routing",
+        user_text="take a snapshot from my front door cam",
+        expected_route="action",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_chat_greeting",
+        task="routing",
+        user_text="hello, how are you?",
+        expected_route="chat",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_chat_weather",
+        task="routing",
+        user_text="what is the weather like today",
+        expected_route="chat",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_chat_capabilities",
+        task="routing",
+        user_text="what can you help me with around the house?",
+        expected_route="chat",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_chat_status",
+        task="routing",
+        user_text="is the dining room light on?",
+        exposed_entities=[
+            {
+                "entity_id": "light.dining",
+                "name": "Dining",
+                "state": "on",
+                "area_name": "Dining room",
+            }
+        ],
+        expected_route="chat",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_email_unread",
+        task="routing",
+        user_text="how many unread emails do I have",
+        expected_route="chat",
+        expected_domain_hint="email",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_news_headlines",
+        task="routing",
+        user_text="What's the news?",
+        expected_route="chat",
+        expected_domain_hint="news",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_stock_quote",
+        task="routing",
+        user_text="what's the NASDAQ doing today",
+        expected_route="chat",
+        expected_domain_hint="stock",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_email_followup",
+        task="routing",
+        user_text="mark them as read",
+        history=[
+            {"role": "user", "content": "how many unread emails do I have"},
+            {"role": "assistant", "content": "You have 3 unread emails."},
+        ],
+        expected_route="chat",
+        expected_domain_hint="email",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_news_followup",
+        task="routing",
+        user_text="tell me more about the first one",
+        history=[
+            {"role": "user", "content": "What's the news?"},
+            {
+                "role": "assistant",
+                "content": "Top headline: Example story about markets.",
+            },
+        ],
+        expected_route="chat",
+        expected_domain_hint="news",
+        max_iterations=1,
+    ),
+    EvalCase(
+        id="routing_action_after_email",
+        task="routing",
+        user_text="turn off the kitchen lights",
+        history=[
+            {"role": "user", "content": "how many unread emails do I have"},
+            {"role": "assistant", "content": "You have 3 unread emails."},
+        ],
+        expected_route="action",
+        max_iterations=1,
+    ),
 )
 
 

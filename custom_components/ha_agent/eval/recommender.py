@@ -25,9 +25,10 @@ _SETTINGS_PROMPT = (
     "- classifier: route selection (small, fast model)\n"
     "- planner: multi-domain request decomposition\n"
     "- verifier: goal/skill adherence critic (small, fast model)\n\n"
-    "Eval task labels email/news score domain skills on the chat route; assign "
-    "models to chat/action (and optional skill models), not separate email/news "
-    "routes.\n\n"
+    "Eval task labels:\n"
+    "- routing → assign to classifier (chat vs action + soft domain hints)\n"
+    "- email/news score domain skills on the chat route; assign models to "
+    "chat/action (and optional skill models), not separate email/news routes.\n\n"
     "Server capabilities:\n"
     "{capabilities_json}\n\n"
     "Host/runtime context:\n"
@@ -54,6 +55,17 @@ _SETTINGS_PROMPT = (
     "}}"
 )
 
+# Eval task name → settings model_assignments lane.
+_TASK_TO_ASSIGNMENT_LANE = {
+    "routing": "classifier",
+    "chat": "chat",
+    "action": "action",
+    "email": "email",
+    "news": "news",
+    "planner": "planner",
+    "verifier": "verifier",
+}
+
 
 def _extract_json(content: str) -> dict[str, Any] | None:
     text = content.strip()
@@ -77,13 +89,19 @@ def _fallback_assignments(
     task_scores: list[EvalTaskScore],
 ) -> dict[str, dict[str, str]]:
     best = best_model_per_task(task_scores)
-    return {
-        task: {
-            "model": model,
-            "reason": "Highest benchmark score for this task.",
-        }
-        for task, model in best.items()
-    }
+    assignments: dict[str, dict[str, str]] = {}
+    for task, model in best.items():
+        lane = _TASK_TO_ASSIGNMENT_LANE.get(task, task)
+        reason = (
+            "Highest routing benchmark score (classifier lane)."
+            if task == "routing"
+            else "Highest benchmark score for this task."
+        )
+        # Prefer routing→classifier over any other task that might collide.
+        if lane in assignments and task != "routing" and lane == "classifier":
+            continue
+        assignments[lane] = {"model": model, "reason": reason}
+    return assignments
 
 
 def build_settings_recommendation(

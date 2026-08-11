@@ -1251,7 +1251,7 @@ class HaAgentPanel extends HTMLElement {
   _rankedModelScores(modelScores) {
     const sortBy = this._evalRankSortBy || "mean_score";
     const descending = this._evalRankSortDesc !== false;
-    const tasks = ["chat", "action", "email", "news", "planner", "verifier"];
+    const tasks = ["chat", "action", "email", "news", "planner", "verifier", "routing"];
     const taskSort = sortBy.startsWith("task:")
       ? sortBy.slice(5)
       : tasks.includes(sortBy)
@@ -1431,7 +1431,7 @@ class HaAgentPanel extends HTMLElement {
 
   async _applyEvalRecommendations() {
     if (!this._entryId) return;
-    if (!confirm("Apply recommended chat, action, email, news, and classifier models from the latest eval?")) {
+    if (!confirm("Apply recommended chat, action, email, news, classifier, and other models from the latest eval?")) {
       return;
     }
     const data = await this._call("ha_agent/eval/apply", {
@@ -5060,7 +5060,7 @@ class HaAgentPanel extends HTMLElement {
     const scoreByModelId = Object.fromEntries(
       rankedModels.map((item) => [item.model_id, item]),
     );
-    const rankTasks = ["chat", "action", "email", "news", "planner", "verifier"];
+    const rankTasks = ["chat", "action", "email", "news", "planner", "verifier", "routing"];
     const caps = this._evalCapabilities || run.server_capabilities || {};
     const summary = caps.summary || {};
     const settings = (recommendation.recommendations || [])

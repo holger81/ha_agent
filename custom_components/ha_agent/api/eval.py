@@ -606,6 +606,7 @@ async def promote_activity_turn(
         trace,
         source_timestamp=float(turn.get("timestamp") or timestamp),
         task_override=task,
+        domain_hint=turn.get("domain_hint"),
     )
     store = get_eval_store(hass, entry_id)
     existing = await hass.async_add_executor_job(store.get_custom_case, case.id)
@@ -615,6 +616,7 @@ async def promote_activity_turn(
             source_timestamp=float(turn.get("timestamp") or timestamp),
             case_id=f"{case.id}-{int(time.time())}",
             task_override=task,
+            domain_hint=turn.get("domain_hint"),
         )
     saved = await hass.async_add_executor_job(store.save_custom_case, case)
     return {"case": eval_case_to_dict(saved)}

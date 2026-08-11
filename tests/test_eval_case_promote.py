@@ -171,12 +171,34 @@ def test_list_eval_cases_includes_custom() -> None:
     assert any(case.id == "chat_weather" for case in cases)
 
 
+def test_build_case_from_routing_override() -> None:
+    trace = skills_models.TurnTrace(
+        user_text="how many unread emails do I have",
+        history_len=0,
+        route="chat",
+        assistant_text="You have 3 unread emails.",
+        outcome="success",
+    )
+    case = case_promote.build_case_from_turn(
+        trace,
+        task_override="routing",
+        domain_hint="email",
+        case_id="promoted-routing",
+    )
+    assert case.task == "routing"
+    assert case.expected_route == "chat"
+    assert case.expected_domain_hint == "email"
+    assert case.max_iterations == 1
+
+
 def test_case_serde_round_trip() -> None:
     case = eval_models.EvalCase(
         id="promoted-1",
-        task="email",
+        task="routing",
         user_text="check mail",
-        expected_tool="mail_mcp__imap_search_messages",
+        expected_route="chat",
+        expected_domain_hint="email",
+        history=[{"role": "user", "content": "prior"}],
         source="promoted",
         promoted_at=123.0,
     )
@@ -184,4 +206,7 @@ def test_case_serde_round_trip() -> None:
     restored = case_serde.eval_case_from_dict(payload)
     assert restored.id == case.id
     assert restored.task == case.task
+    assert restored.expected_route == "chat"
+    assert restored.expected_domain_hint == "email"
+    assert restored.history == [{"role": "user", "content": "prior"}]
     assert restored.source == "promoted"

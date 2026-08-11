@@ -5,7 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-EVAL_TASKS = ("chat", "action", "email", "news", "planner", "verifier")
+EVAL_TASKS = (
+    "chat",
+    "action",
+    "email",
+    "news",
+    "planner",
+    "verifier",
+    "routing",
+)
 
 
 @dataclass(slots=True)
@@ -25,6 +33,10 @@ class EvalCase:
     promoted_at: float | None = None
     source_timestamp: float | None = None
     source_conversation_id: str | None = None
+    # Routing microbench: expected TaskRoute value + optional soft domain hint.
+    expected_route: str | None = None
+    expected_domain_hint: str | None = None
+    history: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

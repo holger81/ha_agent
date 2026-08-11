@@ -99,6 +99,51 @@ def score_case(
     )
 
 
+def score_routing_case(
+    case: EvalCase,
+    *,
+    model: str,
+    route: str,
+    domain_hint: str | None,
+    latency_ms: float | None,
+    method: str = "",
+) -> EvalCaseScore:
+    """Score a route-classifier microbench case (label match, no agent loop)."""
+    expected_route = (case.expected_route or "").strip().lower()
+    got_route = (route or "").strip().lower()
+    route_ok = bool(expected_route) and got_route == expected_route
+
+    expected_hint = (case.expected_domain_hint or "").strip().lower() or None
+    got_hint = (domain_hint or "").strip().lower() or None
+    hint_ok = expected_hint == got_hint
+
+    details: list[str] = []
+    if not route_ok:
+        details.append(f"route expected {expected_route!r}, got {got_route!r}")
+    if not hint_ok:
+        details.append(
+            f"domain_hint expected {expected_hint!r}, got {got_hint!r}"
+        )
+    if method:
+        details.append(f"method={method}")
+
+    # Route is the primary decision; soft-domain hint is secondary.
+    score = (0.7 if route_ok else 0.0) + (0.3 if hint_ok else 0.0)
+    return EvalCaseScore(
+        case_id=case.id,
+        task=case.task,
+        model=model,
+        score=score,
+        passed=route_ok and hint_ok,
+        latency_ms=latency_ms,
+        iterations=1,
+        outcome="success" if route_ok and hint_ok else "fail",
+        tool_match=route_ok,
+        text_match=hint_ok,
+        details=details,
+    )
+
+
 def aggregate_task_scores(case_scores: list[EvalCaseScore]) -> list[EvalTaskScore]:
     """Aggregate per-model scores by task."""
     grouped: dict[tuple[str, str], list[EvalCaseScore]] = {}
