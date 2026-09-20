@@ -353,18 +353,6 @@ def _recent_device_context(history: list[dict[str, str]]) -> bool:
     )
 
 
-def _recent_news_context(history: list[dict[str, str]]) -> bool:
-    """Return True when recent turns were about news."""
-    combined = " ".join(message.get("content", "") for message in history[-4:])
-    return bool(is_news_query(combined))
-
-
-def _recent_email_context(history: list[dict[str, str]]) -> bool:
-    """Return True when recent turns were about email."""
-    combined = " ".join(message.get("content", "") for message in history[-4:])
-    return bool(is_email_query(combined))
-
-
 _INFORMATIONAL_FOLLOW_UP = re.compile(
     r"\b("
     r"about|more|detail|details|tell me|explain|what happened|who|why|where|"
@@ -583,6 +571,7 @@ def build_tool_context(
     history: list[dict[str, str]] | None = None,
     skill_hints: str = "",
     route: str | None = None,
+    discovery_domain: str | None = None,
 ) -> str:
     """Build optional tool hints (not route classifiers)."""
     context_parts: list[str] = []
@@ -609,21 +598,12 @@ def build_tool_context(
     if follow_up_hint := _follow_up_device_hint(query, prior_turns):
         context_parts.append(follow_up_hint)
 
-    if is_email_query(query) and not skill_hints.strip():
+    domain = (discovery_domain or "").strip().lower()
+    if domain and not skill_hints.strip():
         context_parts.append(
-            "EMAIL: follow MCP SERVER INSTRUCTIONS. Discover tools in the email "
-            "domain (searchToolsForDomain / searchTool), then callTool with an "
-            "exact toolName from discovery. Never invent tool names."
-        )
-
-    if (
-        is_news_query(query)
-        or (is_affirmative(query) and _recent_news_context(prior_turns))
-    ) and not skill_hints.strip():
-        context_parts.append(
-            "NEWS: follow MCP SERVER INSTRUCTIONS. Discover tools in the news "
-            "domain (searchToolsForDomain / searchTool), then callTool with an "
-            "exact toolName from discovery. Never invent tool names."
+            f"Discover MCP tools in domain `{domain}` (searchToolsForDomain / "
+            "searchTool), then callTool with an exact toolName from discovery. "
+            "Never invent tool names."
         )
 
     if _CAPABILITY_QUERY.search(query):

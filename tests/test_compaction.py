@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load(name: str):
@@ -47,3 +45,24 @@ def test_compact_summarizes_older_tool_results() -> None:
     assert changed is True
     assert messages[1]["content"].startswith("[Earlier tool result summarized]")
     assert messages[3]["content"] == "latest result"
+
+
+def test_compact_keeps_pagination_fields() -> None:
+    payload = (
+        '{"headlines":["'
+        + ("headline " * 40)
+        + '"],"responseCacheId":"abc","hasMore":true,"offset":0}'
+    )
+    messages = [
+        {"role": "user", "content": "news"},
+        {"role": "tool", "content": payload},
+        {"role": "tool", "content": "latest"},
+    ]
+    changed = compaction.compact_messages_if_needed(
+        messages,
+        token_budget=20,
+        keep_recent_tool_results=1,
+    )
+    assert changed is True
+    assert "responseCacheId" in messages[1]["content"]
+    assert "hasMore" in messages[1]["content"]

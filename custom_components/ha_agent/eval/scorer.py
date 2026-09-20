@@ -50,6 +50,32 @@ def _text_matches(trace: TurnTrace, case: EvalCase) -> tuple[bool, list[str]]:
     return True, []
 
 
+_DISCOVERY_MARKERS = (
+    "searchtoolsfordomain",
+    "searchtool",
+    "tools/list",
+    "list_tools",
+    "calltool",
+)
+
+
+def _unexpected_tools(trace: TurnTrace, case: EvalCase) -> list[str]:
+    """Return non-discovery tools that do not match the expected tool."""
+    if not case.expected_tool:
+        return []
+    unexpected: list[str] = []
+    for call in trace.tool_calls:
+        tool_name = str(
+            call.get("toolName") or call.get("name") or call.get("tool_name") or ""
+        )
+        lowered = tool_name.lower()
+        if not tool_name or any(marker in lowered for marker in _DISCOVERY_MARKERS):
+            continue
+        if case.expected_tool not in tool_name:
+            unexpected.append(tool_name)
+    return unexpected
+
+
 def score_case(
     case: EvalCase,
     *,
@@ -72,14 +98,33 @@ def score_case(
     if trace.iterations >= case.max_iterations and not trace.assistant_text:
         details.append("hit iteration limit without final text")
 
-    passed = tool_match and text_match and outcome_ok and not trace.fallback
+    unexpected = _unexpected_tools(trace, case)
+    if unexpected:
+        details.append(f"unexpected tools: {', '.join(unexpected)}")
+    stuck = (trace.outcome or "").lower() == "stuck"
+    if stuck:
+        details.append("stuck outcome")
+        outcome_ok = False
+
+    passed = (
+        tool_match
+        and text_match
+        and outcome_ok
+        and not trace.fallback
+        and not stuck
+        and not unexpected
+    )
     score = 0.0
     if tool_match:
         score += 0.5
     if text_match:
         score += 0.3
-    if outcome_ok and not trace.fallback:
+    if outcome_ok and not trace.fallback and not stuck:
         score += 0.2
+    if unexpected:
+        score -= 0.2
+    if stuck:
+        score = min(score, 0.2)
     if trace.tool_errors:
         score -= 0.1
     score = max(0.0, min(1.0, score))
@@ -95,6 +140,69 @@ def score_case(
         outcome=trace.outcome,
         tool_match=tool_match,
         text_match=text_match,
+        details=details,
+    )
+
+
+def score_planner_case(
+    case: EvalCase,
+    *,
+    model: str,
+    complexity: str,
+    latency_ms: float | None,
+    reason: str = "",
+) -> EvalCaseScore:
+    """Score an isolated planner/triage case."""
+    expected = (case.expected_complexity or "complex").strip().lower()
+    got = (complexity or "").strip().lower()
+    ok = bool(expected) and got == expected
+    details: list[str] = []
+    if not ok:
+        details.append(f"complexity expected {expected!r}, got {got!r}")
+    if reason:
+        details.append(reason)
+    return EvalCaseScore(
+        case_id=case.id,
+        task=case.task,
+        model=model,
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        latency_ms=latency_ms,
+        iterations=1,
+        outcome="success" if ok else "fail",
+        tool_match=ok,
+        text_match=ok,
+        details=details,
+    )
+
+
+def score_verifier_case(
+    case: EvalCase,
+    *,
+    model: str,
+    passed_flag: bool,
+    latency_ms: float | None,
+    reason: str = "",
+) -> EvalCaseScore:
+    """Score an isolated verifier critic case."""
+    expected = case.expected_verifier_pass
+    ok = True if expected is None else passed_flag is expected
+    details: list[str] = []
+    if not ok:
+        details.append(f"verifier pass expected {expected!r}, got {passed_flag!r}")
+    if reason:
+        details.append(reason)
+    return EvalCaseScore(
+        case_id=case.id,
+        task=case.task,
+        model=model,
+        score=1.0 if ok else 0.0,
+        passed=ok,
+        latency_ms=latency_ms,
+        iterations=1,
+        outcome="success" if ok else "fail",
+        tool_match=ok,
+        text_match=ok,
         details=details,
     )
 
@@ -121,9 +229,7 @@ def score_routing_case(
     if not route_ok:
         details.append(f"route expected {expected_route!r}, got {got_route!r}")
     if not hint_ok:
-        details.append(
-            f"domain_hint expected {expected_hint!r}, got {got_hint!r}"
-        )
+        details.append(f"domain_hint expected {expected_hint!r}, got {got_hint!r}")
     if method:
         details.append(f"method={method}")
 

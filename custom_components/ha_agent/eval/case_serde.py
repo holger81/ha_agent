@@ -26,6 +26,8 @@ def eval_case_to_dict(case: EvalCase) -> dict[str, Any]:
         "expected_route": case.expected_route,
         "expected_domain_hint": case.expected_domain_hint,
         "history": list(case.history),
+        "expected_complexity": case.expected_complexity,
+        "expected_verifier_pass": case.expected_verifier_pass,
     }
 
 
@@ -62,4 +64,14 @@ def eval_case_from_dict(data: dict[str, Any]) -> EvalCase:
             else None
         ),
         history=history,
+        expected_complexity=(
+            str(data["expected_complexity"]).strip().lower()
+            if data.get("expected_complexity")
+            else None
+        ),
+        expected_verifier_pass=(
+            bool(data["expected_verifier_pass"])
+            if data.get("expected_verifier_pass") is not None
+            else None
+        ),
     )

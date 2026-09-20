@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _ensure_ha_exc() -> None:
@@ -142,3 +140,25 @@ def test_pending_draft_to_dict_includes_markdown_and_slots() -> None:
     assert "markdown" in sd
     assert "News briefing" in sd["markdown"]
     assert "mcp_news__news_curate" in sd["markdown"]
+
+
+def test_turn_trace_to_dict_includes_loop_diagnostics() -> None:
+    trace = TurnTrace(
+        user_text="what's the news",
+        history_len=1,
+        route="chat",
+        domain_hint="news",
+        route_method="classifier",
+        classifier_summary="chat/news",
+        stuck_kind="reasoning",
+        reasoning_stalls=2,
+        empty_responses=1,
+        outcome="stuck",
+    )
+    data = serialize.turn_trace_to_dict(trace, timestamp=1.0)
+    assert data["domain_hint"] == "news"
+    assert data["route_method"] == "classifier"
+    assert data["classifier_summary"] == "chat/news"
+    assert data["stuck_kind"] == "reasoning"
+    assert data["reasoning_stalls"] == 2
+    assert data["empty_responses"] == 1

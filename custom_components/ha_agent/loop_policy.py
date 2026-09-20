@@ -34,6 +34,8 @@ class LoopState:
     verification_notes: list[str] = field(default_factory=list)
     stuck: bool = False
     stuck_message: str = ""
+    stuck_kind: str = ""
+    verifier_retries: int = 0
     unproductive_iterations: int = 0
     iteration_had_successful_tool: bool = False
     iteration_had_duplicate_block: bool = False
@@ -372,6 +374,7 @@ def should_retry_reasoning_stuck(
 def mark_reasoning_stuck(loop_state: LoopState) -> None:
     """End the turn when reasoning keeps looping without progress."""
     loop_state.stuck = True
+    loop_state.stuck_kind = "reasoning"
     loop_state.stuck_message = (
         "I got stuck repeating the same reasoning without making progress. "
         "Please rephrase or narrow the request."
@@ -422,6 +425,7 @@ def check_stuck(
 
     if blocks >= 2:
         loop_state.stuck = True
+        loop_state.stuck_kind = "duplicate_tool"
         loop_state.stuck_message = (
             "I tried the same tool with the same arguments twice without progress. "
             "Please narrow the request or tell me what to do differently."
@@ -730,6 +734,7 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     loop_state.plan_step_statuses = []
     loop_state.plan_step_notes = []
     loop_state.plan_current_step_index = None
+    loop_state.include_full_tool_catalog = True
     loop_state.mcp_guidance.insert(
         0,
         f"SKILL PLAN SUSPENDED — {reason.strip()[:200]}. {_EXPLORATION_GUIDANCE}",
@@ -763,11 +768,87 @@ def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
     Any non-empty concrete skill plan is enforceable (including 1-step skills
     like news-briefing). Empty plans / no skill title still allow discovery.
     """
+    if not loop_state.plan_steps:
+        return False
     if loop_state.skill_plan_override:
-        return bool(loop_state.plan_steps) and any(
-            status == "done" for status in loop_state.plan_step_statuses
-        )
-    return bool(loop_state.plan_steps) and bool(loop_state.plan_skill_title)
+        # Empty override stays open for discovery; appended steps re-lock.
+        return True
+    return bool(loop_state.plan_skill_title)
+
+
+def is_call_tool_name(tool_name: str) -> bool:
+    """Return True for the MCP proxy callTool schema."""
+    lowered = (tool_name or "").lower()
+    return lowered == "calltool" or lowered.endswith("__calltool")
+
+
+def skill_plan_locks_catalog(loop_state: LoopState) -> bool:
+    """True when the LLM should only see plan tools plus callTool.
+
+    Suspended empty plans unlock discovery. A fully done plan without
+    pending pagination unlocks so the model can answer (not rediscover).
+    """
+    if loop_state.skill_plan_override and not loop_state.plan_steps:
+        return False
+    if not skill_plan_blocks_discovery(loop_state):
+        return False
+    if skill_results_ready_to_answer(loop_state) and not loop_state.pagination_pending:
+        return False
+    return bool(loop_state.plan_steps)
+
+
+def plan_preferred_tool_names(loop_state: LoopState) -> list[str]:
+    """Concrete tool names the locked catalog should keep offering."""
+    names: list[str] = []
+    for step in loop_state.plan_steps:
+        name = str(step.get("toolName") or "").strip()
+        if name:
+            names.append(name)
+    for name in loop_state.preferred_tool_names:
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def append_discovered_plan_tool(loop_state: LoopState, tool_name: str) -> bool:
+    """Add a discovered tool to the override plan and re-lock the catalog."""
+    name = (tool_name or "").strip()
+    if not name or is_call_tool_name(name):
+        return False
+    if _match_plan_step_index(loop_state, name) is not None:
+        return False
+    loop_state.plan_steps.append({"toolName": name})
+    loop_state.plan_step_statuses.append("pending")
+    loop_state.plan_step_notes.append("")
+    if loop_state.plan_current_step_index is None:
+        loop_state.plan_current_step_index = len(loop_state.plan_steps) - 1
+    if name not in loop_state.preferred_tool_names:
+        loop_state.preferred_tool_names.append(name)
+    loop_state.include_full_tool_catalog = False
+    return True
+
+
+def off_plan_tool_block(loop_state: LoopState, tool_name: str) -> str | None:
+    """Block concrete tools that are not on the active skill plan."""
+    if not skill_plan_locks_catalog(loop_state):
+        return None
+    if is_call_tool_name(tool_name):
+        return None
+    from .tools import is_discovery_tool_name
+
+    if is_discovery_tool_name(tool_name):
+        return None
+    if _pagination_allows_repeat(loop_state, tool_name):
+        return None
+    if _match_plan_step_index(loop_state, tool_name) is not None:
+        return None
+    next_tool = _next_plan_tool_name(loop_state)
+    extra = f" Call `{next_tool}` (or callTool) next." if next_tool else ""
+    return (
+        "Tool error: Active skill plan does not include this tool. "
+        f"Stay on the planned steps.{extra} If the skill does not fit, declare "
+        "SKILL_OVERRIDE: <reason> in your reasoning, then retry."
+    )
 
 
 def redundant_override_tool_block(
@@ -2609,6 +2690,8 @@ def analyze_discovery_tool_result(
                     break
 
     if matched:
+        if loop_state.skill_plan_override:
+            append_discovered_plan_tool(loop_state, matched)
         hint = build_mcp_tool_adherence_hint(
             loop_state,
             matched,
@@ -2794,6 +2877,14 @@ def record_plan_tool_result(
 
     loop_state.plan_step_statuses[step_index] = "needs_work"
     loop_state.plan_current_step_index = step_index
+    if not loop_state.skill_plan_override:
+        hint = (
+            "Plan step failed. Retry with the recovery hints, or if this skill "
+            "cannot complete the goal, declare SKILL_OVERRIDE: <reason> in your "
+            "reasoning, then discover."
+        )
+        if hint not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.append(hint)
 
 
 def describe_plan_next_action(loop_state: LoopState) -> str:
@@ -2949,7 +3040,8 @@ def inject_loop_context(
             step = loop_state.plan_steps[index]
             title = str(step.get("toolName") or step.get("title") or "").strip()
             if title:
-                next_step = f"NEXT: {title}"
+                # Loop injection is the authority after a plan is seeded.
+                next_step = describe_plan_next_action(loop_state)
                 break
     if not next_step and skill_results_ready_to_answer(loop_state):
         # Plan is complete — do not fall back to the plan-progress header; that
@@ -3323,6 +3415,7 @@ def mark_iteration_outcome(loop_state: LoopState) -> None:
         loop_state.unproductive_iterations += 1
         if loop_state.unproductive_iterations >= _MAX_UNPRODUCTIVE_ITERATIONS:
             loop_state.stuck = True
+            loop_state.stuck_kind = "unproductive"
             loop_state.stuck_message = (
                 "I kept retrying the same approach without making progress. "
                 "Please narrow the request or tell me what to do differently."

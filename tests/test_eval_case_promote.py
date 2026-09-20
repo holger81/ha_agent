@@ -10,9 +10,7 @@ from pathlib import Path
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _ensure_ha_stubs() -> None:
@@ -199,6 +197,8 @@ def test_case_serde_round_trip() -> None:
         expected_route="chat",
         expected_domain_hint="email",
         history=[{"role": "user", "content": "prior"}],
+        expected_complexity="complex",
+        expected_verifier_pass=False,
         source="promoted",
         promoted_at=123.0,
     )
@@ -209,4 +209,6 @@ def test_case_serde_round_trip() -> None:
     assert restored.expected_route == "chat"
     assert restored.expected_domain_hint == "email"
     assert restored.history == [{"role": "user", "content": "prior"}]
+    assert restored.expected_complexity == "complex"
+    assert restored.expected_verifier_pass is False
     assert restored.source == "promoted"

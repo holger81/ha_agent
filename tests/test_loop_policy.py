@@ -648,7 +648,8 @@ def test_inject_loop_context_includes_plan_on_first_step() -> None:
 
     assert len(messages) == 3
     assert messages[-1]["content"] == "check inbox"
-    assert "NEXT: mail_mcp__imap_mailbox_status" in messages[-2]["content"]
+    assert "mail_mcp__imap_mailbox_status" in messages[-2]["content"]
+    assert "Execute step" in messages[-2]["content"]
     assert len(messages[-2]["content"]) <= policy._MAX_LOOP_GUIDANCE_CHARS
 
 
@@ -2219,3 +2220,55 @@ def test_air_temperature_is_not_an_air_quality_ask() -> None:
         policy._infer_reading_kind("how is the air temperature in the office")
         == "temperature"
     )
+
+
+def test_skill_plan_locks_catalog_until_done_or_override() -> None:
+    """Titled pending plans lock the catalog; suspend unlocks it."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+        skill_title="News briefing",
+    )
+    assert policy.skill_plan_locks_catalog(state) is True
+    policy.record_plan_tool_result(state, "mcp_news__news_curate", {}, succeeded=True)
+    assert policy.skill_plan_locks_catalog(state) is False
+
+    pending = policy.LoopState()
+    policy.initialize_loop_plan(
+        pending,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+        skill_title="News briefing",
+    )
+    policy.suspend_skill_plan(pending, "Need another news tool.")
+    assert pending.include_full_tool_catalog is True
+    assert policy.skill_plan_locks_catalog(pending) is False
+
+
+def test_off_plan_tool_block_and_append_discovered() -> None:
+    """Off-plan tools are blocked; discovered tools re-lock the override plan."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+        skill_title="News briefing",
+    )
+    blocked = policy.off_plan_tool_block(state, "mail_mcp__imap_search_messages")
+    assert blocked is not None
+    assert "does not include this tool" in blocked
+    assert policy.off_plan_tool_block(state, "mcp_news__news_curate") is None
+    assert policy.off_plan_tool_block(state, "callTool") is None
+
+    policy.suspend_skill_plan(state, "Curate missing.")
+    assert policy.append_discovered_plan_tool(state, "mcp_news__news_searx_search")
+    assert state.include_full_tool_catalog is False
+    assert policy.plan_preferred_tool_names(state) == ["mcp_news__news_searx_search"]
+    assert policy.skill_plan_locks_catalog(state) is True

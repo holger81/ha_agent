@@ -37,6 +37,8 @@ class EvalCase:
     expected_route: str | None = None
     expected_domain_hint: str | None = None
     history: list[dict[str, str]] = field(default_factory=list)
+    expected_complexity: str | None = None
+    expected_verifier_pass: bool | None = None
 
 
 @dataclass(slots=True)

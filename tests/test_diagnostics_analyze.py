@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load_analyze():
@@ -84,6 +82,56 @@ def test_analyze_turn_ok_for_clean_success() -> None:
         action["action"] == "promote_eval_case"
         for action in result["suggested_actions"]
     )
+
+
+def test_analyze_turn_detects_reasoning_stuck() -> None:
+    result = analyze_turn_dict(
+        {
+            "user_text": "any local news",
+            "assistant_text": "",
+            "outcome": "stuck",
+            "stuck_kind": "reasoning",
+            "reasoning_stalls": 2,
+            "tool_calls": [{"toolName": "mcp_news__news_curate", "succeeded": True}],
+        }
+    )
+    assert result["severity"] == "error"
+    assert any(issue["kind"] == "reasoning_stuck" for issue in result["issues"])
+
+
+def test_analyze_turn_detects_plan_done_no_answer() -> None:
+    result = analyze_turn_dict(
+        {
+            "user_text": "what's the news",
+            "assistant_text": "",
+            "outcome": "stuck",
+            "stuck_kind": "reasoning",
+            "tool_calls": [{"toolName": "mcp_news__news_curate", "succeeded": True}],
+            "plan_progress": [{"tool": "mcp_news__news_curate", "status": "done"}],
+        }
+    )
+    kinds = {issue["kind"] for issue in result["issues"]}
+    assert "plan_done_no_answer" in kinds
+    assert result["severity"] == "error"
+
+
+def test_analyze_turn_detects_off_plan_tool() -> None:
+    result = analyze_turn_dict(
+        {
+            "user_text": "what's the news",
+            "assistant_text": "Here are headlines.",
+            "outcome": "success",
+            "tool_calls": [
+                {
+                    "toolName": "mail_mcp__imap_search_messages",
+                    "succeeded": True,
+                }
+            ],
+            "plan_progress": [{"tool": "mcp_news__news_curate", "status": "pending"}],
+        }
+    )
+    assert any(issue["kind"] == "off_plan_tool" for issue in result["issues"])
+    assert result["severity"] == "error"
 
 
 def test_analyze_turn_detects_false_action_success() -> None:

@@ -67,12 +67,16 @@ def format_skills_for_context(
         if body_preview:
             lines.append(f"  Workflow:\n{body_preview}")
         if skill.tool_steps:
-            steps = bind_tool_steps(skill.tool_steps, bindings)
-            steps_json = json.dumps(steps, ensure_ascii=True)
-            lines.append(f"  Tool steps: {steps_json}")
+            step_names = [
+                str(step.get("toolName") or "").strip()
+                for step in bind_tool_steps(skill.tool_steps, bindings)
+                if str(step.get("toolName") or "").strip()
+            ]
+            if step_names:
+                lines.append("  Planned tools: " + ", ".join(step_names))
             lines.append(
-                "  Run each tool step once per turn. After the last step, confirm "
-                "the outcome matches the workflow before answering the user."
+                "  The loop injects the required next tool each iteration — "
+                "follow that NEXT / required-step line instead of rediscovering."
             )
         elif body_preview:
             lines.append(

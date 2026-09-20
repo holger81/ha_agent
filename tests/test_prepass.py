@@ -384,3 +384,23 @@ def test_prepass_email_follow_up_inherits_history_and_drops_lights() -> None:
     assert [s.slug for s in kept.skill_selection.skills] == [
         "check-and-read-unread-emails"
     ]
+
+
+def test_heuristic_complexity_marks_and_chained_domains() -> None:
+    """Planner isolation: AND-chained multi-domain asks are COMPLEX."""
+    orchestrator = _load("orchestrator")
+    Complexity = orchestrator.Complexity
+    assert (
+        orchestrator.heuristic_complexity(
+            "check junk mail from the last 5 days and move any misclassified "
+            "messages to the inbox"
+        )
+        == Complexity.COMPLEX
+    )
+    assert (
+        orchestrator.heuristic_complexity(
+            "turn off the dining lights and summarize unread inbox email"
+        )
+        == Complexity.COMPLEX
+    )
+    assert orchestrator.heuristic_complexity("hello") == Complexity.SIMPLE

@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load(name: str):
@@ -62,8 +60,34 @@ def test_prune_keeps_discovery_and_preferred_tools() -> None:
 
 def test_prune_returns_full_catalog_when_requested() -> None:
     full = [_tool(f"tool_{index}") for index in range(12)]
-    assert tool_pruning.prune_loop_tools(
+    assert (
+        tool_pruning.prune_loop_tools(
+            full,
+            max_tools=4,
+            include_full_catalog=True,
+        )
+        == full
+    )
+
+
+def test_prune_lock_to_plan_excludes_discovery_and_fill() -> None:
+    full = [
+        _tool("mcp_a__searchToolsForDomain"),
+        _tool("mcp_a__searchTool"),
+        _tool("mcp_a__callTool"),
+        _tool("mcp_news__news_curate"),
+        _tool("mcp_mail__imap_search"),
+        _tool("home_assistant__ha_call_service"),
+    ]
+    pruned = tool_pruning.prune_loop_tools(
         full,
-        max_tools=4,
+        preferred_names=["mcp_news__news_curate"],
+        max_tools=8,
         include_full_catalog=True,
-    ) == full
+        lock_to_plan=True,
+    )
+    names = [tool_pruning._tool_schema_name(tool) for tool in pruned]
+    assert "mcp_a__callTool" in names
+    assert "mcp_news__news_curate" in names
+    assert "mcp_a__searchTool" not in names
+    assert "mcp_mail__imap_search" not in names

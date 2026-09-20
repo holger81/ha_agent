@@ -77,11 +77,18 @@ def test_is_casual_chat_query_matches_jokes() -> None:
 
 
 def test_build_tool_context_adds_news_hint() -> None:
-    """News queries get generic MCP discovery guidance."""
-    tool_context = context.build_tool_context("What's the news?", [])
+    """Soft-domain discovery uses the passed discovery_domain, not query lists."""
+    tool_context = context.build_tool_context(
+        "What's the news?",
+        [],
+        discovery_domain="news",
+    )
     assert "searchToolsForDomain" in tool_context
     assert "callTool" in tool_context
+    assert "domain `news`" in tool_context
     assert "mcp_news__news_curate" not in tool_context
+    bare = context.build_tool_context("What's the news?", [])
+    assert "searchToolsForDomain" not in bare
 
 
 def test_build_tool_context_adds_device_search_hint() -> None:
@@ -155,11 +162,16 @@ def test_entity_matches_query() -> None:
 
 
 def test_build_tool_context_adds_email_hint() -> None:
-    """Email queries reference MCP discovery workflow."""
-    tool_context = context.build_tool_context("do I have new emails", [])
+    """Email discovery uses the passed discovery_domain, not query lists."""
+    tool_context = context.build_tool_context(
+        "do I have new emails",
+        [],
+        discovery_domain="email",
+    )
     assert "email" in tool_context.lower()
     assert "searchToolsForDomain" in tool_context
     assert "Never invent tool names" in tool_context
+    assert "domain `email`" in tool_context
 
 
 def test_build_tool_context_adds_capability_hint() -> None:

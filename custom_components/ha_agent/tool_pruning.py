@@ -40,17 +40,25 @@ def _is_discovery_name(name: str) -> bool:
     )
 
 
+def is_call_tool_name(name: str) -> bool:
+    """Return True for the MCP proxy callTool schema."""
+    lowered = (name or "").lower()
+    return lowered == "calltool" or lowered.endswith("__calltool")
+
+
 def prune_loop_tools(
     full_tools: list[dict[str, Any]],
     *,
     preferred_names: list[str] | None = None,
     max_tools: int,
     include_full_catalog: bool = False,
+    lock_to_plan: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return a smaller tool list for one loop iteration."""
-    if include_full_catalog or max_tools <= 0 or len(full_tools) <= max_tools:
-        return list(full_tools)
+    """Return a smaller tool list for one loop iteration.
 
+    When ``lock_to_plan`` is set, only preferred (skill-plan) tools and
+    ``callTool`` are offered — no discovery tools and no catalog fill.
+    """
     preferred = [name for name in (preferred_names or []) if name]
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -61,6 +69,22 @@ def prune_loop_tools(
             return
         selected.append(tool)
         seen.add(name)
+
+    if lock_to_plan:
+        for tool in full_tools:
+            name = _tool_schema_name(tool)
+            if is_call_tool_name(name):
+                add_tool(tool)
+        for want in preferred:
+            for tool in full_tools:
+                name = _tool_schema_name(tool)
+                if _names_match(name, want):
+                    add_tool(tool)
+                    break
+        return selected
+
+    if include_full_catalog or max_tools <= 0 or len(full_tools) <= max_tools:
+        return list(full_tools)
 
     for tool in full_tools:
         name = _tool_schema_name(tool)

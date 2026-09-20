@@ -21,6 +21,9 @@ def _severity(issues: list[dict[str, Any]]) -> str:
         "verifier_fail",
         "outcome_failed",
         "false_action_success",
+        "reasoning_stuck",
+        "plan_done_no_answer",
+        "off_plan_tool",
     } & kinds:
         return "error"
     if kinds - {"ok"}:
@@ -52,7 +55,22 @@ def analyze_turn_dict(turn: dict[str, Any]) -> dict[str, Any]:
         )
 
     outcome = str(turn.get("outcome") or "")
-    if outcome and outcome not in {"success", "partial"}:
+    stuck_kind = str(turn.get("stuck_kind") or "").strip()
+    if outcome == "stuck" or stuck_kind == "reasoning":
+        issues.append(
+            {
+                "kind": "reasoning_stuck",
+                "detail": (
+                    f"Turn stuck ({stuck_kind or 'unknown'}) after "
+                    f"{turn.get('reasoning_stalls') or 0} reasoning stall(s)."
+                ),
+                "suggestion": (
+                    "Inspect plan_progress and whether skill results were ready "
+                    "to answer."
+                ),
+            }
+        )
+    elif outcome and outcome not in {"success", "partial"}:
         issues.append(
             {
                 "kind": "outcome_failed",
@@ -179,6 +197,59 @@ def analyze_turn_dict(turn: dict[str, Any]) -> dict[str, Any]:
             break
     if controlled:
         control_ok = True
+    plan_progress = turn.get("plan_progress") or []
+    plan_done = bool(plan_progress) and all(
+        str(item.get("status") or "") in {"done", "omitted"} for item in plan_progress
+    )
+    pending_tools = {
+        str(item.get("tool") or item.get("toolName") or "")
+        for item in plan_progress
+        if str(item.get("status") or "") not in {"done", "omitted"}
+    }
+    executed = [
+        str(call.get("toolName") or call.get("name") or "")
+        for call in tool_calls
+        if not _is_discovery_tool(str(call.get("toolName") or call.get("name") or ""))
+    ]
+    if pending_tools and executed:
+        off_plan = [
+            name
+            for name in executed
+            if name
+            and not any(
+                name == pending or name.endswith(pending) or pending.endswith(name)
+                for pending in pending_tools
+                if pending
+            )
+            and not any(
+                name == str(item.get("tool") or item.get("toolName") or "")
+                for item in plan_progress
+            )
+        ]
+        if off_plan:
+            issues.append(
+                {
+                    "kind": "off_plan_tool",
+                    "detail": (
+                        "Executed tools not on the pending skill plan: "
+                        + ", ".join(off_plan)
+                    ),
+                    "suggestion": (
+                        "Lock the catalog to plan tools or declare SKILL_OVERRIDE."
+                    ),
+                }
+            )
+    if plan_done and not assistant.strip() and outcome in {"stuck", "failed", ""}:
+        issues.append(
+            {
+                "kind": "plan_done_no_answer",
+                "detail": (
+                    "Skill plan steps finished but no assistant answer was produced."
+                ),
+                "suggestion": "Harden the post-plan-done answer/paginate nudge.",
+            }
+        )
+
     if route == "action" and success_claim and not control_ok:
         issues.append(
             {

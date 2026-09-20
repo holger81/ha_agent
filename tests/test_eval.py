@@ -11,9 +11,7 @@ from pathlib import Path
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _ensure_ha_stubs() -> None:
@@ -160,6 +158,111 @@ def test_fallback_assignments_map_routing_to_classifier() -> None:
     assert assignments["classifier"]["model"] == "fast-router"
     assert assignments["chat"]["model"] == "gemma"
     assert "routing" not in assignments
+
+
+def test_score_case_fails_on_stuck_outcome() -> None:
+    case = eval_cases.list_eval_cases(tasks=["news"])[0]
+    trace = skills_models.TurnTrace(
+        user_text=case.user_text,
+        history_len=0,
+        tool_calls=[
+            {
+                "toolName": "mcp_news__news_curate",
+                "name": "mcp_news__news_curate",
+                "arguments": {},
+            }
+        ],
+        assistant_text="",
+        outcome="stuck",
+        stuck_kind="reasoning",
+    )
+    score = eval_scorer.score_case(
+        case,
+        model="test-model",
+        trace=trace,
+        latency_ms=800.0,
+    )
+    assert score.passed is False
+    assert score.score <= 0.2
+    assert any("stuck" in detail for detail in score.details)
+
+
+def test_score_case_penalizes_unexpected_tools() -> None:
+    case = eval_cases.list_eval_cases(tasks=["news"])[0]
+    trace = skills_models.TurnTrace(
+        user_text=case.user_text,
+        history_len=0,
+        tool_calls=[
+            {
+                "toolName": "mail_mcp__imap_search_messages",
+                "name": "mail_mcp__imap_search_messages",
+                "arguments": {},
+            }
+        ],
+        assistant_text="Here are today's headlines.",
+        outcome="success",
+    )
+    score = eval_scorer.score_case(
+        case,
+        model="test-model",
+        trace=trace,
+        latency_ms=800.0,
+    )
+    assert score.passed is False
+    assert score.tool_match is False
+    assert any("unexpected tools" in detail for detail in score.details)
+
+
+def test_parse_verifier_response_and_retry_guidance() -> None:
+    verifier = _load("verifier", COMPONENT / "verifier.py")
+    parsed = verifier.parse_verifier_response(
+        '{"pass": false, "reason": "Goal missed", "skill_followed": false, '
+        '"retry_hint": "Call the planned search tool."}'
+    )
+    assert parsed is not None
+    assert parsed.passed is False
+    guidance = verifier.build_verifier_retry_guidance(parsed)
+    assert "VERIFIER REJECTED" in guidance
+    assert "Call the planned search tool." in guidance
+    assert "Adapt the active skill workflow" in guidance
+
+
+def test_score_planner_and_verifier_cases() -> None:
+    planner = eval_cases.cases_for_task("planner")[0]
+    assert planner.expected_complexity == "complex"
+    ok = eval_scorer.score_planner_case(
+        planner,
+        model="test-model",
+        complexity="complex",
+        latency_ms=10.0,
+        reason="heuristic",
+    )
+    assert ok.passed is True
+    bad = eval_scorer.score_planner_case(
+        planner,
+        model="test-model",
+        complexity="simple",
+        latency_ms=10.0,
+    )
+    assert bad.passed is False
+
+    verifier = eval_cases.cases_for_task("verifier")[0]
+    assert verifier.expected_verifier_pass is False
+    fail_ok = eval_scorer.score_verifier_case(
+        verifier,
+        model="test-model",
+        passed_flag=False,
+        latency_ms=10.0,
+        reason="goal missed",
+    )
+    assert fail_ok.passed is True
+    fail_bad = eval_scorer.score_verifier_case(
+        verifier,
+        model="test-model",
+        passed_flag=True,
+        latency_ms=10.0,
+    )
+    assert fail_bad.passed is False
 
 
 def test_score_case_passes_when_tool_and_text_match() -> None:

@@ -65,7 +65,11 @@ def test_inject_loop_context_is_capped() -> None:
     assert len(messages) == 2
     guidance = messages[0]["content"]
     assert len(guidance) <= policy._MAX_LOOP_GUIDANCE_CHARS
-    assert "NEXT:" in guidance or "previous tool failed" in guidance
+    assert (
+        "NEXT:" in guidance
+        or "Execute step" in guidance
+        or "previous tool failed" in guidance
+    )
     assert state.mcp_guidance == []
     assert state.pending_failure_summary is None
 

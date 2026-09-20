@@ -73,6 +73,12 @@ class TurnTrace:
     outcome: str = ""
     verification_notes: list[str] = field(default_factory=list)
     route: str = ""
+    domain_hint: str | None = None
+    route_method: str = ""
+    classifier_summary: str = ""
+    stuck_kind: str = ""
+    reasoning_stalls: int = 0
+    empty_responses: int = 0
     exposed_entities: list[dict[str, Any]] = field(default_factory=list)
     complexity: str = "simple"
     slot_bindings: dict[str, str] = field(default_factory=dict)

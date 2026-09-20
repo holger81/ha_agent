@@ -8,9 +8,7 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _load_activity_module():
@@ -163,3 +161,38 @@ def test_find_prior_workflow_turn_skips_manual_save() -> None:
     trace = activity.activity_turn_to_trace(prior)
     assert trace.tool_calls
     assert trace.route == "action"
+
+
+def test_activity_persists_loop_diagnostics() -> None:
+    activity = _load_activity_module()
+    TurnTrace = sys.modules["ha_agent.skills.models"].TurnTrace
+
+    hass = MagicMock()
+    hass.data = {}
+    activity.record_turn(
+        hass,
+        "entry-1",
+        TurnTrace(
+            user_text="what's the news",
+            history_len=0,
+            assistant_text="",
+            route="chat",
+            domain_hint="news",
+            route_method="prepass",
+            classifier_summary="chat via news",
+            stuck_kind="reasoning",
+            reasoning_stalls=2,
+            empty_responses=1,
+            outcome="stuck",
+        ),
+    )
+    turns, _total = activity.list_turns(hass, "entry-1")
+    assert turns[0]["domain_hint"] == "news"
+    assert turns[0]["stuck_kind"] == "reasoning"
+    restored = activity.activity_turn_to_trace(turns[0])
+    assert restored.domain_hint == "news"
+    assert restored.route_method == "prepass"
+    assert restored.classifier_summary == "chat via news"
+    assert restored.stuck_kind == "reasoning"
+    assert restored.reasoning_stalls == 2
+    assert restored.empty_responses == 1

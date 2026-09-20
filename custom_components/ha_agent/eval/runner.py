@@ -49,7 +49,13 @@ from .recommender import (
     settings_recommendation_to_dict,
 )
 from .routing_bench import run_routing_case
-from .scorer import aggregate_task_scores, score_case, score_routing_case
+from .scorer import (
+    aggregate_task_scores,
+    score_case,
+    score_planner_case,
+    score_routing_case,
+    score_verifier_case,
+)
 from .store import get_eval_store
 
 EVAL_STATE_KEY = "eval_run_states"
@@ -77,6 +83,12 @@ def _trace_from_activity(data: dict[str, Any]) -> TurnTrace:
         outcome=str(data.get("outcome") or ""),
         conversation_id=data.get("conversation_id"),
         route=str(data.get("route") or ""),
+        domain_hint=data.get("domain_hint"),
+        route_method=str(data.get("route_method") or ""),
+        classifier_summary=str(data.get("classifier_summary") or ""),
+        stuck_kind=str(data.get("stuck_kind") or ""),
+        reasoning_stalls=int(data.get("reasoning_stalls") or 0),
+        empty_responses=int(data.get("empty_responses") or 0),
         exposed_entities=list(data.get("exposed_entities") or []),
     )
 
@@ -408,25 +420,40 @@ def _router_config_for_case(
 ) -> RouterConfig:
     """Return per-case router settings.
 
-    Non-action agent benches disable action routing so the chat path is forced.
-    Routing microbenches keep action enabled (stubbing a backend if needed) so
-    the classifier catalog includes both chat and action.
+    The candidate model is wired into the lane under test so scores are not
+    attributed to production classifier/action backends.
     """
+    extras = {
+        "email_backend": router_config.email_backend,
+        "news_backend": router_config.news_backend,
+        "planner_backend": router_config.planner_backend,
+        "verifier_backend": router_config.verifier_backend,
+        "observer_backend": router_config.observer_backend,
+    }
+    if task == "planner":
+        extras["planner_backend"] = model_backend
+    if task == "verifier":
+        extras["verifier_backend"] = model_backend
     if task == "routing":
-        action_backend = router_config.action_backend or model_backend
         return RouterConfig(
             action_enabled=True,
-            action_backend=action_backend,
-            classifier_backend=router_config.classifier_backend,
-            email_backend=router_config.email_backend,
-            news_backend=router_config.news_backend,
-            planner_backend=router_config.planner_backend,
-            verifier_backend=router_config.verifier_backend,
-            observer_backend=router_config.observer_backend,
+            action_backend=router_config.action_backend or model_backend,
+            classifier_backend=model_backend,
+            **extras,
         )
-    if task != "action":
-        return RouterConfig(action_enabled=False, action_backend=None)
-    return router_config
+    if task == "action":
+        return RouterConfig(
+            action_enabled=True,
+            action_backend=model_backend,
+            classifier_backend=None,
+            **extras,
+        )
+    return RouterConfig(
+        action_enabled=False,
+        action_backend=None,
+        classifier_backend=None,
+        **extras,
+    )
 
 
 async def _benchmark_case(
@@ -449,6 +476,19 @@ async def _benchmark_case(
     case_router = _router_config_for_case(
         case.task, router_config, model_backend=model_backend
     )
+    case_skills = SkillsConfig(
+        learning_enabled=False,
+        auto_save=False,
+        use_enabled=case.task in {"email", "news", "stock"},
+        max_inject=2 if case.task in {"email", "news", "stock"} else 0,
+    )
+    history_prompt = None
+    if case.history:
+        history_prompt = "PRIOR TURNS:\n" + "\n".join(
+            f"{item.get('role', '')}: {item.get('content', '')}"
+            for item in case.history
+            if isinstance(item, dict)
+        )
     started = time.perf_counter()
     try:
         if case.task == "routing":
@@ -467,6 +507,44 @@ async def _benchmark_case(
                 method=resolution.method,
             )
 
+        if case.task == "planner":
+            from ..orchestrator import triage_complexity
+            from ..role_registry import build_role_registry
+
+            registry = build_role_registry(model_backend, case_router)
+            plan = await triage_complexity(
+                llm,
+                registry,
+                user_text=case.user_text,
+                history=list(case.history),
+            )
+            return score_planner_case(
+                case,
+                model=model,
+                complexity=plan.complexity.value,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                reason=plan.reason,
+            )
+
+        if case.task == "verifier":
+            from ..verifier import verify_turn
+
+            result = await verify_turn(
+                llm,
+                model_backend,
+                user_text=case.user_text,
+                assistant_text="I did not search any mailbox.",
+                tool_calls=[],
+                tool_errors=1,
+            )
+            return score_verifier_case(
+                case,
+                model=model,
+                passed_flag=result.passed,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                reason=result.reason,
+            )
+
         async for _delta in run_agent(
             hass,
             llm=llm,
@@ -474,11 +552,12 @@ async def _benchmark_case(
             backend=model_backend,
             agent_config=eval_agent_config,
             router_config=case_router,
-            skills_config=skills_config,
+            skills_config=case_skills,
             entry_id=entry_id,
             conversation_id=conversation_id,
             user_text=case.user_text,
             exposed_entities=list(case.exposed_entities),
+            extra_system_prompt=history_prompt,
         ):
             pass
     except Exception as err:

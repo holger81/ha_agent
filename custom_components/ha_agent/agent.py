@@ -80,6 +80,8 @@ from .loop_policy import (
     maybe_suspend_skill_plan_from_reasoning,
     needs_confirmed_reading,
     note_executed_tool,
+    off_plan_tool_block,
+    plan_preferred_tool_names,
     reasoning_execution_mismatch,
     reconcile_plan_after_tools,
     reconcile_plan_before_answer,
@@ -101,6 +103,8 @@ from .loop_policy import (
     should_retry_missing_reading,
     should_retry_reasoning_stuck,
     skill_plan_blocks_discovery,
+    skill_plan_locks_catalog,
+    skill_results_ready_to_answer,
     suspend_skill_plan,
     user_requests_skill_override,
 )
@@ -197,7 +201,7 @@ from .tools import (
     parse_tool_arguments,
     tool_result_message,
 )
-from .verifier import verify_turn
+from .verifier import build_verifier_retry_guidance, verify_turn
 
 if TYPE_CHECKING:
     from .mcp_client import McpProxyClient
@@ -434,6 +438,9 @@ def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
     trace.verification_notes = list(loop_state.verification_notes)
     trace.skill_plan_override = loop_state.skill_plan_override
     trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
+    trace.stuck_kind = loop_state.stuck_kind or "stuck"
+    trace.reasoning_stalls = loop_state.reasoning_stalls
+    trace.empty_responses = loop_state.empty_responses
     return loop_state.stuck_message
 
 
@@ -599,7 +606,9 @@ def _handle_tool_result(
     logical_fail = False
     if phase == "done":
         loop_state.iteration_had_successful_tool = True
-        if is_discovery_tool_name(tool_name):
+        if is_discovery_tool_name(tool_name) and not skill_plan_locks_catalog(
+            loop_state
+        ):
             loop_state.include_full_tool_catalog = True
         if "VERIFICATION FAILED" in output:
             verification_failed = True
@@ -761,6 +770,25 @@ async def _process_tool_calls(
             messages.append(tool_result_message(call, blocked))
             if trace is not None:
                 _record_tool_call(trace, call, blocked)
+            continue
+        if off_plan := off_plan_tool_block(loop_state, tool_name):
+            record_iteration_failure(loop_state, tool_name, arguments, off_plan)
+            record_plan_tool_result(
+                loop_state,
+                tool_name,
+                arguments,
+                succeeded=False,
+            )
+            yield AgentDelta(
+                tool=_tool_event(
+                    call,
+                    "error",
+                    detail="Off-plan tool blocked — follow skill steps.",
+                )
+            )
+            messages.append(tool_result_message(call, off_plan))
+            if trace is not None:
+                _record_tool_call(trace, call, off_plan)
             continue
         if stuck_msg := check_stuck(loop_state, tool_name, arguments):
             loop_state.iteration_had_duplicate_block = True
@@ -1886,6 +1914,9 @@ async def run_agent(
         skill.id for skill in matched_skills if not skill.is_builtin
     ]
     trace.route = route.value
+    trace.domain_hint = route_resolution.domain_hint
+    trace.route_method = route_resolution.method
+    trace.classifier_summary = route_resolution.classifier_summary
     trace.complexity = orch_plan.complexity.value
     trace.slot_bindings = slot_bindings
     trace.orchestration_plan = [
@@ -1949,6 +1980,11 @@ async def run_agent(
         history=history,
         skill_hints=skill_hints,
         route=route.value,
+        discovery_domain=(
+            (matched_skills[0].route_scope or "").strip().lower()
+            if matched_skills and (matched_skills[0].route_scope or "").strip()
+            else (route_resolution.domain_hint or None)
+        ),
     )
     system_message = build_system_message(
         agent_config.system_prompt,
@@ -2064,11 +2100,18 @@ async def run_agent(
                 messages,
                 token_budget=agent_config.turn_token_budget,
             )
+        preferred_names = plan_preferred_tool_names(loop_state) or (
+            _preferred_loop_tool_names(skill_steps)
+        )
+        lock_catalog = skill_plan_locks_catalog(loop_state)
         tools = prune_loop_tools(
             llm_tools,
-            preferred_names=_preferred_loop_tool_names(skill_steps),
+            preferred_names=preferred_names,
             max_tools=agent_config.max_loop_tools,
-            include_full_catalog=loop_state.include_full_tool_catalog,
+            include_full_catalog=(
+                loop_state.include_full_tool_catalog and not lock_catalog
+            ),
+            lock_to_plan=lock_catalog,
         )
         active_backend = backend_for_skill(
             primary_skill,
@@ -2521,8 +2564,8 @@ async def run_agent(
             yield AgentDelta(content=assistant_text)
 
         reconcile_plan_before_answer(loop_state)
-        # Answer is already streamed above. Persist history first, then run a
-        # gated verifier that only soft-flags failures (no blocking retry).
+        # Persist history first, then a gated verifier. When the skill plan is
+        # already done, allow one bounded re-answer from verifier retry guidance.
         failed_ha_verify = any(
             note.startswith("VERIFICATION FAILED")
             for note in loop_state.verification_notes
@@ -2531,6 +2574,36 @@ async def run_agent(
         should_verify = (
             primary_learned is not None or trace.tool_errors > 0 or failed_ha_verify
         )
+        if (
+            should_verify
+            and skill_results_ready_to_answer(loop_state)
+            and loop_state.verifier_retries < 1
+            and iteration < agent_config.max_iterations - 1
+        ):
+            v_early = await verify_turn(
+                llm,
+                role_registry.backend_for(ModelRole.VERIFIER),
+                user_text=user_text,
+                assistant_text=assistant_text,
+                tool_calls=trace.tool_calls,
+                tool_errors=trace.tool_errors,
+                skill=primary_learned,
+                slot_bindings=slot_bindings,
+                structured_output_enabled=structured,
+                trace=trace,
+            )
+            if not v_early.passed:
+                loop_state.verifier_retries += 1
+                messages.append(
+                    {
+                        "role": INTERNAL_GUIDANCE_ROLE,
+                        "content": build_verifier_retry_guidance(v_early),
+                    }
+                )
+                _prepare_next_loop_iteration(loop_state)
+                mark_iteration_preserve_stream(loop_state)
+                use_chat_backend = _stick_action_or_chat(route)
+                continue
 
         trace.assistant_text = assistant_text
         trace.controlled_entity_ids = list(controlled_entity_ids)
@@ -2538,6 +2611,9 @@ async def run_agent(
         trace.recovery_hints = list(loop_state.mcp_guidance)
         trace.skill_plan_override = loop_state.skill_plan_override
         trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
+        trace.stuck_kind = loop_state.stuck_kind
+        trace.reasoning_stalls = loop_state.reasoning_stalls
+        trace.empty_responses = loop_state.empty_responses
         # Tentative outcome; verifier may soft-downgrade to PARTIAL.
         if (
             false_action_success

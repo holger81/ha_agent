@@ -6,9 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _load_format_modules():
@@ -55,6 +53,9 @@ def test_format_skills_for_context() -> None:
     assert "ACTIVE SKILLS" in block
     assert "dining-lights" in block
     assert "ha_call_service" in block
+    assert "Planned tools:" in block
+    assert "tool_steps" not in block
+    assert "The loop injects the required next tool" in block
 
 
 def test_format_skills_for_context_email_route_priority() -> None:

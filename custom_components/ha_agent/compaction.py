@@ -8,6 +8,14 @@ from typing import Any
 _DISCOVERY_TOOLS = frozenset(
     {"searchtoolsfordomain", "searchtool", "tools/list", "tools_list"}
 )
+_PAGINATION_KEYS = (
+    "responseCacheId",
+    "hasMore",
+    "nextCursor",
+    "cursor",
+    "offset",
+    "limit",
+)
 
 
 def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
@@ -47,12 +55,44 @@ def compact_messages_if_needed(
         preview = content.replace("\n", " ").strip()
         if len(preview) > 160:
             preview = f"{preview[:157]}..."
+        page_bits = _pagination_excerpt(content)
+        summary = (
+            "[Earlier tool result summarized] "
+            f"{preview or 'tool output omitted to save context'}"
+        )
+        if page_bits:
+            summary = f"{summary} {page_bits}"
         messages[index] = {
             **message,
-            "content": (
-                "[Earlier tool result summarized] "
-                f"{preview or 'tool output omitted to save context'}"
-            ),
+            "content": summary,
         }
         compacted = True
     return compacted
+
+
+def _pagination_excerpt(content: str) -> str:
+    """Keep pagination cursors when summarizing older tool results."""
+    try:
+        parsed = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    found: dict[str, Any] = {}
+    _collect_pagination_fields(parsed, found)
+    if not found:
+        return ""
+    try:
+        return "[pagination " + json.dumps(found, ensure_ascii=True) + "]"
+    except TypeError:
+        return ""
+
+
+def _collect_pagination_fields(value: Any, found: dict[str, Any]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _PAGINATION_KEYS and key not in found and item is not None:
+                found[key] = item
+            else:
+                _collect_pagination_fields(item, found)
+    elif isinstance(value, list):
+        for item in value[:8]:
+            _collect_pagination_fields(item, found)

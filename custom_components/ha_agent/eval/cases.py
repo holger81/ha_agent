@@ -204,8 +204,7 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
             "check junk mail from the last 5 days and move any misclassified "
             "messages to the inbox"
         ),
-        expected_text_contains=["junk", "inbox"],
-        mock_mcp_responses=[],
+        expected_complexity="complex",
         max_iterations=1,
     ),
     EvalCase(
@@ -220,16 +219,14 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
                 "area_name": "Dining room",
             }
         ],
-        expected_text_contains=["light", "email"],
-        mock_mcp_responses=[],
+        expected_complexity="complex",
         max_iterations=1,
     ),
     EvalCase(
         id="verifier_slot_adaptation",
         task="verifier",
         user_text="search junk folder for messages from the last week",
-        expected_text_contains=["junk"],
-        mock_mcp_responses=[],
+        expected_verifier_pass=False,
         max_iterations=1,
     ),
     # Route-classifier microbench (label match; no agent loop).

@@ -17,7 +17,9 @@ from .loop_policy import (
     cache_mcp_tools_from_schemas,
     initialize_loop_plan,
     inject_loop_context,
+    plan_preferred_tool_names,
     reset_iteration_flags,
+    skill_plan_locks_catalog,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
 from .role_registry import ModelRole, RoleRegistry
@@ -108,6 +110,11 @@ async def run_worker(
         exposed_entities,
         skill_hints=skill_hints,
         route=route_value,
+        discovery_domain=(
+            (primary_skill.route_scope or "").strip().lower()
+            if primary_skill and (primary_skill.route_scope or "").strip()
+            else None
+        ),
     )
     if prior_results:
         prior_lines = [
@@ -153,9 +160,13 @@ async def run_worker(
     preferred_tool_names: list[str] = []
     if skill_steps:
         preferred_tool_names = [
-            str(step.get("tool") or step.get("name") or "").strip()
+            str(
+                step.get("toolName") or step.get("tool") or step.get("name") or ""
+            ).strip()
             for step in skill_steps
-            if str(step.get("tool") or step.get("name") or "").strip()
+            if str(
+                step.get("toolName") or step.get("tool") or step.get("name") or ""
+            ).strip()
         ]
 
     trace = TurnTrace(user_text=subgoal, history_len=0, route=route_value)
@@ -171,11 +182,16 @@ async def run_worker(
                 messages,
                 token_budget=agent_config.turn_token_budget,
             )
+        lock_catalog = skill_plan_locks_catalog(loop_state)
         loop_tools = prune_loop_tools(
             tools,
-            preferred_names=preferred_tool_names,
+            preferred_names=plan_preferred_tool_names(loop_state)
+            or preferred_tool_names,
             max_tools=agent_config.max_loop_tools,
-            include_full_catalog=loop_state.include_full_tool_catalog,
+            include_full_catalog=(
+                loop_state.include_full_tool_catalog and not lock_catalog
+            ),
+            lock_to_plan=lock_catalog,
         )
 
         result = await llm.chat(messages, backend, tools=loop_tools)
