@@ -153,6 +153,7 @@ def test_turn_trace_to_dict_includes_loop_diagnostics() -> None:
         stuck_kind="reasoning",
         reasoning_stalls=2,
         empty_responses=1,
+        explore_mode=True,
         outcome="stuck",
     )
     data = serialize.turn_trace_to_dict(trace, timestamp=1.0)
@@ -162,3 +163,4 @@ def test_turn_trace_to_dict_includes_loop_diagnostics() -> None:
     assert data["stuck_kind"] == "reasoning"
     assert data["reasoning_stalls"] == 2
     assert data["empty_responses"] == 1
+    assert data["explore_mode"] is True

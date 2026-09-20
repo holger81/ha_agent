@@ -24,6 +24,7 @@ def _severity(issues: list[dict[str, Any]]) -> str:
         "reasoning_stuck",
         "plan_done_no_answer",
         "off_plan_tool",
+        "explore_stuck",
     } & kinds:
         return "error"
     if kinds - {"ok"}:
@@ -149,6 +150,25 @@ def analyze_turn_dict(turn: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "suggestion": (
                     "Ensure the skill lists concrete tool_steps and blocks discovery."
+                ),
+            }
+        )
+    if (
+        turn.get("explore_mode")
+        and discovery_calls
+        and (outcome == "stuck" or stuck_kind)
+        and not turn.get("skill_plan_override")
+    ):
+        issues.append(
+            {
+                "kind": "explore_stuck",
+                "detail": (
+                    "Explore mode kept discovering without locking onto a "
+                    "concrete tool: " + ", ".join(discovery_calls)
+                ),
+                "suggestion": (
+                    "After the first useful searchTool/searchToolsForDomain hit, "
+                    "append the toolName and lock the catalog."
                 ),
             }
         )

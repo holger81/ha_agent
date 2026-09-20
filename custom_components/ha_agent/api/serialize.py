@@ -179,6 +179,7 @@ def turn_trace_to_dict(
         "recovery_hints": list(trace.recovery_hints),
         "skill_plan_override": trace.skill_plan_override,
         "skill_plan_override_reason": trace.skill_plan_override_reason,
+        "explore_mode": trace.explore_mode,
         "plan_progress": list(trace.plan_progress),
         "agent_user_id": trace.agent_user_id,
         "agent_user_display_name": trace.agent_user_display_name,

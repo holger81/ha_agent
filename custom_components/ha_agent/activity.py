@@ -111,6 +111,7 @@ def activity_turn_to_trace(data: dict[str, Any]) -> TurnTrace:
         skill_followed=followed if isinstance(followed, bool) else None,
         skill_plan_override=bool(data.get("skill_plan_override")),
         skill_plan_override_reason=str(data.get("skill_plan_override_reason") or ""),
+        explore_mode=bool(data.get("explore_mode")),
         recovery_hints=list(data.get("recovery_hints") or []),
         llm_calls=list(data.get("llm_calls") or []),
         plan_progress=list(data.get("plan_progress") or []),

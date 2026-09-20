@@ -183,12 +183,14 @@ def test_activity_persists_loop_diagnostics() -> None:
             stuck_kind="reasoning",
             reasoning_stalls=2,
             empty_responses=1,
+            explore_mode=True,
             outcome="stuck",
         ),
     )
     turns, _total = activity.list_turns(hass, "entry-1")
     assert turns[0]["domain_hint"] == "news"
     assert turns[0]["stuck_kind"] == "reasoning"
+    assert turns[0]["explore_mode"] is True
     restored = activity.activity_turn_to_trace(turns[0])
     assert restored.domain_hint == "news"
     assert restored.route_method == "prepass"
@@ -196,3 +198,4 @@ def test_activity_persists_loop_diagnostics() -> None:
     assert restored.stuck_kind == "reasoning"
     assert restored.reasoning_stalls == 2
     assert restored.empty_responses == 1
+    assert restored.explore_mode is True

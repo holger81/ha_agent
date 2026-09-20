@@ -185,6 +185,7 @@ from .skills.runtime import (
 from .skills.selection import (
     SkillSelectionResult,
     infer_soft_domain_hint,
+    keep_selected_skill,
     resolve_skills_for_turn,
     skill_matches_route,
 )
@@ -438,6 +439,7 @@ def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
     trace.verification_notes = list(loop_state.verification_notes)
     trace.skill_plan_override = loop_state.skill_plan_override
     trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
+    trace.explore_mode = loop_state.explore_mode
     trace.stuck_kind = loop_state.stuck_kind or "stuck"
     trace.reasoning_stalls = loop_state.reasoning_stalls
     trace.empty_responses = loop_state.empty_responses
@@ -1744,6 +1746,7 @@ async def run_agent(
                 domain_hint=route_resolution.domain_hint,
                 user_text=turn_goal or user_text,
             )
+            and keep_selected_skill(turn_goal or user_text, skill)
         ]
         if len(kept) != len(matched_skills):
             matched_skills = kept
@@ -1778,6 +1781,7 @@ async def run_agent(
                     domain_hint=route_resolution.domain_hint,
                     user_text=turn_goal or user_text,
                 )
+                and keep_selected_skill(turn_goal or user_text, skill)
             ]
             if not matched_skills:
                 skill_selection = SkillSelectionResult(
@@ -2080,6 +2084,8 @@ async def run_agent(
     if loop_state.skill_plan_override:
         turn_meta["skill_plan_override"] = True
         turn_meta["skill_plan_override_reason"] = loop_state.skill_plan_override_reason
+    if loop_state.explore_mode:
+        turn_meta["explore_mode"] = True
     _attach_plan_progress(turn_meta, loop_state, trace)
     yield AgentDelta(meta=turn_meta)
 
@@ -2611,6 +2617,7 @@ async def run_agent(
         trace.recovery_hints = list(loop_state.mcp_guidance)
         trace.skill_plan_override = loop_state.skill_plan_override
         trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
+        trace.explore_mode = loop_state.explore_mode
         trace.stuck_kind = loop_state.stuck_kind
         trace.reasoning_stalls = loop_state.reasoning_stalls
         trace.empty_responses = loop_state.empty_responses
@@ -2681,6 +2688,7 @@ async def run_agent(
                 "llm_calls": trace.llm_calls,
                 "skill_plan_override": trace.skill_plan_override,
                 "skill_plan_override_reason": trace.skill_plan_override_reason,
+                "explore_mode": trace.explore_mode,
             }
         )
         yield AgentDelta(meta=dict(turn_meta))
@@ -2704,6 +2712,7 @@ async def run_agent(
     trace.verification_notes = list(loop_state.verification_notes)
     trace.skill_plan_override = loop_state.skill_plan_override
     trace.skill_plan_override_reason = loop_state.skill_plan_override_reason
+    trace.explore_mode = loop_state.explore_mode
     fallback = (
         f"{FALLBACK_MESSAGE} I used {trace.iterations} steps"
         f"{' and hit a repeated-tool guard' if loop_state.stuck else ''}."

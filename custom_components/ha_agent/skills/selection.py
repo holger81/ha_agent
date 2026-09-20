@@ -196,6 +196,29 @@ def skill_applies_to_user_text(user_text: str, skill: Skill) -> bool:
     return _jaccard_content_overlap(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
 
 
+def _skill_is_parameterized(skill: Skill) -> bool:
+    """True when the skill is a reusable template rather than one named device."""
+    if skill.slots:
+        return True
+    blob = f"{_skill_text(skill)} {json.dumps(skill.tool_steps, ensure_ascii=True)}"
+    return "{{" in blob
+
+
+def keep_selected_skill(user_text: str, skill: Skill) -> bool:
+    """Keep LLM/prepass picks unless a specific skill has zero goal overlap.
+
+    Parameterized templates (slots / {{placeholders}}) may match paraphrases
+    with no shared tokens. Named-device skills must share at least one
+    content token with the user goal.
+    """
+    user_tokens = _content_tokens(user_text)
+    if not user_tokens or is_short_follow_up_query(user_text):
+        return True
+    if user_tokens & _skill_content_tokens(skill):
+        return True
+    return _skill_is_parameterized(skill)
+
+
 def _prefer_overlapping_catalog(user_text: str, catalog: list[Skill]) -> list[Skill]:
     """Prefer skills that apply; else any content overlap; else full catalog."""
     if not catalog:
@@ -862,6 +885,9 @@ async def resolve_skills_for_turn(
         filtered = _filter_by_route(
             selected, route, domain_hint=effective_hint, user_text=user_text
         )[:max_inject]
+        filtered = [
+            skill for skill in filtered if keep_selected_skill(user_text, skill)
+        ]
         if not filtered:
             return SkillSelectionResult(
                 skills=[],

@@ -134,6 +134,24 @@ def test_analyze_turn_detects_off_plan_tool() -> None:
     assert result["severity"] == "error"
 
 
+def test_analyze_turn_detects_explore_stuck() -> None:
+    result = analyze_turn_dict(
+        {
+            "user_text": "any local news",
+            "assistant_text": "",
+            "outcome": "stuck",
+            "stuck_kind": "duplicate",
+            "explore_mode": True,
+            "tool_calls": [
+                {"toolName": "searchTool", "succeeded": True},
+                {"toolName": "searchTool", "succeeded": True},
+            ],
+        }
+    )
+    assert any(issue["kind"] == "explore_stuck" for issue in result["issues"])
+    assert result["severity"] == "error"
+
+
 def test_analyze_turn_detects_false_action_success() -> None:
     turn = {
         "user_text": "turn it back off",

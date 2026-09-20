@@ -999,6 +999,41 @@ async def test_chat_route_weak_fts_hit_asks_llm_intent(monkeypatch) -> None:
     llm.chat.assert_called_once()
 
 
+def test_keep_selected_skill_drops_named_device_misfires() -> None:
+    """Specific device skills need at least one shared content token."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    lights = models.Skill(
+        id="1",
+        slug="turn-on-dining-room-lights",
+        title="Turn on Dining Room Lights",
+        description="Use ha_turn_on_entity for dining lights.",
+        triggers=["turn on dining room lights"],
+        body="Select light.dining_room_lights_ceiling",
+        tool_steps=[],
+        route_scope="action",
+    )
+    status = models.Skill(
+        id="2",
+        slug="look-up-sensor-or-entity-status",
+        title="Look up sensor or entity status",
+        description="Parameterized status lookup",
+        triggers=["status of {{query}}"],
+        body="Search {{query}} then get_state",
+        tool_steps=[{"toolName": "home_assistant__ha_search"}],
+        route_scope="action",
+    )
+    assert selection.keep_selected_skill("stop the music", lights) is False
+    assert selection.keep_selected_skill("turn on the dining lights", lights) is True
+    assert (
+        selection.keep_selected_skill(
+            "what is the temperature in the great room",
+            status,
+        )
+        is True
+    )
+
+
 def test_dining_lights_skill_does_not_apply_to_temperature_query() -> None:
     """Control skills must not apply to unrelated status questions."""
     selection = _load("skills.selection")

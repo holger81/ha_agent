@@ -90,6 +90,7 @@ class TurnTrace:
     skill_followed: bool | None = None
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
+    explore_mode: bool = False
     recovery_hints: list[str] = field(default_factory=list)
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
     plan_progress: list[dict[str, str]] = field(default_factory=list)

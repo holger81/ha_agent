@@ -9,7 +9,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from .context import is_state_question, is_unit_conversion_follow_up
+from .context import (
+    is_device_action_query,
+    is_state_question,
+    is_unit_conversion_follow_up,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -51,6 +55,7 @@ class LoopState:
     plan_completed_tools: list[str] = field(default_factory=list)
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
+    explore_mode: bool = False
     empty_responses: int = 0
     reasoning_stalls: int = 0
     failed_tool_answer_retries: int = 0
@@ -68,6 +73,7 @@ class LoopState:
     confirmed_reading_entity_id: str | None = None
     referenced_entity_ids: list[str] = field(default_factory=list)
     missing_reading_retries: int = 0
+    control_ready: bool = False
     mcp_tool_catalog: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
@@ -180,7 +186,7 @@ _READING_GOAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # Setpoint/device intent: shares vocabulary with readings but changes state.
 _CONTROL_GOAL_INTENT = re.compile(
     r"\b(?:set|sets|setting|change|adjust|raise|lower|increase|decrease|reduce"
-    r"|bump|crank|drop|boost|dial)\b"
+    r"|bump|crank|drop|boost|dial|pause|play|stop|resume|skip|mute|unmute)\b"
     r"|\bturn\s+(?:it\s+|the\s+\w+\s+)?(?:up|down|on|off)\b"
     r"|\bswitch\s+(?:on|off|to)\b|\bput\s+the\b|\bmake\s+(?:it|the)\b"
     r"|\b(?:warm|heat)\s+up\b|\bcool\s+down\b",
@@ -726,6 +732,19 @@ def extract_skill_override_reason(reasoning: str) -> str | None:
     return None
 
 
+def is_exploring(loop_state: LoopState) -> bool:
+    """True when no titled skill plan is in force (no skill or override)."""
+    return bool(loop_state.explore_mode or loop_state.skill_plan_override)
+
+
+def begin_explore(loop_state: LoopState, reason: str = "") -> None:
+    """Open the empty-plan explore path: discover, then append-and-lock."""
+    loop_state.explore_mode = True
+    loop_state.include_full_tool_catalog = True
+    if reason:
+        loop_state.mcp_guidance.insert(0, reason)
+
+
 def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     """Stop enforcing the active skill's concrete tool-step plan for this turn."""
     loop_state.skill_plan_override = True
@@ -734,9 +753,8 @@ def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
     loop_state.plan_step_statuses = []
     loop_state.plan_step_notes = []
     loop_state.plan_current_step_index = None
-    loop_state.include_full_tool_catalog = True
-    loop_state.mcp_guidance.insert(
-        0,
+    begin_explore(
+        loop_state,
         f"SKILL PLAN SUSPENDED — {reason.strip()[:200]}. {_EXPLORATION_GUIDANCE}",
     )
 
@@ -768,10 +786,12 @@ def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
     Any non-empty concrete skill plan is enforceable (including 1-step skills
     like news-briefing). Empty plans / no skill title still allow discovery.
     """
+    if loop_state.control_ready:
+        return True
     if not loop_state.plan_steps:
         return False
-    if loop_state.skill_plan_override:
-        # Empty override stays open for discovery; appended steps re-lock.
+    if is_exploring(loop_state):
+        # Empty explore stays open for discovery; appended steps re-lock.
         return True
     return bool(loop_state.plan_skill_title)
 
@@ -788,7 +808,9 @@ def skill_plan_locks_catalog(loop_state: LoopState) -> bool:
     Suspended empty plans unlock discovery. A fully done plan without
     pending pagination unlocks so the model can answer (not rediscover).
     """
-    if loop_state.skill_plan_override and not loop_state.plan_steps:
+    if loop_state.control_ready:
+        return True
+    if is_exploring(loop_state) and not loop_state.plan_steps:
         return False
     if not skill_plan_blocks_discovery(loop_state):
         return False
@@ -811,7 +833,7 @@ def plan_preferred_tool_names(loop_state: LoopState) -> list[str]:
 
 
 def append_discovered_plan_tool(loop_state: LoopState, tool_name: str) -> bool:
-    """Add a discovered tool to the override plan and re-lock the catalog."""
+    """Add a discovered tool to the explore/override plan and re-lock the catalog."""
     name = (tool_name or "").strip()
     if not name or is_call_tool_name(name):
         return False
@@ -855,8 +877,8 @@ def redundant_override_tool_block(
     loop_state: LoopState,
     tool_name: str,
 ) -> str | None:
-    """Block repeat discovery/search when an override exploration plan advanced."""
-    if not loop_state.skill_plan_override or not loop_state.plan_steps:
+    """Block repeat discovery/search when an explore/override plan advanced."""
+    if not is_exploring(loop_state) or not loop_state.plan_steps:
         return None
     if _pagination_allows_repeat(loop_state, tool_name):
         return None
@@ -1002,7 +1024,7 @@ def reconcile_optional_detail_steps_after_list(
 
 def _infer_next_catalog_tool(loop_state: LoopState, *, after_tool: str) -> str | None:
     """Pick a complementary MCP tool from the cached catalog during exploration."""
-    if not loop_state.skill_plan_override:
+    if not is_exploring(loop_state):
         return None
     if not _is_search_like_tool(after_tool):
         return None
@@ -1206,8 +1228,48 @@ def _call_tool_plan_directive(
     )
 
 
+def _is_control_goal(loop_state: LoopState) -> bool:
+    """True when the turn is a device-control request, not a status reading."""
+    goal = loop_state.plan_goal or ""
+    if not goal.strip() or is_state_question(goal):
+        return False
+    if loop_state.plan_route == "action" and is_device_action_query(goal):
+        return True
+    return bool(_CONTROL_GOAL_INTENT.search(goal))
+
+
+def _entity_ids_from_search_entries(entries: list[Any]) -> list[str]:
+    ids: list[str] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        entity_id = str(item.get("entity_id") or "").strip()
+        if entity_id and entity_id not in ids:
+            ids.append(entity_id)
+    return ids
+
+
+def _mark_control_ready(loop_state: LoopState, entity_ids: list[str]) -> None:
+    """After a productive entity search, require a control tool instead of paging."""
+    loop_state.control_ready = True
+    loop_state.include_full_tool_catalog = False
+    _suppress_search_pagination(loop_state)
+    for name in ("home_assistant__ha_call_service", "HassTurnOff", "HassTurnOn"):
+        if name not in loop_state.preferred_tool_names:
+            loop_state.preferred_tool_names.append(name)
+    for entity_id in entity_ids:
+        _note_referenced_entity(loop_state, entity_id)
+
+
 def build_skill_discovery_block_message(loop_state: LoopState) -> str:
     """User-facing tool error when discovery is blocked by a concrete skill plan."""
+    if loop_state.control_ready and not _next_plan_tool_name(loop_state):
+        return (
+            "Tool error: Entity search already returned targets for this "
+            "device-control request. Call home_assistant__ha_call_service "
+            "(or the matching Hass* tool) with one of those entity_ids now. "
+            "Do not run searchTool or paginate."
+        )
     next_tool = _next_plan_tool_name(loop_state)
     if next_tool:
         directive = _call_tool_plan_directive(loop_state, next_tool)
@@ -1274,11 +1336,7 @@ def _inject_next_tool_adherence(
     if not next_tool and after_tool:
         next_tool = _infer_next_catalog_tool(loop_state, after_tool=after_tool)
     if not next_tool:
-        if (
-            after_tool
-            and loop_state.skill_plan_override
-            and _is_search_like_tool(after_tool)
-        ):
+        if after_tool and is_exploring(loop_state) and _is_search_like_tool(after_tool):
             hint = (
                 f"{lead_in} Call the next MCP tool required for the user's goal using "
                 "prior search output. Discover tools with searchTool when needed."
@@ -2057,6 +2115,19 @@ def analyze_search_tool_result(
         return True
 
     if _is_entity_search_result(tool_name, data) and entries:
+        if _is_control_goal(loop_state):
+            entity_ids = _entity_ids_from_search_entries(entries)
+            _mark_control_ready(loop_state, entity_ids)
+            listed = ", ".join(f"`{item}`" for item in entity_ids[:6]) or "the hits"
+            hint = (
+                f"{summary} This is a device-control request. Call "
+                "home_assistant__ha_call_service (or the matching Hass* tool) "
+                f"now with one of: {listed}. Do not paginate. "
+                "Do not call searchTool again."
+            )
+            if hint not in loop_state.mcp_guidance:
+                loop_state.mcp_guidance.insert(0, hint)
+            return False
         summary += (
             " For a reading/status question, pick the entity whose "
             "device_class / unit_of_measurement / friendly_name matches the "
@@ -2690,7 +2761,7 @@ def analyze_discovery_tool_result(
                     break
 
     if matched:
-        if loop_state.skill_plan_override:
+        if is_exploring(loop_state):
             append_discovered_plan_tool(loop_state, matched)
         hint = build_mcp_tool_adherence_hint(
             loop_state,
@@ -2733,7 +2804,7 @@ def analyze_discovery_tool_result(
             loop_state.mcp_guidance.insert(0, hint)
         return
 
-    if loop_state.skill_plan_override:
+    if is_exploring(loop_state):
         next_tool = _infer_next_catalog_tool(loop_state, after_tool=tool_name)
         if next_tool:
             hint = build_mcp_tool_adherence_hint(
@@ -2759,7 +2830,7 @@ def guide_after_override_tool_result(
         if nudge not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, nudge)
         return
-    if not loop_state.skill_plan_override:
+    if not is_exploring(loop_state):
         return
     next_tool = _next_plan_tool_name(loop_state)
     if not next_tool:
@@ -2772,7 +2843,7 @@ def guide_after_override_tool_result(
         )
         if hint not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, hint)
-    elif loop_state.skill_plan_override and _is_search_like_tool(tool_name):
+    elif is_exploring(loop_state) and _is_search_like_tool(tool_name):
         loop_state.mcp_guidance.insert(
             0,
             (
@@ -2802,6 +2873,14 @@ def initialize_loop_plan(
     loop_state.plan_step_notes = [""] * len(steps)
     loop_state.plan_current_step_index = 0 if steps else None
     loop_state.plan_completed_tools = []
+    if loop_state.skill_plan_override:
+        loop_state.explore_mode = True
+        if not steps:
+            loop_state.include_full_tool_catalog = True
+    elif not steps:
+        begin_explore(loop_state)
+    else:
+        loop_state.explore_mode = False
     if steps:
         first_name = str(steps[0].get("toolName") or "").strip()
         if first_name and skill_title:
@@ -2818,9 +2897,10 @@ def initialize_loop_plan(
             loop_state.mcp_guidance.insert(
                 0,
                 (
-                    f"No workflow steps seeded — discover MCP tools in domain "
-                    f"`{domain}` (searchToolsForDomain or searchTool), then adhere "
-                    "strictly to each tool's MCP definition when calling it."
+                    "No skill plan — exploring. Discover MCP tools in domain "
+                    f"`{domain}` (searchToolsForDomain or searchTool), then call "
+                    "the best match so the catalog can lock to that tool. "
+                    "Adhere strictly to each tool's MCP definition."
                 ),
             )
         elif route != "chat":
@@ -2920,10 +3000,12 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
     if hint:
         domain_hint = (
             f"Discover tools in domain `{hint}` if none are known yet, then "
-            "adhere strictly to each tool's MCP definition."
+            "call the best match so the catalog can lock to that tool."
         )
     else:
         domain_hint = _GENERIC_NEXT_HINT
+    if is_exploring(loop_state) and not loop_state.plan_steps:
+        domain_hint = f"{domain_hint} Exploring — no skill plan is in force."
     if loop_state.plan_completed_tools:
         return f"{domain_hint} Do not repeat tools that already succeeded."
     return domain_hint
@@ -2948,6 +3030,14 @@ def build_plan_progress_summary(loop_state: LoopState) -> str | None:
         else:
             lines.append(
                 "No concrete override steps seeded — use discovery and tools as needed."
+            )
+    elif loop_state.explore_mode:
+        if loop_state.plan_steps:
+            lines.append("Explore plan (locked after discovery):")
+        else:
+            lines.append(
+                "Exploring — no skill plan. Discover a tool, then call it "
+                "to lock the catalog."
             )
     elif loop_state.plan_skill_title:
         lines.append(f"Workflow skill: {loop_state.plan_skill_title}")

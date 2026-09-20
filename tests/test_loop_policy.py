@@ -2272,3 +2272,124 @@ def test_off_plan_tool_block_and_append_discovered() -> None:
     assert state.include_full_tool_catalog is False
     assert policy.plan_preferred_tool_names(state) == ["mcp_news__news_searx_search"]
     assert policy.skill_plan_locks_catalog(state) is True
+
+
+def test_analyze_search_control_goal_stops_paging_and_blocks_discovery() -> None:
+    """After entity hits on a control ask, require a service call, not more search."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="stop the music",
+        route="action",
+    )
+    output = json.dumps(
+        {
+            "success": True,
+            "entities": [
+                {
+                    "entity_id": "media_player.kitchen",
+                    "friendly_name": "Kitchen speaker",
+                    "state": "playing",
+                },
+                {
+                    "entity_id": "media_player.living_room",
+                    "friendly_name": "Living room",
+                    "state": "idle",
+                },
+            ],
+            "entity_total_matches": 2,
+            "hasMore": True,
+        }
+    )
+    unproductive = policy.analyze_search_tool_result(
+        state,
+        "home_assistant__ha_search",
+        output,
+        {"query": "media_player"},
+    )
+    assert unproductive is False
+    assert state.control_ready is True
+    assert state.suppress_pagination is True
+    assert policy.skill_plan_blocks_discovery(state) is True
+    assert policy.skill_plan_locks_catalog(state) is True
+    assert "home_assistant__ha_call_service" in policy.plan_preferred_tool_names(state)
+    assert any("device-control" in hint for hint in state.mcp_guidance)
+    blocked = policy.build_skill_discovery_block_message(state)
+    assert "ha_call_service" in blocked
+    assert "searchTool" in blocked
+
+
+def test_no_skill_explores_then_locks_after_discover() -> None:
+    """Empty plans explore with an open catalog, then lock onto a discovered tool."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="brief me on local headlines",
+        route="chat",
+        discovery_domain="news",
+    )
+    assert state.explore_mode is True
+    assert policy.is_exploring(state) is True
+    assert policy.skill_plan_locks_catalog(state) is False
+    assert state.include_full_tool_catalog is True
+    assert any("exploring" in hint.lower() for hint in state.mcp_guidance)
+
+    output = json.dumps(
+        [
+            {
+                "toolName": "mcp_news__news_curate",
+                "description": "Curate a news briefing.",
+                "inputSchema": {"required": [], "properties": {}},
+            }
+        ]
+    )
+    policy.analyze_discovery_tool_result(
+        state,
+        "searchTool",
+        output,
+        {"query": "news_curate"},
+    )
+    assert any(
+        step.get("toolName") == "mcp_news__news_curate" for step in state.plan_steps
+    )
+    assert state.include_full_tool_catalog is False
+    assert policy.skill_plan_locks_catalog(state) is True
+    assert policy.skill_plan_blocks_discovery(state) is True
+    assert policy.off_plan_tool_block(state, "mail_mcp__imap_search_messages")
+    assert "news_curate" in policy.build_skill_discovery_block_message(state)
+
+
+def test_titled_skill_plan_is_not_explore_mode() -> None:
+    """Concrete skill plans stay locked without entering explore mode."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+        skill_title="News briefing",
+    )
+    assert state.explore_mode is False
+    assert policy.is_exploring(state) is False
+    assert policy.skill_plan_locks_catalog(state) is True
+
+
+def test_suspend_skill_plan_enters_explore_mode() -> None:
+    """SKILL_OVERRIDE reuses the empty-plan explore rails."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+        skill_title="News briefing",
+    )
+    policy.suspend_skill_plan(state, "Need another news tool.")
+    assert state.explore_mode is True
+    assert state.skill_plan_override is True
+    assert policy.skill_plan_locks_catalog(state) is False
+    assert state.include_full_tool_catalog is True

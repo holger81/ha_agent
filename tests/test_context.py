@@ -261,6 +261,14 @@ def test_is_device_action_query_matches_turn_them_back_off() -> None:
     assert context.is_device_action_query("turn them back off")
 
 
+def test_is_device_action_query_matches_media_control_verbs() -> None:
+    """Pause/play/stop are device-control requests, not chat."""
+    assert context.is_device_action_query("stop the music")
+    assert context.is_device_action_query("pause the kitchen speaker")
+    assert context.is_device_action_query("play the living room tv")
+    assert not context.is_device_action_query("what's the news")
+
+
 def test_resolve_turn_goal_keeps_prior_ask_on_short_follow_up() -> None:
     """Retries like 'try again' keep the previous substantive user goal."""
     history = [

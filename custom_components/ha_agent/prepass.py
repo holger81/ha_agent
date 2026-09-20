@@ -31,6 +31,7 @@ from .skills.selection import (
     _resolve_chat_route_skills,
     infer_soft_domain_hint,
     is_chat_route,
+    keep_selected_skill,
     skill_matches_route,
 )
 from .skills.store import get_skill_store
@@ -135,7 +136,7 @@ def _parse_prepass_payload(
             route.value,
             domain_hint=domain_hint,
             user_text=user_text,
-        ):
+        ) and keep_selected_skill(user_text, candidate):
             selected_skills = [candidate]
         else:
             reason = (reason + "; ").lstrip(

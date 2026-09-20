@@ -21,7 +21,10 @@ _DEVICE_ACTION = re.compile(
     r"open|close|toggle|lock|unlock|"
     r"switch\s+(?:on|off)|"
     r"turn\s+(?:on|off)|"
-    r"turn\b(?:\s+\w+){0,6}\s+(?:on|off)"
+    r"turn\b(?:\s+\w+){0,6}\s+(?:on|off)|"
+    r"pause|resume|skip|mute|unmute|play|stop|"
+    r"(?:set|raise|lower|increase|decrease|turn)\s+(?:the\s+)?volume|"
+    r"volume\s+(?:up|down)"
     r")\b",
     re.IGNORECASE,
 )
