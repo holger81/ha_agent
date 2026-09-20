@@ -2540,8 +2540,9 @@ def analyze_entity_lookup_result(
         return False
 
     _note_referenced_entity(loop_state, looked_up)
-    if kind:
-        loop_state.confirmed_reading_entity_id = looked_up
+    # Any successful ha_get_state with a usable value grounds a reading answer,
+    # including power/solar asks that are not in the typed reading-kind list.
+    loop_state.confirmed_reading_entity_id = looked_up
     return False
 
 

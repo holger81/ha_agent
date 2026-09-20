@@ -64,6 +64,7 @@ from .loop_policy import (
     cache_mcp_tools_from_schemas,
     check_stuck,
     claims_action_success,
+    claims_reading_answer,
     finalize_output,
     had_successful_control_tool,
     honest_failed_tools_message,
@@ -391,7 +392,11 @@ async def _yield_streamed_assistant_text(
                 break
         if not chunk.content:
             continue
-        raw_buffer += chunk.content
+        raw_buffer, delta_text = stream_text_delta(raw_buffer, chunk.content)
+        if not delta_text:
+            continue
+        # Rebuild display from the full buffer so embedded-tool stripping stays
+        # consistent, but only emit the newly appended visible suffix.
         safe = safe_stream_display_text(raw_buffer)
         if len(safe) > yielded_len:
             text = safe[yielded_len:]
@@ -2613,20 +2618,27 @@ async def run_agent(
             )
             if not v_early.passed:
                 loop_state.verifier_retries += 1
-                if streamed_answer:
-                    # Re-answer must replace the draft — preserving the stream
-                    # concatenates the same sentence twice in the UI.
-                    yield AgentDelta(content_clear=True)
-                messages.append(
-                    {
-                        "role": INTERNAL_GUIDANCE_ROLE,
-                        "content": build_verifier_retry_guidance(v_early),
-                    }
+                grounded_reading = claims_reading_answer(assistant_text) and (
+                    bool(loop_state.confirmed_reading_entity_id)
+                    or bool(loop_state.referenced_entity_ids)
                 )
-                _prepare_next_loop_iteration(loop_state)
-                mark_iteration_preserve_stream(loop_state)
-                use_chat_backend = _stick_action_or_chat(route)
-                continue
+                if grounded_reading:
+                    # Answer already cites a looked-up reading — soft-fail at
+                    # final verify instead of re-streaming a duplicate sentence.
+                    pass
+                else:
+                    # Always replace the draft answer; do not preserve content.
+                    if streamed_answer:
+                        yield AgentDelta(content_clear=True)
+                    messages.append(
+                        {
+                            "role": INTERNAL_GUIDANCE_ROLE,
+                            "content": build_verifier_retry_guidance(v_early),
+                        }
+                    )
+                    _prepare_next_loop_iteration(loop_state)
+                    use_chat_backend = _stick_action_or_chat(route)
+                    continue
 
         trace.assistant_text = assistant_text
         trace.controlled_entity_ids = list(controlled_entity_ids)

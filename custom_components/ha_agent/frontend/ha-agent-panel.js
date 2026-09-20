@@ -2209,6 +2209,20 @@ class HaAgentPanel extends HTMLElement {
     if (!current) return piece;
     if (piece.startsWith(current)) return piece;
     if (current.endsWith(piece)) return current;
+    if (piece === current) return current;
+    // Re-answer after a prior draft: a completed sentence followed by a
+    // restart of the same reply should replace, not concatenate.
+    const trimmed = current.replace(/\s+$/u, "");
+    if (/[.!?]"?$/u.test(trimmed)) {
+      const restart = piece.trimStart();
+      const probe = restart.slice(0, Math.min(24, restart.length));
+      if (
+        probe.length >= 8 &&
+        (trimmed.startsWith(probe) || trimmed.includes(` ${probe}`))
+      ) {
+        return piece;
+      }
+    }
     return current + piece;
   }
 
