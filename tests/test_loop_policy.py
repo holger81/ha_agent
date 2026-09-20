@@ -160,6 +160,43 @@ def test_should_retry_reasoning_stuck_caps_attempts() -> None:
     assert policy.should_retry_reasoning_stuck(fresh, 9, 10) is False
 
 
+def test_should_retry_reasoning_stuck_shorter_after_skill_plan_done() -> None:
+    """Post-plan-done stalls get one guided retry, then stop."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_example__curate"}],
+    )
+    policy.record_plan_tool_result(state, "mcp_example__curate", {}, succeeded=True)
+
+    assert policy.skill_results_ready_to_answer(state) is True
+    assert policy.should_retry_reasoning_stuck(state, 0, 10) is True
+    assert policy.should_retry_reasoning_stuck(state, 1, 10) is False
+
+
+def test_build_reasoning_stuck_nudge_after_skill_plan_done() -> None:
+    """Reasoning-stuck nudge after plan completion demands an answer/paginate."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_example__curate"}],
+    )
+    policy.record_plan_tool_result(state, "mcp_example__curate", {}, succeeded=True)
+
+    nudge = policy.build_reasoning_stuck_nudge(state)
+
+    assert "SKILL RESULTS READY" in nudge
+    assert "Answer the user NOW" in nudge
+    assert "callTool" in nudge
+    assert "responseCacheId" in nudge
+
+
 def test_mark_reasoning_stuck_sets_message() -> None:
     policy = _load_loop_policy()
     state = policy.LoopState()
@@ -332,8 +369,72 @@ def test_describe_plan_next_action_stops_when_all_done() -> None:
 
     directive = policy.describe_plan_next_action(state)
 
-    assert "STOP calling tools" in directive
-    assert "final" in directive
+    assert "SKILL RESULTS READY" in directive
+    assert "Answer the user NOW" in directive
+    assert "callTool" in directive
+    assert any("SKILL RESULTS READY" in hint for hint in state.mcp_guidance)
+
+
+def test_inject_loop_context_answers_when_skill_plan_done() -> None:
+    """After plan completion, inject ANSWER NOW instead of a plan header."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_example__curate"}],
+        skill_title="Example briefing",
+    )
+    policy.record_plan_tool_result(state, "mcp_example__curate", {}, succeeded=True)
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "any local news"},
+    ]
+
+    policy.inject_loop_context(messages, state)
+
+    content = messages[-2]["content"]
+    assert "ANSWER NOW from tool results" in content
+    assert "callTool" in content
+    assert "AGENT PLAN PROGRESS" not in content
+    assert "SKILL RESULTS READY" in content  # from mcp_guidance queue
+    assert state.mcp_guidance == []
+
+
+def test_build_empty_response_nudge_after_skill_plan_done() -> None:
+    """Empty-response nudge after plan completion is answer/paginate-first."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_example__curate"}],
+    )
+    policy.record_plan_tool_result(state, "mcp_example__curate", {}, succeeded=True)
+
+    nudge = policy.build_empty_response_nudge(state)
+
+    assert "empty after the skill plan finished" in nudge
+    assert "SKILL RESULTS READY" in nudge
+    assert "callTool" in nudge
+
+
+def test_should_retry_empty_response_shorter_after_skill_plan_done() -> None:
+    """Post-plan-done empty replies get one guided retry, then stop."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="briefing",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_example__curate"}],
+    )
+    policy.record_plan_tool_result(state, "mcp_example__curate", {}, succeeded=True)
+
+    assert policy.should_retry_empty_response(state, 0, 10) is True
+    assert policy.should_retry_empty_response(state, 1, 10) is False
 
 
 def test_reconcile_plan_after_tools_omits_skipped_prerequisites() -> None:

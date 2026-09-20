@@ -81,7 +81,21 @@ INTERNAL_GUIDANCE_ROLE = "system"
 _MAX_REASONING_CHARS = 8000
 _MAX_EMPTY_RESPONSES = 2
 _MAX_REASONING_STALLS = 2
+# After concrete skill/plan tools finish, allow fewer empty/reasoning retries
+# before ending — the next step must be answer (or one pagination call).
+_MAX_EMPTY_RESPONSES_AFTER_SKILL_RESULTS = 1
+_MAX_REASONING_STALLS_AFTER_SKILL_RESULTS = 1
 _MIN_ANSWER_CHARS_TO_IGNORE_REASONING_STALL = 40
+_SKILL_RESULTS_ANSWER_NUDGE = (
+    "SKILL RESULTS READY — stop expanding reasoning. Answer the user NOW "
+    "from the tool results already in this turn. If a result was truncated "
+    "(responseCacheId / hasMore / pagination), call callTool once to fetch "
+    "the next page, then answer. Do not rediscover tools or re-run completed "
+    "plan steps."
+)
+_SKILL_RESULTS_ANSWER_NEXT = (
+    "ANSWER NOW from tool results; paginate via callTool if truncated."
+)
 _MAX_MCP_GUIDANCE_CHARS = 600
 _MAX_LOOP_GUIDANCE_CHARS = 500
 # Route → MCP discovery domain when no skill tool_steps are seeded.
@@ -312,6 +326,32 @@ def is_reasoning_loop(
     return reasoning_stream_stuck(reasoning or "")
 
 
+def skill_results_ready_to_answer(loop_state: LoopState) -> bool:
+    """True when concrete skill/plan steps are finished and an answer is due.
+
+    Generic across domains: any seeded plan whose steps are all done/omitted.
+    """
+    if not loop_state.plan_steps or not loop_state.plan_step_statuses:
+        return False
+    return all(
+        status in _PLAN_TERMINAL_STATUSES for status in loop_state.plan_step_statuses
+    )
+
+
+def build_skill_results_answer_nudge(loop_state: LoopState) -> str:
+    """Strong post-plan-done directive: answer now; paginate only if truncated."""
+    if loop_state.pagination_pending:
+        pending_tool = str(
+            loop_state.pagination_pending.get("tool_name") or "tool"
+        ).strip()
+        return (
+            f"{_SKILL_RESULTS_ANSWER_NUDGE} Pagination is pending for "
+            f"`{pending_tool}` — fetch the next page first (or via callTool if "
+            "the prior result was truncated), then answer."
+        )
+    return _SKILL_RESULTS_ANSWER_NUDGE
+
+
 def should_retry_reasoning_stuck(
     loop_state: LoopState,
     iteration: int,
@@ -321,7 +361,12 @@ def should_retry_reasoning_stuck(
     if iteration >= max_iterations - 1:
         return False
     loop_state.reasoning_stalls += 1
-    return loop_state.reasoning_stalls <= _MAX_REASONING_STALLS
+    stall_cap = (
+        _MAX_REASONING_STALLS_AFTER_SKILL_RESULTS
+        if skill_results_ready_to_answer(loop_state)
+        else _MAX_REASONING_STALLS
+    )
+    return loop_state.reasoning_stalls <= stall_cap
 
 
 def mark_reasoning_stuck(loop_state: LoopState) -> None:
@@ -335,6 +380,12 @@ def mark_reasoning_stuck(loop_state: LoopState) -> None:
 
 def build_reasoning_stuck_nudge(loop_state: LoopState) -> str:
     """Return a directive when the model looped in reasoning without acting."""
+    if skill_results_ready_to_answer(loop_state):
+        return (
+            "SYSTEM (internal — not from the user): Your previous reply got "
+            "stuck in repetitive reasoning after the skill plan finished. "
+            f"{build_skill_results_answer_nudge(loop_state)}"
+        )
     return (
         "SYSTEM (internal — not from the user): Your previous reply got stuck "
         "in repetitive or oversized reasoning without calling a tool or "
@@ -2617,24 +2668,15 @@ def guide_after_override_tool_result(
     *,
     succeeded: bool,
 ) -> None:
-    """Inject next-step hints after successful override-plan tool calls."""
-    if not loop_state.skill_plan_override or not succeeded:
+    """Inject next-step hints after successful plan tool calls."""
+    if not succeeded:
         return
-    if (
-        loop_state.plan_steps
-        and loop_state.plan_step_statuses
-        and all(
-            status in _PLAN_TERMINAL_STATUSES
-            for status in loop_state.plan_step_statuses
-        )
-    ):
-        loop_state.mcp_guidance.insert(
-            0,
-            (
-                "Plan steps are complete. STOP calling tools and answer the user "
-                "using prior tool results."
-            ),
-        )
+    if skill_results_ready_to_answer(loop_state):
+        nudge = build_skill_results_answer_nudge(loop_state)
+        if nudge not in loop_state.mcp_guidance:
+            loop_state.mcp_guidance.insert(0, nudge)
+        return
+    if not loop_state.skill_plan_override:
         return
     next_tool = _next_plan_tool_name(loop_state)
     if not next_tool:
@@ -2781,11 +2823,7 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
             for status in loop_state.plan_step_statuses
         )
     ):
-        return (
-            "All planned steps are done or deliberately omitted. STOP calling "
-            "tools and write the final answer to the user now using the tool "
-            "results above."
-        )
+        return build_skill_results_answer_nudge(loop_state)
 
     hint = _ROUTE_DISCOVERY_DOMAINS.get(loop_state.plan_route)
     if hint:
@@ -2913,6 +2951,10 @@ def inject_loop_context(
             if title:
                 next_step = f"NEXT: {title}"
                 break
+    if not next_step and skill_results_ready_to_answer(loop_state):
+        # Plan is complete — do not fall back to the plan-progress header; that
+        # leaves small models looping in reasoning with no actionable next step.
+        next_step = _SKILL_RESULTS_ANSWER_NEXT
     if not next_step:
         plan = build_plan_progress_summary(loop_state)
         if plan:
@@ -3110,6 +3152,12 @@ def record_pagination_state(
 
 def build_empty_response_nudge(loop_state: LoopState) -> str:
     """Return a directive when the model produced no answer and no tool call."""
+    if skill_results_ready_to_answer(loop_state):
+        return (
+            "SYSTEM (internal — not from the user): Your previous reply was "
+            "empty after the skill plan finished. "
+            f"{build_skill_results_answer_nudge(loop_state)}"
+        )
     return (
         "SYSTEM (internal — not from the user): Your previous reply was empty. "
         "Either call exactly one tool to make progress, or write the final "
@@ -3258,7 +3306,12 @@ def should_retry_empty_response(
     if iteration >= max_iterations - 1:
         return False
     loop_state.empty_responses += 1
-    return loop_state.empty_responses <= _MAX_EMPTY_RESPONSES
+    empty_cap = (
+        _MAX_EMPTY_RESPONSES_AFTER_SKILL_RESULTS
+        if skill_results_ready_to_answer(loop_state)
+        else _MAX_EMPTY_RESPONSES
+    )
+    return loop_state.empty_responses <= empty_cap
 
 
 def mark_iteration_outcome(loop_state: LoopState) -> None:
