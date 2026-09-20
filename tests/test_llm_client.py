@@ -246,6 +246,15 @@ def test_stream_text_delta_incremental() -> None:
     assert delta == " world"
 
 
+def test_stream_text_delta_char_by_char_keeps_repeated_letters() -> None:
+    """Single-character streams must not drop a repeated trailing letter."""
+    buffer = ""
+    for char in "Hello":
+        buffer, delta = llm_client.stream_text_delta(buffer, char)
+        assert delta == char
+    assert buffer == "Hello"
+
+
 def test_stream_text_delta_cumulative() -> None:
     """Cumulative stream pieces emit only the new suffix."""
     buffer, delta = llm_client.stream_text_delta("", "The user wants")

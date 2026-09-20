@@ -22,12 +22,23 @@ def stream_text_delta(buffer: str, piece: str) -> tuple[str, str]:
 
     Some LLM servers send the full text-so-far in each SSE delta instead of
     only the new suffix. Returns ``(new_buffer, delta_to_emit)``.
+
+    Do not treat short suffix matches as duplicates — character-at-a-time
+    streams legitimately repeat the previous character (e.g. the second ``l``
+    in ``Hello``).
     """
     if not piece:
         return buffer, ""
     if buffer and piece.startswith(buffer):
         return piece, piece[len(buffer) :]
-    if buffer and buffer.endswith(piece):
+    # Cumulative providers sometimes re-send the previous token/word. Only
+    # collapse when the piece is a non-trivial trailing echo, not 1-2 chars.
+    if (
+        buffer
+        and len(piece) >= 3
+        and len(piece) < len(buffer)
+        and buffer.endswith(piece)
+    ):
         return buffer, ""
     return buffer + piece, piece
 
