@@ -4747,7 +4747,7 @@ class HaAgentPanel extends HTMLElement {
         </label>
 
         <h3 class="settings-section-title">Orchestration roles</h3>
-        <p class="hint">Router classifies/routes. Planner, verifier, and observer inherit from Router when unset; Router inherits from Chat. Pick a model from the server list, or leave Inherit.</p>
+        <p class="hint">Router classifies/routes. Planner, verifier, and observer inherit from Router when unset; Router inherits from Chat. The planner uses Chat’s thinking level (other roles stay terse). Pick a model from the server list, or leave Inherit.</p>
         <div class="role-editor">
           ${this._renderRoleModelRow({
             title: "Router",

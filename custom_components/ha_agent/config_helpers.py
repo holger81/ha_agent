@@ -230,6 +230,7 @@ def _optional_role_backend(
     base_url_key: str,
     max_tokens: int,
     temperature: float,
+    thinking_level: str | None = None,
 ) -> LlmBackend | None:
     """Return a dedicated orchestration-role backend when enabled + model set."""
     data = entry.data
@@ -247,12 +248,35 @@ def _optional_role_backend(
         max_tokens=max_tokens,
         temperature=temperature,
         timeout=chat.timeout,
-        thinking_level="off",
+        thinking_level=normalize_thinking_level(
+            thinking_level if thinking_level is not None else "off"
+        ),
+    )
+
+
+def with_thinking_level(backend: LlmBackend, level: str) -> LlmBackend:
+    """Return a copy of ``backend`` with a different thinking level."""
+    normalized = normalize_thinking_level(level)
+    if backend.thinking_level == normalized:
+        return backend
+    return LlmBackend(
+        base_url=backend.base_url,
+        model=backend.model,
+        api_key=backend.api_key,
+        max_tokens=backend.max_tokens,
+        temperature=backend.temperature,
+        timeout=backend.timeout,
+        thinking_level=normalized,
     )
 
 
 def get_planner_backend(entry: ConfigEntry) -> LlmBackend | None:
-    """Return a dedicated planner backend when configured."""
+    """Return a dedicated planner backend when configured.
+
+    Planners inherit the chat thinking level — decomposition benefits from CoT
+    even when other orchestration roles stay terse.
+    """
+    chat = get_llm_backend(entry)
     return _optional_role_backend(
         entry,
         enabled_key=CONF_PLANNER_MODEL_ENABLED,
@@ -260,6 +284,7 @@ def get_planner_backend(entry: ConfigEntry) -> LlmBackend | None:
         base_url_key=CONF_PLANNER_LLM_BASE_URL,
         max_tokens=DEFAULT_CLASSIFIER_LLM_MAX_TOKENS,
         temperature=DEFAULT_CLASSIFIER_LLM_TEMPERATURE,
+        thinking_level=chat.thinking_level,
     )
 
 

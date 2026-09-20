@@ -108,8 +108,13 @@ def build_role_registry(
     router_config: RouterConfig,
 ) -> RoleRegistry:
     """Build a role registry from chat/action/orchestration backends."""
+    from .config_helpers import with_thinking_level
+
     classifier = router_config.classifier_backend or chat_backend
-    planner = router_config.planner_backend or classifier
+    # Planner keeps the chat thinking level even when it inherits the router
+    # model — ROLE_CAPABILITIES marks it as a reasoning role.
+    planner_source = router_config.planner_backend or classifier
+    planner = with_thinking_level(planner_source, chat_backend.thinking_level)
     verifier = router_config.verifier_backend or classifier
     observer = router_config.observer_backend or classifier
     action = (

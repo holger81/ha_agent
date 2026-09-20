@@ -155,9 +155,57 @@ def test_planner_verifier_observer_flow_into_router_and_registry():
     registry = rr.build_role_registry(chat, router)
     assert registry.backend_for(rr.ModelRole.ROUTER).model == "router-model"
     assert registry.backend_for(rr.ModelRole.PLANNER).model == "planner-model"
+    assert registry.backend_for(rr.ModelRole.PLANNER).thinking_level == "off"
     assert registry.backend_for(rr.ModelRole.VERIFIER).model == "verifier-model"
     assert registry.backend_for(rr.ModelRole.OBSERVER).model == "observer-model"
     assert registry.backend_for(rr.ModelRole.WORKER_CHAT).model == "chat-model"
+
+
+def test_planner_inherits_chat_thinking_level():
+    """Planner keeps chat thinking even when model falls back to the router."""
+    for name in ("ha_agent.role_registry", "ha_agent.config_helpers", "ha_agent.const"):
+        sys.modules.pop(name, None)
+    ch = _load_config_helpers()
+    rr = _load_module("role_registry")
+
+    entry = _Entry(
+        {
+            "llm_model": "chat-model",
+            "llm_base_url": "http://chat:9292/v1",
+            "llm_thinking_level": "high",
+            "classifier_model_enabled": True,
+            "classifier_llm_model": "router-model",
+            "planner_model_enabled": True,
+            "planner_llm_model": "planner-model",
+        }
+    )
+    router = ch.get_router_config(entry)
+    assert router.planner_backend is not None
+    assert router.planner_backend.thinking_level == "high"
+    assert router.classifier_backend is not None
+    assert router.classifier_backend.thinking_level == "off"
+
+    registry = rr.build_role_registry(ch.get_llm_backend(entry), router)
+    assert registry.backend_for(rr.ModelRole.PLANNER).thinking_level == "high"
+    assert registry.backend_for(rr.ModelRole.ROUTER).thinking_level == "off"
+
+    # Unset planner still uses the router model, but with chat thinking.
+    entry_inherit = _Entry(
+        {
+            "llm_model": "chat-model",
+            "llm_thinking_level": "medium",
+            "classifier_model_enabled": True,
+            "classifier_llm_model": "router-model",
+        }
+    )
+    router_inherit = ch.get_router_config(entry_inherit)
+    registry_inherit = rr.build_role_registry(
+        ch.get_llm_backend(entry_inherit),
+        router_inherit,
+    )
+    planner = registry_inherit.backend_for(rr.ModelRole.PLANNER)
+    assert planner.model == "router-model"
+    assert planner.thinking_level == "medium"
 
 
 def test_orchestration_roles_inherit_classifier_when_unset():
