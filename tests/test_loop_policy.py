@@ -829,6 +829,69 @@ def test_should_block_reasoning_execution_mismatch_when_plan_suspended() -> None
     assert policy.should_block_reasoning_execution_mismatch(state) is False
 
 
+def test_one_step_skill_plan_blocks_wrong_tool_and_discovery() -> None:
+    """A pending 1-step skill plan enforces mismatch + discovery blocks.
+
+    Single-step skills (e.g. news-briefing → news_curate) must not allow the
+    model to keep calling an off-plan tool while narrating the plan.
+    """
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="what's in the news",
+        route="chat",
+        skill_title="News briefing",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+    )
+    assert policy.skill_plan_blocks_discovery(state) is True
+    assert policy.should_block_reasoning_execution_mismatch(state) is True
+
+    reasoning = "Follow the news briefing skill. Call `mcp_news__news_curate` next."
+    mismatch = policy.reasoning_execution_mismatch(
+        reasoning,
+        ["mail_mcp__imap_search_messages"],
+        plan_steps=state.plan_steps,
+    )
+    assert mismatch is not None
+    assert "mcp_news__news_curate" in mismatch
+    assert "mail_mcp__imap_search_messages" in mismatch
+
+    blocked = policy.build_skill_discovery_block_message(state)
+    assert "mcp_news__news_curate" in blocked
+
+
+def test_skill_plan_without_title_allows_discovery() -> None:
+    """Concrete steps without a skill title do not hard-block discovery."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="explore tools",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+    )
+    assert not state.plan_skill_title
+    assert policy.skill_plan_blocks_discovery(state) is False
+    assert policy.should_block_reasoning_execution_mismatch(state) is False
+
+
+def test_empty_plan_allows_intentional_discovery() -> None:
+    """No seeded skill steps leave discovery open for search-first turns."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="find a mark-as-read tool",
+        route="email",
+        discovery_domain="email",
+    )
+    assert state.plan_steps == []
+    assert policy.skill_plan_blocks_discovery(state) is False
+    assert policy.should_block_reasoning_execution_mismatch(state) is False
+    assert any("discover mcp tools" in hint.lower() for hint in state.mcp_guidance)
+
+
 def test_record_plan_tool_result_keeps_done_on_later_failure() -> None:
     """A completed plan step is not downgraded by later failed retries."""
     policy = _load_loop_policy()

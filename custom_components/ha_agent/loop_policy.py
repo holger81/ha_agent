@@ -707,16 +707,16 @@ def maybe_suspend_skill_plan_from_reasoning(
 
 
 def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
-    """Return True when discovery tools should stay blocked for the skill plan."""
+    """Return True when discovery tools should stay blocked for the skill plan.
+
+    Any non-empty concrete skill plan is enforceable (including 1-step skills
+    like news-briefing). Empty plans / no skill title still allow discovery.
+    """
     if loop_state.skill_plan_override:
         return bool(loop_state.plan_steps) and any(
             status == "done" for status in loop_state.plan_step_statuses
         )
-    return (
-        bool(loop_state.plan_steps)
-        and len(loop_state.plan_steps) >= 2
-        and bool(loop_state.plan_skill_title)
-    )
+    return bool(loop_state.plan_steps) and bool(loop_state.plan_skill_title)
 
 
 def redundant_override_tool_block(
