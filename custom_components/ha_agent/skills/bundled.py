@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -99,6 +100,40 @@ def email_skill_needs_refresh(skill: Skill) -> bool:
     return (
         route == "email" and slug in BUNDLED_SKILL_FILES and not expected <= step_names
     )
+
+
+def news_skill_needs_refresh(skill: Skill) -> bool:
+    """Return True when a news briefing skill still uses stale query args."""
+    if skill.is_builtin:
+        return False
+    slug = skill.slug.lower()
+    route = (skill.route_scope or "").lower()
+    if slug != "news-briefing" and route != "news":
+        return False
+    if slug not in BUNDLED_SKILL_FILES and route != "news":
+        return False
+
+    blob = f"{skill.body}\n{json.dumps(skill.tool_steps, ensure_ascii=True)}".lower()
+    if '"query"' in blob or "pass `query`" in blob or "pass query" in blob:
+        return True
+    for step in skill.tool_steps:
+        name = canonicalize_tool_name(str(step.get("toolName") or ""))
+        if "news_curate" not in name:
+            continue
+        args = step.get("arguments")
+        if not isinstance(args, dict):
+            return True
+        if "query" in args:
+            return True
+        # Empty args or missing digest_scope placeholder loses local/germany focus.
+        if "digest_scope" not in args:
+            return True
+    return False
+
+
+def bundled_skill_needs_refresh(skill: Skill) -> bool:
+    """Return True when a known bundled workflow skill should be re-applied."""
+    return email_skill_needs_refresh(skill) or news_skill_needs_refresh(skill)
 
 
 def apply_bundled_skill(skill: Skill) -> bool:

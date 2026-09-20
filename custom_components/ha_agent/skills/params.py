@@ -56,9 +56,13 @@ def bind_tool_steps(
     steps: list[dict[str, Any]],
     bindings: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Return tool steps with slot placeholders filled."""
+    """Return tool steps with slot placeholders filled.
+
+    Empty string argument values (e.g. unbound optional slots) are omitted so
+    the model follows the MCP tool's defaults instead of sending blank fields.
+    """
     if not bindings:
-        return [dict(step) for step in steps]
+        return [_scrub_empty_step_args(dict(step)) for step in steps]
     bound: list[dict[str, Any]] = []
     for step in steps:
         new_step: dict[str, Any] = {}
@@ -71,8 +75,21 @@ def bind_tool_steps(
                 )
             else:
                 new_step[key] = value
-        bound.append(new_step)
+        bound.append(_scrub_empty_step_args(new_step))
     return bound
+
+
+def _scrub_empty_step_args(step: dict[str, Any]) -> dict[str, Any]:
+    args = step.get("arguments")
+    if not isinstance(args, dict):
+        return step
+    cleaned = {
+        key: value
+        for key, value in args.items()
+        if not (isinstance(value, str) and not value.strip())
+    }
+    step["arguments"] = cleaned
+    return step
 
 
 def bindings_diverge_from_defaults(

@@ -1442,6 +1442,81 @@ def test_build_mcp_tool_adherence_hint_uses_catalog() -> None:
     assert "UIDs" not in hint
 
 
+def test_parameters_summary_includes_optional_enums() -> None:
+    """Optional properties with enums must appear even when required is empty."""
+    policy = _load_loop_policy()
+    summary = policy._parameters_summary(
+        {
+            "type": "object",
+            "properties": {
+                "digest_scope": {
+                    "type": "string",
+                    "enum": ["global", "local", "germany", "full", "today"],
+                    "description": "Focus for the briefing.",
+                }
+            },
+        }
+    )
+    assert "digest_scope" in summary
+    assert "local" in summary
+    assert "Focus for the briefing." in summary
+
+
+def test_seed_planned_tool_mcp_catalog_injects_adherence() -> None:
+    """Plan-init seeding caches discovery meta and guides callTool."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="what are today's news",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate", "arguments": {}}],
+        skill_title="News briefing",
+        discovery_domain="news",
+    )
+    assert policy.planned_tools_missing_mcp_meta(state) == ["mcp_news__news_curate"]
+
+    discovery = json.dumps(
+        [
+            {
+                "toolName": "mcp_news__news_curate",
+                "description": "Curate headlines from feeds.",
+                "serverLlmContext": "Use digest_scope=local for Bay Area.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "digest_scope": {
+                            "type": "string",
+                            "enum": ["global", "local", "germany"],
+                            "description": "Briefing focus.",
+                        }
+                    },
+                },
+            }
+        ]
+    )
+    policy.seed_planned_tool_mcp_catalog(state, [discovery])
+
+    assert not policy.planned_tools_missing_mcp_meta(state)
+    entry = state.mcp_tool_catalog["mcp_news__news_curate"]
+    assert "Curate headlines" in entry["description"]
+    assert "digest_scope" in entry["parameters"]
+    assert "local" in entry["parameters"]
+    assert any("MCP definition loaded" in hint for hint in state.mcp_guidance)
+    assert any("digest_scope" in hint for hint in state.mcp_guidance)
+
+
+def test_discovery_query_for_plan_tool_uses_suffix() -> None:
+    policy = _load_loop_policy()
+    assert (
+        policy.discovery_query_for_plan_tool("mcp_news__news_curate") == "news_curate"
+    )
+    assert (
+        policy.resolve_plan_discovery_domain(route="chat", discovery_domain="news")
+        == "news"
+    )
+
+
 def test_analyze_search_tool_result_injects_mcp_adherence() -> None:
     """Search/list results produce a factual summary and MCP adherence hint."""
     policy = _load_loop_policy()

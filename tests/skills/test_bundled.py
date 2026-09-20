@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _load_bundled():
@@ -51,6 +49,7 @@ def _load_bundled():
 bundled_mod, models_mod = _load_bundled()
 Skill = models_mod.Skill
 email_skill_needs_refresh = bundled_mod.email_skill_needs_refresh
+news_skill_needs_refresh = bundled_mod.news_skill_needs_refresh
 apply_bundled_skill = bundled_mod.apply_bundled_skill
 load_bundled_skill_text = bundled_mod.load_bundled_skill_text
 
@@ -61,6 +60,14 @@ def test_bundled_email_markdown_loads() -> None:
     assert "mail_mcp__imap_mailbox_status" in text
     assert "mail_mcp__imap_get_message" in text
     assert "imap_fetch_message" not in text
+
+
+def test_bundled_news_markdown_uses_digest_scope() -> None:
+    text = load_bundled_skill_text("news-briefing")
+    assert text is not None
+    assert 'digest_scope: "{{digest_scope}}"' in text
+    assert 'query: "{{digest_scope}}"' not in text
+    assert "mcp_news__news_curate" in text
 
 
 def test_stale_email_skill_detected() -> None:
@@ -75,6 +82,20 @@ def test_stale_email_skill_detected() -> None:
         route_scope="email",
     )
     assert email_skill_needs_refresh(skill) is True
+
+
+def test_stale_news_skill_detected() -> None:
+    skill = Skill(
+        id="2",
+        slug="news-briefing",
+        title="News briefing",
+        description="Headlines",
+        triggers=["news"],
+        body="Call mcp_news__news_curate with query.",
+        tool_steps=[{"toolName": "mcp_news__news_curate", "arguments": {}}],
+        route_scope="news",
+    )
+    assert news_skill_needs_refresh(skill) is True
 
 
 def test_apply_bundled_skill_rewrites_broken_email_skill() -> None:
@@ -95,3 +116,27 @@ def test_apply_bundled_skill_rewrites_broken_email_skill() -> None:
         for step in skill.tool_steps
     )
     assert email_skill_needs_refresh(skill) is False
+
+
+def test_apply_bundled_skill_rewrites_broken_news_skill() -> None:
+    skill = Skill(
+        id="2",
+        slug="news-briefing",
+        title="News briefing",
+        description="Headlines",
+        triggers=["news"],
+        body="Pass query from digest_scope.",
+        tool_steps=[
+            {
+                "toolName": "mcp_news__news_curate",
+                "arguments": {"query": "{{digest_scope}}"},
+            }
+        ],
+        route_scope="news",
+    )
+    assert apply_bundled_skill(skill) is True
+    assert news_skill_needs_refresh(skill) is False
+    step = skill.tool_steps[0]
+    assert step["toolName"] == "mcp_news__news_curate"
+    assert "digest_scope" in step["arguments"]
+    assert "query" not in step["arguments"]

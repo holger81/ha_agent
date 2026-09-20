@@ -12,7 +12,7 @@ from .body import normalize_skill
 from .bundled import (
     apply_bundled_skill,
     apply_legacy_route_models_to_bundled,
-    email_skill_needs_refresh,
+    bundled_skill_needs_refresh,
     seed_missing_bundled_skills,
 )
 from .markdown import (
@@ -166,7 +166,7 @@ def sync_skill_files(hass: HomeAssistant, entry_id: str) -> SkillFileSyncResult:
         if skill.is_builtin:
             continue
         before = skill_to_markdown(skill)
-        if email_skill_needs_refresh(skill):
+        if bundled_skill_needs_refresh(skill):
             apply_bundled_skill(skill)
         normalize_skill(skill)
         after = skill_to_markdown(skill)

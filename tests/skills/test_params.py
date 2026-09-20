@@ -7,9 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _load_modules():
@@ -113,3 +111,29 @@ def test_bind_tool_steps_fills_entity_and_service_slots() -> None:
         "service": "turn_on",
         "entity_id": "light.dining_room_lights_ceiling",
     }
+
+
+def test_bind_tool_steps_omits_empty_optional_slots() -> None:
+    """Empty bound strings are dropped so MCP defaults apply."""
+    bind_tool_steps = mods["params"].bind_tool_steps
+    steps = bind_tool_steps(
+        [
+            {
+                "toolName": "mcp_news__news_curate",
+                "arguments": {"digest_scope": "{{digest_scope}}"},
+            }
+        ],
+        {"digest_scope": ""},
+    )
+    assert steps[0]["arguments"] == {}
+
+    local = bind_tool_steps(
+        [
+            {
+                "toolName": "mcp_news__news_curate",
+                "arguments": {"digest_scope": "{{digest_scope}}"},
+            }
+        ],
+        {"digest_scope": "local"},
+    )
+    assert local[0]["arguments"] == {"digest_scope": "local"}

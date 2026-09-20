@@ -18,6 +18,7 @@ from .loop_policy import (
     initialize_loop_plan,
     inject_loop_context,
     plan_preferred_tool_names,
+    prefetch_planned_tool_mcp_meta,
     reset_iteration_flags,
     skill_plan_locks_catalog,
 )
@@ -156,6 +157,11 @@ async def run_worker(
         discovery_domain=discovery,
     )
     cache_mcp_tools_from_schemas(loop_state, tools)
+    await prefetch_planned_tool_mcp_meta(
+        loop_state,
+        mcp_client.call_tool,
+        discovery_domain=discovery,
+    )
 
     preferred_tool_names: list[str] = []
     if skill_steps:

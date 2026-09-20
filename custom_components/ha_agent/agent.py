@@ -82,6 +82,7 @@ from .loop_policy import (
     note_executed_tool,
     off_plan_tool_block,
     plan_preferred_tool_names,
+    prefetch_planned_tool_mcp_meta,
     reasoning_exceeds_hard_limit,
     reasoning_execution_mismatch,
     reconcile_plan_after_tools,
@@ -2025,6 +2026,11 @@ async def run_agent(
         if raw_steps:
             skill_steps = bind_tool_steps(raw_steps, slot_bindings)
             skill_steps = scrub_mismatched_plan_entities(skill_steps, turn_goal)
+    discovery_domain = (
+        (primary_skill.route_scope or "").lower()
+        if primary_skill and (primary_skill.route_scope or "").strip()
+        else (route_resolution.domain_hint or None)
+    )
     initialize_loop_plan(
         loop_state,
         goal=turn_goal or user_text,
@@ -2032,16 +2038,18 @@ async def run_agent(
         tool_steps=skill_steps,
         skill_title=matched_skills[0].title if matched_skills else "",
         slot_bindings=slot_bindings or None,
-        discovery_domain=(
-            (primary_skill.route_scope or "").lower()
-            if primary_skill and (primary_skill.route_scope or "").strip()
-            else (route_resolution.domain_hint or None)
-        ),
+        discovery_domain=discovery_domain,
     )
     # Unit-only follow-ups ("and in Fahrenheit?") convert the prior answer;
     # seed that so the reading gate does not force another sensor search.
     seed_unit_conversion_guidance(loop_state, user_text=user_text, history=history)
     cache_mcp_tools_from_schemas(loop_state, llm_tools)
+    await prefetch_planned_tool_mcp_meta(
+        loop_state,
+        mcp_client.call_tool,
+        discovery_domain=discovery_domain,
+        log=LOGGER.debug,
+    )
     if user_requests_skill_override(user_text):
         suspend_skill_plan(
             loop_state,

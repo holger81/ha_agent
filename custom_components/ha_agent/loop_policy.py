@@ -1084,14 +1084,26 @@ def _parameters_summary(schema: dict[str, Any]) -> str:
     if isinstance(required, list) and required:
         lines.append("Required: " + ", ".join(str(name) for name in required))
     if isinstance(props, dict):
-        keys = list(required) if isinstance(required, list) else list(props.keys())
-        for name in keys[:10]:
+        ordered: list[str] = []
+        if isinstance(required, list):
+            ordered.extend(str(name) for name in required if name in props)
+        ordered.extend(str(name) for name in props if str(name) not in ordered)
+        for name in ordered[:10]:
             prop = props.get(name)
             if not isinstance(prop, dict):
                 continue
+            bits: list[str] = []
             desc = prop.get("description")
             if isinstance(desc, str) and desc.strip():
-                lines.append(f"- {name}: {desc.strip()[:160]}")
+                bits.append(desc.strip()[:160])
+            enum = prop.get("enum")
+            if isinstance(enum, list) and enum:
+                values = ", ".join(str(item) for item in enum[:12])
+                bits.append(f"enum: {values}")
+            if bits:
+                lines.append(f"- {name}: " + " ".join(bits))
+            else:
+                lines.append(f"- {name}")
     return "\n".join(lines)
 
 
@@ -1171,6 +1183,125 @@ def cache_discovery_tool_catalog(loop_state: LoopState, output: str) -> None:
             server_llm_context=str(entry.get("serverLlmContext") or ""),
             parameters=_parameters_summary(schema if isinstance(schema, dict) else {}),
         )
+
+
+def planned_tools_missing_mcp_meta(loop_state: LoopState) -> list[str]:
+    """Return plan toolNames that still lack MCP description/params."""
+    if not loop_state.plan_steps or loop_state.skill_plan_override:
+        return []
+    missing: list[str] = []
+    for step in loop_state.plan_steps:
+        name = str(step.get("toolName") or "").strip()
+        if not name or name in missing:
+            continue
+        entry = _lookup_catalog_entry(loop_state, name)
+        if (
+            entry.get("description")
+            or entry.get("parameters")
+            or entry.get("serverLlmContext")
+        ):
+            continue
+        missing.append(name)
+    return missing
+
+
+def discovery_query_for_plan_tool(tool_name: str) -> str:
+    """Build a searchTool query that targets one planned upstream tool."""
+    name = tool_name.strip()
+    if not name:
+        return ""
+    if "__" in name:
+        return name.rsplit("__", 1)[-1]
+    return name
+
+
+def seed_planned_tool_mcp_catalog(
+    loop_state: LoopState,
+    discovery_outputs: list[str],
+) -> None:
+    """Cache discovery hits for plan tools and inject MCP adherence guidance.
+
+    Skill-plan turns lock the catalog and block discovery, so planned tools
+    otherwise never receive description / inputSchema / serverLlmContext.
+    """
+    if not discovery_outputs:
+        return
+    for output in discovery_outputs:
+        cache_discovery_tool_catalog(loop_state, output)
+    next_tool = _next_plan_tool_name(loop_state)
+    if not next_tool:
+        return
+    entry = _lookup_catalog_entry(loop_state, next_tool)
+    if not (
+        entry.get("description")
+        or entry.get("parameters")
+        or entry.get("serverLlmContext")
+    ):
+        return
+    adherence = build_mcp_tool_adherence_hint(
+        loop_state,
+        next_tool,
+        lead_in="Required skill-plan tool (MCP definition loaded):",
+    )
+    if adherence not in loop_state.mcp_guidance:
+        loop_state.mcp_guidance.insert(0, adherence)
+
+
+def resolve_plan_discovery_domain(
+    *,
+    route: str,
+    discovery_domain: str | None = None,
+) -> str | None:
+    """Map route / skill scope to an MCP proxy domain id when known."""
+    if discovery_domain and discovery_domain.strip():
+        scope = discovery_domain.strip().lower()
+        return _ROUTE_DISCOVERY_DOMAINS.get(scope, scope)
+    return _ROUTE_DISCOVERY_DOMAINS.get(route)
+
+
+async def prefetch_planned_tool_mcp_meta(
+    loop_state: LoopState,
+    call_tool,
+    *,
+    discovery_domain: str | None = None,
+    log=None,
+) -> None:
+    """Run searchTool for plan tools that lack MCP meta, then seed the catalog.
+
+    ``call_tool`` should be an async ``(name, arguments) -> result`` callable
+    (typically ``mcp_client.call_tool``). Failures are logged and ignored so a
+    flaky proxy never blocks the turn.
+    """
+    missing = planned_tools_missing_mcp_meta(loop_state)
+    if not missing:
+        return
+    domain = resolve_plan_discovery_domain(
+        route=loop_state.plan_route,
+        discovery_domain=discovery_domain,
+    )
+    outputs: list[str] = []
+    for tool_name in missing:
+        query = discovery_query_for_plan_tool(tool_name)
+        if not query:
+            continue
+        arguments: dict[str, Any] = {"query": query}
+        if domain:
+            arguments["domain"] = domain
+        try:
+            result = await call_tool("searchTool", arguments)
+        except Exception as err:
+            if log is not None:
+                log(
+                    "Could not seed MCP meta for planned tool %s: %s",
+                    tool_name,
+                    err,
+                )
+            continue
+        if isinstance(result, str):
+            outputs.append(result)
+        else:
+            outputs.append(json.dumps(result, ensure_ascii=False))
+    seed_planned_tool_mcp_catalog(loop_state, outputs)
 
 
 def build_mcp_tool_adherence_hint(
