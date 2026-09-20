@@ -559,3 +559,74 @@ def test_list_model_scores_ranks_all_previously_evaluated_models() -> None:
         assert "action" not in by_action[1]["scores_by_task"]
 
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_load_model_with_progress_returns_error_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unloadable models must not crash the eval load path."""
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("router OOM while loading")
+
+    monkeypatch.setattr(llm_server, "probe_server", _boom)
+    backend = config_helpers.LlmBackend(
+        base_url="http://example:9292/v1",
+        model="chat",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.1,
+        timeout=30,
+        thinking_level="off",
+    )
+    result = await llm_server.load_model_with_progress(
+        object(),  # type: ignore[arg-type]
+        backend,
+        "broken-model",
+    )
+    assert result["ok"] is False
+    assert result["model"] == "broken-model"
+    assert "OOM" in str(result.get("error") or "")
+
+
+@pytest.mark.asyncio
+async def test_preload_models_continues_after_one_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One unloadable model must not stop preloading the rest."""
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        models=["good", "bad"],
+        loaded_models=[],
+    )
+
+    async def _fake_load(_session, _backend, model_id, **_kwargs):
+        if model_id == "bad":
+            raise RuntimeError("cannot load bad")
+        return {"model": model_id, "ok": True, "skipped": False}
+
+    async def _probe(*_args, **_kwargs):
+        return caps
+
+    monkeypatch.setattr(llm_server, "probe_server", _probe)
+    monkeypatch.setattr(llm_server, "load_model_with_progress", _fake_load)
+    backend = config_helpers.LlmBackend(
+        base_url="http://example:9292/v1",
+        model="chat",
+        api_key=None,
+        max_tokens=128,
+        temperature=0.1,
+        timeout=30,
+        thinking_level="off",
+    )
+    results = await llm_server.preload_models(
+        object(),  # type: ignore[arg-type]
+        backend,
+        ["bad", "good"],
+        capabilities=caps,
+    )
+    by_model = {item["model"]: item for item in results}
+    assert by_model["bad"]["ok"] is False
+    assert "cannot load bad" in str(by_model["bad"].get("error") or "")
+    assert by_model["good"]["ok"] is True

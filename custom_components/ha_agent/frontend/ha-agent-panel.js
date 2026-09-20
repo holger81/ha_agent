@@ -1321,11 +1321,15 @@ class HaAgentPanel extends HTMLElement {
     if (!this._entryId) return;
     this._evalNotice = "Probing llama.cpp server…";
     this._render();
-    const data = await this._call("ha_agent/eval/probe", {
-      entry_id: this._entryId,
-    });
-    this._evalCapabilities = data.capabilities || null;
-    this._evalNotice = "Server probe complete.";
+    try {
+      const data = await this._call("ha_agent/eval/probe", {
+        entry_id: this._entryId,
+      });
+      this._evalCapabilities = data.capabilities || null;
+      this._evalNotice = "Server probe complete.";
+    } catch (err) {
+      this._evalNotice = `Probe failed: ${err?.message || err}`;
+    }
     this._render();
   }
 
@@ -1335,13 +1339,17 @@ class HaAgentPanel extends HTMLElement {
       ? "Starting eval suite (preloading models first)…"
       : "Starting eval suite…";
     this._render();
-    await this._call("ha_agent/eval/start", {
-      entry_id: this._entryId,
-      include_settings: true,
-      preload_models: preloadModels,
-    });
-    await this._loadEvalStatus();
-    this._evalNotice = "Eval running in background.";
+    try {
+      await this._call("ha_agent/eval/start", {
+        entry_id: this._entryId,
+        include_settings: true,
+        preload_models: preloadModels,
+      });
+      await this._loadEvalStatus();
+      this._evalNotice = "Eval running in background.";
+    } catch (err) {
+      this._evalNotice = err?.message || "Could not start eval suite.";
+    }
     this._render();
   }
 
@@ -1384,27 +1392,40 @@ class HaAgentPanel extends HTMLElement {
     }
     this._evalNotice = `Preloading ${models.length} model(s)…`;
     this._render();
-    const data = await this._call("ha_agent/eval/preload_models", {
-      entry_id: this._entryId,
-      models,
-    });
-    this._evalCapabilities = data.capabilities || this._evalCapabilities;
-    this._evalNotice = `Preload complete: ${data.loaded_count || 0} loaded, ${data.failed_count || 0} failed.`;
+    try {
+      const data = await this._call("ha_agent/eval/preload_models", {
+        entry_id: this._entryId,
+        models,
+      });
+      this._evalCapabilities = data.capabilities || this._evalCapabilities;
+      const failed = data.failed_count || 0;
+      const loaded = data.loaded_count || 0;
+      this._evalNotice =
+        failed > 0
+          ? `Preload finished: ${loaded} loaded, ${failed} failed (suite continues without unloadable models).`
+          : `Preload complete: ${loaded} loaded.`;
+    } catch (err) {
+      this._evalNotice = `Preload failed: ${err?.message || err}`;
+    }
     this._render();
   }
 
   async _unloadEvalModel(modelId) {
     if (!this._entryId || !modelId) return;
     if (!confirm(`Unload model ${modelId} from llama.cpp?`)) return;
-    const data = await this._call("ha_agent/eval/unload_model", {
-      entry_id: this._entryId,
-      model_id: modelId,
-    });
-    this._evalCapabilities = data.capabilities || null;
-    const ok = data.result?.ok;
-    this._evalNotice = ok
-      ? `Unloaded ${modelId}.`
-      : `Failed to unload ${modelId}: ${data.result?.error || "unknown error"}`;
+    try {
+      const data = await this._call("ha_agent/eval/unload_model", {
+        entry_id: this._entryId,
+        model_id: modelId,
+      });
+      this._evalCapabilities = data.capabilities || null;
+      const ok = data.result?.ok;
+      this._evalNotice = ok
+        ? `Unloaded ${modelId}.`
+        : `Failed to unload ${modelId}: ${data.result?.error || "unknown error"}`;
+    } catch (err) {
+      this._evalNotice = `Unload failed: ${err?.message || err}`;
+    }
     this._render();
   }
 
@@ -1417,15 +1438,19 @@ class HaAgentPanel extends HTMLElement {
     ) {
       return;
     }
-    const data = await this._call("ha_agent/eval/delete_model", {
-      entry_id: this._entryId,
-      model_id: modelId,
-    });
-    this._evalCapabilities = data.capabilities || null;
-    const ok = data.delete?.ok;
-    this._evalNotice = ok
-      ? `Deleted ${modelId} from router cache.`
-      : `Could not delete ${modelId}: ${data.delete?.error || data.delete?.reason || "unknown error"}`;
+    try {
+      const data = await this._call("ha_agent/eval/delete_model", {
+        entry_id: this._entryId,
+        model_id: modelId,
+      });
+      this._evalCapabilities = data.capabilities || null;
+      const ok = data.delete?.ok;
+      this._evalNotice = ok
+        ? `Deleted ${modelId} from router cache.`
+        : `Could not delete ${modelId}: ${data.delete?.error || data.delete?.reason || "unknown error"}`;
+    } catch (err) {
+      this._evalNotice = `Delete failed: ${err?.message || err}`;
+    }
     this._render();
   }
 
@@ -1434,11 +1459,15 @@ class HaAgentPanel extends HTMLElement {
     if (!confirm("Apply recommended chat, action, email, news, classifier, and other models from the latest eval?")) {
       return;
     }
-    const data = await this._call("ha_agent/eval/apply", {
-      entry_id: this._entryId,
-    });
-    this._config = data.config || this._config;
-    this._evalNotice = "Applied eval model recommendations.";
+    try {
+      const data = await this._call("ha_agent/eval/apply", {
+        entry_id: this._entryId,
+      });
+      this._config = data.config || this._config;
+      this._evalNotice = "Applied eval model recommendations.";
+    } catch (err) {
+      this._evalNotice = `Apply failed: ${err?.message || err}`;
+    }
     this._render();
   }
 
@@ -1453,44 +1482,52 @@ class HaAgentPanel extends HTMLElement {
     if (!confirm(confirmMsg)) {
       return;
     }
-    const data = await this._call("ha_agent/eval/apply_settings", {
-      entry_id: this._entryId,
-    });
-    if (data.mode === "preset") {
-      const preset = data.preset_ini || "";
-      if (preset.trim()) {
-        try {
-          await navigator.clipboard.writeText(preset);
-          this._evalNotice = `${data.message || "Preset copied."} Restart the llama container after updating the preset file.`;
-        } catch (_err) {
-          this._evalNotice = `${data.message || "Use the preset below."} ${data.docker_hint || ""}`;
+    try {
+      const data = await this._call("ha_agent/eval/apply_settings", {
+        entry_id: this._entryId,
+      });
+      if (data.mode === "preset") {
+        const preset = data.preset_ini || "";
+        if (preset.trim()) {
+          try {
+            await navigator.clipboard.writeText(preset);
+            this._evalNotice = `${data.message || "Preset copied."} Restart the llama container after updating the preset file.`;
+          } catch (_err) {
+            this._evalNotice = `${data.message || "Use the preset below."} ${data.docker_hint || ""}`;
+          }
+        } else {
+          this._evalNotice = data.message || "Router mode requires a preset edit.";
         }
       } else {
-        this._evalNotice = data.message || "Router mode requires a preset edit.";
+        const verified = data.verification?.verified_count ?? 0;
+        const total = (data.verification?.checks || []).length;
+        const applied = (data.applied || []).length;
+        const failed = (data.failed || []).length;
+        this._evalNotice = `${data.message || "Settings applied."} (${applied} ok, ${failed} failed, ${verified}/${total} verified)`;
+        if (data.after) {
+          this._evalCapabilities = {
+            ...(this._evalCapabilities || {}),
+            summary: data.after,
+          };
+        }
       }
-    } else {
-      const verified = data.verification?.verified_count ?? 0;
-      const total = (data.verification?.checks || []).length;
-      const applied = (data.applied || []).length;
-      const failed = (data.failed || []).length;
-      this._evalNotice = `${data.message || "Settings applied."} (${applied} ok, ${failed} failed, ${verified}/${total} verified)`;
-      if (data.after) {
-        this._evalCapabilities = {
-          ...(this._evalCapabilities || {}),
-          summary: data.after,
-        };
-      }
+    } catch (err) {
+      this._evalNotice = `Apply settings failed: ${err?.message || err}`;
     }
     this._render();
   }
 
   async _cancelPipeline() {
     if (!this._entryId) return;
-    const data = await this._call("ha_agent/eval/cancel", { entry_id: this._entryId });
-    this._evalNotice = data.cancelled
-      ? "Cancel requested — stopping pipeline…"
-      : "No active pipeline to cancel.";
-    await this._loadEvalStatus();
+    try {
+      const data = await this._call("ha_agent/eval/cancel", { entry_id: this._entryId });
+      this._evalNotice = data.cancelled
+        ? "Cancel requested — stopping pipeline…"
+        : "No active pipeline to cancel.";
+      await this._loadEvalStatus();
+    } catch (err) {
+      this._evalNotice = `Cancel failed: ${err?.message || err}`;
+    }
     this._render();
   }
 
@@ -1509,13 +1546,17 @@ class HaAgentPanel extends HTMLElement {
     ).trim();
     if (dir) payload.models_dir = dir;
     if (webhook) payload.download_webhook_url = webhook;
-    await this._call("ha_agent/eval/discover/start", {
-      entry_id: this._entryId,
-      ...payload,
-    });
-    await this._loadEvalStatus();
-    this._evalNotice =
-      this._evalStatus?.discover?.progress?.message || "Discover pipeline running.";
+    try {
+      await this._call("ha_agent/eval/discover/start", {
+        entry_id: this._entryId,
+        ...payload,
+      });
+      await this._loadEvalStatus();
+      this._evalNotice =
+        this._evalStatus?.discover?.progress?.message || "Discover pipeline running.";
+    } catch (err) {
+      this._evalNotice = `Discover failed to start: ${err?.message || err}`;
+    }
     this._render();
   }
 

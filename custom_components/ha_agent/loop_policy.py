@@ -277,6 +277,11 @@ def _normalized_reasoning_lines(buffer: str) -> list[str]:
     return lines
 
 
+def reasoning_exceeds_hard_limit(buffer: str) -> bool:
+    """True when reasoning is long enough to abort a stream early."""
+    return len(buffer or "") > _MAX_REASONING_CHARS
+
+
 def reasoning_stream_stuck(buffer: str) -> bool:
     """Return True when streamed reasoning is repeating or too long.
 
@@ -394,6 +399,14 @@ def build_reasoning_stuck_nudge(loop_state: LoopState) -> str:
             "SYSTEM (internal — not from the user): Your previous reply got "
             "stuck in repetitive reasoning after the skill plan finished. "
             f"{build_skill_results_answer_nudge(loop_state)}"
+        )
+    next_tool = _next_plan_tool_name(loop_state)
+    if next_tool and skill_plan_blocks_discovery(loop_state):
+        directive = _call_tool_plan_directive(loop_state, next_tool)
+        return (
+            "SYSTEM (internal — not from the user): Your previous reply got stuck "
+            "in reasoning without calling the required skill-plan tool. Stop "
+            f"analyzing. Call that tool now — {directive}"
         )
     return (
         "SYSTEM (internal — not from the user): Your previous reply got stuck "

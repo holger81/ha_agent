@@ -82,6 +82,7 @@ from .loop_policy import (
     note_executed_tool,
     off_plan_tool_block,
     plan_preferred_tool_names,
+    reasoning_exceeds_hard_limit,
     reasoning_execution_mismatch,
     reconcile_plan_after_tools,
     reconcile_plan_before_answer,
@@ -374,12 +375,16 @@ async def _yield_streamed_assistant_text(
                 reasoning_yielded_len = len(reasoning_buffer)
                 if text:
                     yield AgentDelta(thinking=text), session
-            # Abort endless/repeating thinking before the stream times out.
+            # Mid-stream: only hard-abort oversized reasoning. Soft repeat
+            # detection waits until the stream ends so think-then-tool models
+            # (e.g. news_curate after a short plan narration) are not cut off
+            # before tool_calls arrive.
             content_so_far = safe_stream_display_text(raw_buffer)
-            if is_reasoning_loop(
-                session.reasoning_content or reasoning_buffer,
-                has_tools=bool(session.tool_calls),
-                content=content_so_far,
+            reasoning_so_far = session.reasoning_content or reasoning_buffer
+            if (
+                not session.tool_calls
+                and not content_so_far.strip()
+                and reasoning_exceeds_hard_limit(reasoning_so_far)
             ):
                 session.aborted_reasoning_loop = True
                 break

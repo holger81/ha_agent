@@ -831,15 +831,25 @@ async def preload_models(
             if on_progress:
                 on_progress({**data, "model": _model_id, "phase": "load"})
 
-        result = await load_model_with_progress(
-            session,
-            backend,
-            model_id,
-            capabilities=caps,
-            cancel_check=cancel_check,
-            on_progress=_progress if on_progress else None,
-            abort_on_cancel=abort_on_cancel,
-        )
+        try:
+            result = await load_model_with_progress(
+                session,
+                backend,
+                model_id,
+                capabilities=caps,
+                cancel_check=cancel_check,
+                on_progress=_progress if on_progress else None,
+                abort_on_cancel=abort_on_cancel,
+            )
+        except Exception as err:
+            LOGGER.warning("Model preload raised for %s: %s", model_id, err)
+            result = {
+                "model": model_id,
+                "ok": False,
+                "status": None,
+                "response": {},
+                "error": str(err),
+            }
         result["skipped"] = False
         results.append(result)
         if result.get("ok"):
@@ -1273,28 +1283,38 @@ async def load_model_with_progress(
     abort_on_cancel: bool = False,
 ) -> dict[str, Any]:
     """Load a model and wait for loaded status with SSE/catalog progress."""
-    caps = capabilities or await probe_server(session, backend)
-    if model_id in caps.loaded_models:
+    try:
+        caps = capabilities or await probe_server(session, backend)
+        if model_id in caps.loaded_models:
+            return {
+                "model": model_id,
+                "ok": True,
+                "skipped": True,
+                "reason": "already loaded",
+            }
+        result = await load_model(session, backend, model_id)
+        if not result.get("ok"):
+            return result
+        wait = await wait_for_model_load(
+            session,
+            backend,
+            model_id,
+            cancel_check=cancel_check,
+            on_progress=on_progress,
+            timeout=timeout,
+            use_sse=caps.models_download_via_api,
+            abort_on_cancel=abort_on_cancel,
+        )
+        return {**result, **wait}
+    except Exception as err:
+        LOGGER.warning("Model load raised for %s: %s", model_id, err)
         return {
             "model": model_id,
-            "ok": True,
-            "skipped": True,
-            "reason": "already loaded",
+            "ok": False,
+            "status": None,
+            "response": {},
+            "error": str(err),
         }
-    result = await load_model(session, backend, model_id)
-    if not result.get("ok"):
-        return result
-    wait = await wait_for_model_load(
-        session,
-        backend,
-        model_id,
-        cancel_check=cancel_check,
-        on_progress=on_progress,
-        timeout=timeout,
-        use_sse=caps.models_download_via_api,
-        abort_on_cancel=abort_on_cancel,
-    )
-    return {**result, **wait}
 
 
 async def download_model_on_router(

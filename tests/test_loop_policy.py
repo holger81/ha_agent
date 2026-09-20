@@ -131,6 +131,25 @@ def test_reasoning_stream_stuck_on_alternating_paraphrases() -> None:
     )
     assert policy.reasoning_stream_stuck(cycle) is True
     assert policy.is_reasoning_loop(cycle, has_tools=False, content="") is True
+    # Soft repeats are end-of-stream only; mid-stream aborts only on length.
+    assert policy.reasoning_exceeds_hard_limit(cycle) is False
+    assert policy.reasoning_exceeds_hard_limit("x" * 8001) is True
+
+
+def test_reasoning_stuck_nudge_names_pending_plan_tool() -> None:
+    """Pending skill steps get an explicit callTool directive after a stall."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="what are todays news",
+        route="chat",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+        skill_title="News briefing",
+    )
+    nudge = policy.build_reasoning_stuck_nudge(state)
+    assert "mcp_news__news_curate" in nudge
+    assert "callTool" in nudge or "Call" in nudge
 
 
 def test_is_reasoning_loop_ignores_tools_and_answers() -> None:

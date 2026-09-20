@@ -273,14 +273,50 @@ async def run_eval_suite(
                     for item in preload_results
                     if not item.get("ok") and not item.get("skipped")
                 ]
+                loaded_ok = {
+                    str(item.get("model"))
+                    for item in preload_results
+                    if item.get("ok") and item.get("model")
+                }
                 if failed_preload:
+                    failed_ids = [
+                        str(item.get("model"))
+                        for item in failed_preload
+                        if item.get("model")
+                    ]
                     LOGGER.warning(
                         "Eval preload failed for %d model(s): %s",
                         len(failed_preload),
-                        [item.get("model") for item in failed_preload],
+                        failed_ids,
                     )
-                capabilities = await probe_server(session, chat_backend)
-                run.server_capabilities = capabilities.to_dict()
+                    # Skip unloadable models instead of failing the whole suite.
+                    candidate_models = [
+                        model for model in candidate_models if model in loaded_ok
+                    ]
+                    _eval_progress(
+                        run,
+                        phase="preload",
+                        message=(
+                            f"Skipped {len(failed_ids)} unloadable model(s); "
+                            f"continuing with {len(candidate_models)}."
+                        ),
+                        failed_models=failed_ids,
+                        model_total=len(candidate_models),
+                    )
+                try:
+                    capabilities = await probe_server(session, chat_backend)
+                    run.server_capabilities = capabilities.to_dict()
+                except Exception as err:
+                    LOGGER.warning(
+                        "Eval re-probe after preload failed: %s",
+                        err,
+                    )
+
+            if not candidate_models:
+                raise RuntimeError(
+                    "No models available to benchmark "
+                    "(all preload attempts failed or none were selected)."
+                )
 
             selected_tasks = list(tasks or EVAL_TASKS)
             cases = list_eval_cases_for_entry(hass, entry_id, tasks=selected_tasks)
@@ -368,19 +404,33 @@ async def run_eval_suite(
                         phase="recommend",
                         message="Generating settings recommendations…",
                     )
-                    recommendation = await recommend_settings(
-                        llm,
-                        chat_backend,
-                        capabilities=capabilities,
-                        task_scores=run.task_scores,
-                    )
-                    recommendation = finalize_settings_recommendation(
-                        recommendation,
-                        capabilities=capabilities,
-                    )
-                    run.settings_recommendation = settings_recommendation_to_dict(
-                        recommendation
-                    )
+                    try:
+                        recommendation = await recommend_settings(
+                            llm,
+                            chat_backend,
+                            capabilities=capabilities,
+                            task_scores=run.task_scores,
+                        )
+                        recommendation = finalize_settings_recommendation(
+                            recommendation,
+                            capabilities=capabilities,
+                        )
+                        run.settings_recommendation = settings_recommendation_to_dict(
+                            recommendation
+                        )
+                    except Exception as err:
+                        LOGGER.warning(
+                            "Eval settings recommendation failed: %s",
+                            err,
+                        )
+                        _eval_progress(
+                            run,
+                            phase="recommend",
+                            message=(
+                                "Benchmark finished; settings recommendation "
+                                f"failed: {err}"
+                            ),
+                        )
                 run.status = "completed"
     except Exception as err:
         LOGGER.exception("Eval run failed for entry %s: %s", entry_id, err)

@@ -315,9 +315,22 @@ async def load_eval_model(
     """Load one model on the llama.cpp router via HTTP."""
     backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
     async with aiohttp.ClientSession() as session:
-        result = await load_model(session, backend, model_id)
-        caps = await probe_server(session, backend)
-    return {"result": result, "capabilities": caps.to_dict()}
+        try:
+            result = await load_model(session, backend, model_id)
+        except Exception as err:
+            result = {
+                "model": model_id,
+                "ok": False,
+                "status": None,
+                "response": {},
+                "error": str(err),
+            }
+        try:
+            caps = await probe_server(session, backend)
+            caps_dict = caps.to_dict()
+        except Exception as err:
+            caps_dict = {"errors": [str(err)]}
+    return {"result": result, "capabilities": caps_dict}
 
 
 async def unload_eval_model(
@@ -374,14 +387,34 @@ async def preload_eval_models(
         raise HomeAssistantError("No models specified to preload.")
     backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
     async with aiohttp.ClientSession() as session:
-        before = await probe_server(session, backend)
+        try:
+            before = await probe_server(session, backend)
+        except Exception as err:
+            return {
+                "results": [
+                    {
+                        "model": model_id,
+                        "ok": False,
+                        "error": f"Probe failed before preload: {err}",
+                    }
+                    for model_id in model_ids
+                ],
+                "loaded_count": 0,
+                "failed_count": len(model_ids),
+                "capabilities": {"errors": [str(err)]},
+            }
         results = await preload_models(
             session,
             backend,
             model_ids,
             loaded_models=before.loaded_models,
+            capabilities=before,
         )
-        after = await probe_server(session, backend)
+        try:
+            after = await probe_server(session, backend)
+            caps_dict = after.to_dict()
+        except Exception as err:
+            caps_dict = {**before.to_dict(), "errors": [str(err)]}
     loaded = [item for item in results if item.get("ok")]
     failed = [
         item for item in results if not item.get("ok") and not item.get("skipped")
@@ -390,7 +423,7 @@ async def preload_eval_models(
         "results": results,
         "loaded_count": len(loaded),
         "failed_count": len(failed),
-        "capabilities": after.to_dict(),
+        "capabilities": caps_dict,
     }
 
 
