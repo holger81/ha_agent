@@ -2613,6 +2613,10 @@ async def run_agent(
             )
             if not v_early.passed:
                 loop_state.verifier_retries += 1
+                if streamed_answer:
+                    # Re-answer must replace the draft — preserving the stream
+                    # concatenates the same sentence twice in the UI.
+                    yield AgentDelta(content_clear=True)
                 messages.append(
                     {
                         "role": INTERNAL_GUIDANCE_ROLE,
