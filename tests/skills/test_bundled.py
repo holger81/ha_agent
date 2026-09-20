@@ -140,3 +140,28 @@ def test_apply_bundled_skill_rewrites_broken_news_skill() -> None:
     assert step["toolName"] == "mcp_news__news_curate"
     assert "digest_scope" in step["arguments"]
     assert "query" not in step["arguments"]
+
+
+def test_stale_status_skill_with_call_service_detected() -> None:
+    status_skill_needs_refresh = bundled_mod.status_skill_needs_refresh
+    skill = Skill(
+        id="3",
+        slug="look-up-sensor-or-entity-status-2",
+        title="Look up sensor or entity status",
+        description="Status",
+        triggers=["turn on the dining room lights", "status of {{query}}"],
+        body="Call home_assistant__ha_call_service for readings.",
+        tool_steps=[{"toolName": "home_assistant__ha_call_service", "arguments": {}}],
+        route_scope="chat",
+    )
+    assert status_skill_needs_refresh(skill) is True
+    assert apply_bundled_skill(skill) is True
+    assert status_skill_needs_refresh(skill) is False
+    assert any(
+        "ha_search" in str(step.get("toolName") or "") for step in skill.tool_steps
+    )
+    assert not any(
+        "ha_call_service" in str(step.get("toolName") or "")
+        for step in skill.tool_steps
+    )
+    assert not any("turn on" in trigger.lower() for trigger in skill.triggers)

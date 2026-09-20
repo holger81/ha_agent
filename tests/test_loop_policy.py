@@ -982,6 +982,26 @@ def test_one_step_skill_plan_blocks_wrong_tool_and_discovery() -> None:
     assert "mcp_news__news_curate" in blocked
 
 
+def test_completed_skill_plan_unlocks_discovery() -> None:
+    """A fully done plan must not keep blocking discovery forever."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="what is the solar production right now",
+        route="chat",
+        skill_title="Look up sensor or entity status",
+        tool_steps=[{"toolName": "home_assistant__ha_call_service"}],
+    )
+    assert policy.skill_plan_blocks_discovery(state) is True
+    policy.record_plan_tool_result(
+        state, "home_assistant__ha_call_service", {}, succeeded=True
+    )
+    assert policy.skill_results_ready_to_answer(state) is True
+    assert policy.skill_plan_blocks_discovery(state) is False
+    assert policy.skill_plan_locks_catalog(state) is False
+
+
 def test_skill_plan_without_title_allows_discovery() -> None:
     """Concrete steps without a skill title do not hard-block discovery."""
     policy = _load_loop_policy()

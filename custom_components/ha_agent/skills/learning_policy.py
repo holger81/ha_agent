@@ -367,10 +367,15 @@ def build_deterministic_hard_won_result(trace: TurnTrace) -> Any | None:
     """
     from .observer import SkillObserverResult
     from .runtime import is_hard_won_workflow, struggle_event_count
+    from .tool_names import tool_effect_kind
 
     if not is_hard_won_workflow(trace):
         return None
-    steps = _tool_steps_preferring_filters(trace)
+    steps = [
+        step
+        for step in _tool_steps_preferring_filters(trace)
+        if tool_effect_kind(str(step.get("toolName") or "")) == "read"
+    ]
     if not steps:
         return None
 

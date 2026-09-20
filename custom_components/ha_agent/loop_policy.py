@@ -798,6 +798,8 @@ def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
 
     Any non-empty concrete skill plan is enforceable (including 1-step skills
     like news-briefing). Empty plans / no skill title still allow discovery.
+    Once every plan step is terminal (and pagination is not pending), discovery
+    unlocks so a useless completed step cannot trap the loop.
     """
     if loop_state.control_ready:
         return True
@@ -806,6 +808,8 @@ def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
     if is_exploring(loop_state):
         # Empty explore stays open for discovery; appended steps re-lock.
         return True
+    if skill_results_ready_to_answer(loop_state) and not loop_state.pagination_pending:
+        return False
     return bool(loop_state.plan_skill_title)
 
 

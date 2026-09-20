@@ -13,6 +13,7 @@ from .tool_names import (
     IMAP_MAILBOX_STATUS,
     IMAP_SEARCH_MESSAGES,
     canonicalize_tool_name,
+    tool_effect_kind,
 )
 
 # Learned skills that should match a bundled workflow template.
@@ -21,11 +22,23 @@ BUNDLED_SKILL_FILES: dict[str, str] = {
     "check-unread-emails": "check-and-read-unread-emails.md",
     "email-management": "check-and-read-unread-emails.md",
     "news-briefing": "news-briefing.md",
+    "look-up-sensor-or-entity-status": "look-up-sensor-or-entity-status.md",
+    "look-up-sensor-or-entity-status-2": "look-up-sensor-or-entity-status.md",
 }
 
 _PRIMARY_BUNDLED: tuple[tuple[str, str], ...] = (
     ("check-and-read-unread-emails", "email"),
     ("news-briefing", "news"),
+)
+
+_STATUS_BUNDLED_FILE = "look-up-sensor-or-entity-status.md"
+_STATUS_SLUG = re.compile(
+    r"look[-_]?up[-_]?sensor|entity[-_]?status|sensor[-_]?status",
+    re.IGNORECASE,
+)
+_STATUS_BODY = re.compile(
+    r"\b(sensor|reading|temperature|status of|look up|entity status)\b",
+    re.IGNORECASE,
 )
 
 _STALE_EMAIL_MARKERS = (
@@ -66,7 +79,10 @@ def email_skill_needs_refresh(skill: Skill) -> bool:
     slug = skill.slug.lower()
     if route != "email" and slug not in BUNDLED_SKILL_FILES:
         return False
-    if BUNDLED_SKILL_FILES.get(slug) == "news-briefing.md":
+    if BUNDLED_SKILL_FILES.get(slug) in {
+        "news-briefing.md",
+        _STATUS_BUNDLED_FILE,
+    }:
         return False
 
     blob = f"{skill.body}\n{skill.tool_steps}".lower()
@@ -131,9 +147,50 @@ def news_skill_needs_refresh(skill: Skill) -> bool:
     return False
 
 
+def _is_status_lookup_skill(skill: Skill) -> bool:
+    slug = skill.slug.lower()
+    title = skill.title.lower()
+    if _STATUS_SLUG.search(slug) or _STATUS_SLUG.search(title):
+        return True
+    if (skill.route_scope or "").lower() not in {"", "chat"}:
+        return False
+    return bool(_STATUS_BODY.search(skill.body or ""))
+
+
+def status_skill_needs_refresh(skill: Skill) -> bool:
+    """Return True when a status/lookup skill uses control tools instead of search."""
+    if skill.is_builtin or not _is_status_lookup_skill(skill):
+        return False
+
+    step_names = [
+        canonicalize_tool_name(str(step.get("toolName") or ""))
+        for step in skill.tool_steps
+        if str(step.get("toolName") or "").strip()
+    ]
+    if not step_names:
+        return True
+
+    has_read = any(tool_effect_kind(name) == "read" for name in step_names)
+    has_mutate = any(tool_effect_kind(name) == "mutate" for name in step_names)
+    # Lookup workflows must search/read; call_service-only plans are broken.
+    if has_mutate and not has_read:
+        return True
+    if any("ha_call_service" in name for name in step_names) and not any(
+        "ha_search" in name or "ha_get_state" in name for name in step_names
+    ):
+        return True
+    # Action phrases baked into status triggers pollute selection.
+    triggers_blob = " ".join(skill.triggers).lower()
+    return "turn on" in triggers_blob or "turn off" in triggers_blob
+
+
 def bundled_skill_needs_refresh(skill: Skill) -> bool:
     """Return True when a known bundled workflow skill should be re-applied."""
-    return email_skill_needs_refresh(skill) or news_skill_needs_refresh(skill)
+    return (
+        email_skill_needs_refresh(skill)
+        or news_skill_needs_refresh(skill)
+        or status_skill_needs_refresh(skill)
+    )
 
 
 def apply_bundled_skill(skill: Skill) -> bool:
@@ -141,6 +198,8 @@ def apply_bundled_skill(skill: Skill) -> bool:
     filename = BUNDLED_SKILL_FILES.get(skill.slug)
     if filename is None and (skill.route_scope or "").lower() == "email":
         filename = BUNDLED_SKILL_FILES["check-and-read-unread-emails"]
+    if filename is None and status_skill_needs_refresh(skill):
+        filename = _STATUS_BUNDLED_FILE
     if filename is None:
         return False
 
