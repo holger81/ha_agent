@@ -309,7 +309,11 @@ def ha_service_entity_id(
 
 
 def memory_assistant_text(text: str, entity_ids: list[str]) -> str:
-    """Append controlled entity ids for follow-up turns in conversation memory."""
+    """Append actuated entity ids for follow-up turns in conversation memory.
+
+    Pass only entities a control tool actually changed. Search and status
+    lookups belong in turn metadata, not this suffix.
+    """
     cleaned = text.strip()
     unique_ids = list(dict.fromkeys(entity_ids))
     if not unique_ids:

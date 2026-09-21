@@ -1060,6 +1060,40 @@ def test_keep_selected_skill_drops_named_device_misfires() -> None:
     )
 
 
+def test_slotted_light_skill_matches_control_paraphrase_not_status() -> None:
+    """A {{query}} light skill stays eligible for control asks, not status asks."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    lights = models.Skill(
+        id="1",
+        slug="turn-lights-on-or-off",
+        title="Turn lights on or off",
+        description="Search for the light the user named, then turn it on or off.",
+        triggers=["turn on the {{query}} lights", "turn off the {{query}} lights"],
+        body="Search {{query}} then call the service.",
+        tool_steps=[
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {"service": "{{service}}"},
+            }
+        ],
+        route_scope="action",
+    )
+    assert selection.keep_selected_skill("turn on the office lights", lights) is True
+    assert (
+        selection.skill_matches_route(
+            lights, "action", user_text="turn on the office lights"
+        )
+        is True
+    )
+    assert (
+        selection.skill_matches_route(
+            lights, "action", user_text="what is the status of the office lamp"
+        )
+        is False
+    )
+
+
 def test_dining_lights_skill_does_not_apply_to_temperature_query() -> None:
     """Control skills must not apply to unrelated status questions."""
     selection = _load("skills.selection")

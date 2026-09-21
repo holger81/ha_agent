@@ -296,6 +296,17 @@ def test_resolve_turn_goal_keeps_prior_ask_on_short_follow_up() -> None:
     )
 
 
+def test_resolve_turn_goal_keeps_control_pronoun_after_status() -> None:
+    """'turn them on' stays a control goal so a prior status ask is not reused."""
+    history = [
+        {"role": "user", "content": "what is the status of the office lamp"},
+        {"role": "assistant", "content": "The office lamp is off."},
+    ]
+    assert context.is_control_pronoun_follow_up("turn them on")
+    assert context.resolve_turn_goal("turn them on", history) == "turn them on"
+    assert context.resolve_turn_goal("switch it off", history) == "switch it off"
+
+
 @pytest.mark.parametrize(
     ("text", "continues"),
     [
@@ -425,6 +436,25 @@ def test_build_tool_context_turn_them_back_off_reuses_history_entity() -> None:
     assert "light.dining_room_ceiling" in tool_context
     assert "ha_call_service" not in tool_context
     assert "service turn_off" not in tool_context
+
+
+def test_build_tool_context_status_then_turn_them_on_uses_referenced_ids() -> None:
+    """A status lookup's referenced ids, not search noise, drive the follow-up."""
+    history = [
+        {"role": "user", "content": "what is the status of the office lamp"},
+        {
+            "role": "assistant",
+            "content": "The office lamp is off.",
+            "turn_meta": {
+                "referenced_entity_ids": ["light.office_lamp"],
+            },
+        },
+    ]
+    tool_context = context.build_tool_context("turn them on", [], history=history)
+    assert "FOLLOW-UP DEVICE ACTION" in tool_context
+    assert "light.office_lamp" in tool_context
+    assert "paginate" in tool_context.lower()
+    assert "ha_call_service" not in tool_context
 
 
 def test_build_messages_skips_duplicate_user() -> None:

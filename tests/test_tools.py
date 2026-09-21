@@ -258,12 +258,13 @@ def test_normalize_doubled_mcp_tool_prefix() -> None:
 
 
 def test_memory_assistant_text_appends_controlled_entities() -> None:
-    """Conversation memory keeps entity ids for pronoun follow-ups."""
+    """Conversation memory keeps actuated entity ids for pronoun follow-ups."""
     text = tools.memory_assistant_text(
         "The dining room lights have been turned on.",
         ["light.dining_room_ceiling"],
     )
-    assert "light.dining_room_ceiling" in text
+    assert "Controlled: light.dining_room_ceiling." in text
+    assert "sensor.office_temperature" not in text
 
 
 def test_compact_discovery_tool_output_strips_schemas() -> None:

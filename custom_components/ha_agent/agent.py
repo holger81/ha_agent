@@ -2739,27 +2739,28 @@ async def run_agent(
             trace.outcome = TurnOutcome.FAILED
         else:
             trace.outcome = TurnOutcome.SUCCESS
-        memory_entity_ids = list(
-            dict.fromkeys(
-                [
-                    *controlled_entity_ids,
-                    *loop_state.referenced_entity_ids,
-                    *(
-                        [loop_state.confirmed_reading_entity_id]
-                        if loop_state.confirmed_reading_entity_id
-                        else []
-                    ),
-                ]
-            )
-        )
-        if memory_entity_ids:
-            turn_meta["referenced_entity_ids"] = memory_entity_ids
+        referenced_ids = [
+            entity_id
+            for entity_id in loop_state.referenced_entity_ids
+            if "." in entity_id and not entity_id.startswith("history:")
+        ]
+        confirmed = loop_state.confirmed_reading_entity_id or ""
+        if (
+            "." in confirmed
+            and not confirmed.startswith("history:")
+            and confirmed not in referenced_ids
+        ):
+            referenced_ids.append(confirmed)
+        if referenced_ids:
+            turn_meta["referenced_entity_ids"] = referenced_ids
+        if controlled_entity_ids:
+            turn_meta["controlled_entity_ids"] = list(controlled_entity_ids)
         _attach_plan_progress(turn_meta, loop_state, trace)
         append_turn(
             hass,
             conversation_id,
             user_text,
-            memory_assistant_text(assistant_text, memory_entity_ids),
+            memory_assistant_text(assistant_text, controlled_entity_ids),
             max_turns=agent_config.history_turns,
             entry_id=entry_id,
             turn_meta=turn_meta,

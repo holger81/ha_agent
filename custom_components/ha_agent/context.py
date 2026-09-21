@@ -20,6 +20,7 @@ _DEVICE_ACTION = re.compile(
     r"\b("
     r"open|close|toggle|lock|unlock|"
     r"switch\s+(?:on|off)|"
+    r"switch\b(?:\s+\w+){0,6}\s+(?:on|off)|"
     r"turn\s+(?:on|off)|"
     r"turn\b(?:\s+\w+){0,6}\s+(?:on|off)|"
     r"pause|resume|skip|mute|unmute|play|stop|"
@@ -309,12 +310,6 @@ def _entity_discovery_hint(_query: str) -> str:
     return _DEVICE_DISCOVERY_FALLBACK
 
 
-def _history_entity_ids(history: list[dict[str, str]]) -> list[str]:
-    """Return entity ids mentioned in prior conversation turns."""
-    combined = " ".join(message.get("content", "") for message in history[-6:])
-    return _entity_ids_from_text(combined)
-
-
 def _device_action_hint(
     query: str,
     exposed: list[dict[str, Any]],
@@ -367,8 +362,17 @@ def _entity_ids_from_text(text: str) -> list[str]:
     return list(dict.fromkeys(match.group(0) for match in _ENTITY_ID.finditer(text)))
 
 
+def _history_entity_ids(history: list[dict[str, Any]] | None) -> list[str]:
+    """Entity ids already established in recent turns (lookups, then controls)."""
+    from .persistent_memory.extract import entity_ids_from_history
+
+    return entity_ids_from_history(history)
+
+
 def _recent_device_context(history: list[dict[str, str]]) -> bool:
     """Return True when recent turns mention device actions or entity ids."""
+    if _history_entity_ids(history):
+        return True
     combined = " ".join(message.get("content", "") for message in history[-6:])
     return bool(
         _DEVICE_ACTION.search(combined)
@@ -499,6 +503,27 @@ def is_unit_conversion_follow_up(query: str) -> bool:
     return not residual
 
 
+_CONTROL_PRONOUN_FOLLOW_UP = re.compile(
+    r"\b(?:turn|switch)\b.{0,24}\b(?:them|it|those|these|that)\b.{0,16}\b(?:on|off)\b",
+    re.IGNORECASE,
+)
+
+
+def is_control_pronoun_follow_up(query: str) -> bool:
+    """True for short device commands that point at a prior entity.
+
+    Examples: "turn them on", "switch it off". The verb stays on this
+    utterance; entity ids come from conversation history.
+    """
+    text = (query or "").strip()
+    if not text or not is_device_action_query(text):
+        return False
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    if len(tokens) > 8:
+        return False
+    return bool(_CONTROL_PRONOUN_FOLLOW_UP.search(text))
+
+
 def is_short_follow_up_query(query: str) -> bool:
     """Return True for short retry/follow-up phrases that depend on history.
 
@@ -562,6 +587,10 @@ def resolve_turn_goal(
     text = (user_text or "").strip()
     if not text:
         return ""
+    # "turn them on" after a status ask is itself the control goal. Substituting
+    # the prior status question would make skill selection treat it as read-only.
+    if is_control_pronoun_follow_up(text):
+        return text
     # Unit conversion allows a few more tokens than other short follow-ups
     # ("can you convert that to fahrenheit"), so check it on its own.
     if not history or not (
@@ -586,17 +615,30 @@ def _follow_up_device_hint(
     """Guide pronoun/retry follow-ups that rely on conversation memory."""
     if not history or not _FOLLOW_UP_REF.search(query):
         return None
-    if not _recent_device_context(history):
+    control_follow_up = is_control_pronoun_follow_up(query)
+    if not _recent_device_context(history) and not (
+        control_follow_up
+        and any(
+            isinstance(message, dict)
+            and message.get("role") == "user"
+            and is_state_question(str(message.get("content") or ""))
+            for message in history[-6:]
+        )
+    ):
         return None
 
     lines = [
         "FOLLOW-UP DEVICE ACTION: the user refers to an entity from earlier in "
-        "this conversation. Reuse the same entity_id from the prior successful "
-        "device command with the appropriate MCP tool. Never invent tool names "
-        "or pass display names as entity_id.",
+        "this conversation. Reuse those entity ids with the appropriate control "
+        "tool. Never invent tool names or pass display names as entity_id. "
+        "Do not toggle a device you just turned on or off. Do not paginate "
+        "search when entity ids are already listed.",
     ]
-    history_text = " ".join(message.get("content", "") for message in history[-6:])
-    if entity_ids := _entity_ids_from_text(history_text):
+    history_text = " ".join(
+        str(message.get("content") or "") for message in history[-6:]
+    )
+    entity_ids = _history_entity_ids(history) or _entity_ids_from_text(history_text)
+    if entity_ids:
         lines.append(
             "Recent entity_id values from this conversation: " + ", ".join(entity_ids)
         )
