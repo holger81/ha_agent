@@ -54,6 +54,7 @@ from .loop_policy import (
     analyze_discovery_tool_result,
     analyze_entity_lookup_result,
     analyze_search_tool_result,
+    build_control_confirm_nudge,
     build_empty_response_nudge,
     build_failed_tools_answer_nudge,
     build_mcp_tool_adherence_hint,
@@ -67,6 +68,7 @@ from .loop_policy import (
     check_stuck,
     claims_action_success,
     claims_reading_answer,
+    confirmed_control_reply,
     finalize_output,
     had_successful_control_tool,
     honest_failed_tools_message,
@@ -105,6 +107,7 @@ from .loop_policy import (
     seed_unit_conversion_guidance,
     should_block_reasoning_execution_mismatch,
     should_retry_after_failed_tools,
+    should_retry_control_confirmation,
     should_retry_empty_response,
     should_retry_missing_control,
     should_retry_missing_reading,
@@ -2585,7 +2588,39 @@ async def run_agent(
             use_chat_backend = _stick_action_or_chat(route)
             continue
 
-        if (
+        if assistant_text and should_retry_control_confirmation(
+            loop_state,
+            assistant_text=assistant_text,
+            tool_calls=trace.tool_calls,
+            iteration=iteration,
+            max_iterations=agent_config.max_iterations,
+        ):
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            messages.append(
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_control_confirm_nudge(
+                        loop_state, trace.tool_calls
+                    ),
+                }
+            )
+            _prepare_next_loop_iteration(loop_state)
+            mark_iteration_preserve_stream(loop_state)
+            use_chat_backend = _stick_action_or_chat(route)
+            continue
+
+        confirmed_reply = (
+            confirmed_control_reply(loop_state, assistant_text, trace.tool_calls)
+            if assistant_text
+            else None
+        )
+        if confirmed_reply:
+            assistant_text = confirmed_reply
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            yield AgentDelta(content=assistant_text)
+        elif (
             assistant_text
             and route == TaskRoute.HA_ACTION
             and not had_successful_control_tool(trace.tool_calls)

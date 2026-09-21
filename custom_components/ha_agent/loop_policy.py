@@ -74,6 +74,8 @@ class LoopState:
     referenced_entity_ids: list[str] = field(default_factory=list)
     missing_reading_retries: int = 0
     control_ready: bool = False
+    control_confirm_retries: int = 0
+    confirmed_entity_states: dict[str, str] = field(default_factory=dict)
     mcp_tool_catalog: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
@@ -2543,6 +2545,7 @@ def analyze_entity_lookup_result(
     # Any successful ha_get_state with a usable value grounds a reading answer,
     # including power/solar asks that are not in the typed reading-kind list.
     loop_state.confirmed_reading_entity_id = looked_up
+    loop_state.confirmed_entity_states[looked_up] = state
     return False
 
 
@@ -3622,6 +3625,180 @@ def claims_action_success(text: str) -> bool:
     if not cleaned or _FAILURE_ADMISSION.search(cleaned):
         return False
     return bool(_SUCCESS_CLAIM.search(cleaned))
+
+
+def claims_action_failure(text: str) -> bool:
+    """Return True when assistant text says a device command failed."""
+    cleaned = (text or "").strip()
+    return bool(cleaned and _FAILURE_ADMISSION.search(cleaned))
+
+
+_TURN_ON_SERVICE = re.compile(r"(?:^|[._])turn_on$", re.IGNORECASE)
+_TURN_OFF_SERVICE = re.compile(r"(?:^|[._])turn_off$", re.IGNORECASE)
+
+
+def _nested_arg(arguments: dict[str, Any], key: str) -> str:
+    """Read a string arg from common ha_call_service shapes."""
+    for container in (
+        arguments,
+        arguments.get("arguments")
+        if isinstance(arguments.get("arguments"), dict)
+        else None,
+        arguments.get("data") if isinstance(arguments.get("data"), dict) else None,
+    ):
+        if not isinstance(container, dict):
+            continue
+        value = container.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        nested = container.get("arguments")
+        if isinstance(nested, dict):
+            inner = nested.get(key)
+            if isinstance(inner, str) and inner.strip():
+                return inner.strip()
+    return ""
+
+
+def _desired_on_off(tool_name: str, arguments: dict[str, Any]) -> str | None:
+    """Map a successful on/off control call to the state it should leave."""
+    name = (tool_name or "").lower()
+    service = _nested_arg(arguments, "service") or name
+    tail = service.lower().rsplit(".", 1)[-1]
+    if "toggle" in tail or "toggle" in name:
+        return None
+    if _TURN_ON_SERVICE.search(tail) or name.endswith("hassturnon"):
+        return "on"
+    if _TURN_OFF_SERVICE.search(tail) or name.endswith("hassturnoff"):
+        return "off"
+    return None
+
+
+def requested_on_off_controls(
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Last successful turn_on/turn_off per entity. Toggle is ignored."""
+    requested: dict[str, str] = {}
+    for call in tool_calls:
+        if not call.get("succeeded"):
+            continue
+        name = str(call.get("toolName") or call.get("name") or "")
+        if not _CONTROL_TOOL_TAIL.search(name):
+            continue
+        raw_args = call.get("arguments")
+        arguments = raw_args if isinstance(raw_args, dict) else {}
+        desired = _desired_on_off(name, arguments)
+        entity_id = _nested_arg(arguments, "entity_id")
+        if desired and entity_id:
+            requested[entity_id] = desired
+    return requested
+
+
+def confirmed_on_off_matches(
+    loop_state: LoopState,
+    tool_calls: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Split requested controls into confirmed matches and mismatches.
+
+    Entities with no ha_get_state yet are omitted from both maps.
+    """
+    matches: dict[str, str] = {}
+    mismatches: dict[str, str] = {}
+    for entity_id, desired in requested_on_off_controls(tool_calls).items():
+        observed = (loop_state.confirmed_entity_states.get(entity_id) or "").lower()
+        if not observed:
+            continue
+        if observed == desired:
+            matches[entity_id] = desired
+        else:
+            mismatches[entity_id] = observed
+    return matches, mismatches
+
+
+def honest_confirmed_control_message(matches: dict[str, str]) -> str:
+    """User-visible line when on/off was confirmed despite a failure claim."""
+    on_ids = [entity_id for entity_id, state in matches.items() if state == "on"]
+    off_ids = [entity_id for entity_id, state in matches.items() if state == "off"]
+    parts: list[str] = []
+    if on_ids:
+        parts.append("Turned on " + ", ".join(on_ids) + ".")
+    if off_ids:
+        parts.append("Turned off " + ", ".join(off_ids) + ".")
+    return " ".join(parts) or "The device change was confirmed."
+
+
+def build_control_confirm_nudge(
+    loop_state: LoopState,
+    tool_calls: list[dict[str, Any]],
+) -> str:
+    """Ask for one state check or one same-service retry. Never toggle."""
+    _matches, mismatches = confirmed_on_off_matches(loop_state, tool_calls)
+    if mismatches:
+        entity_id, observed = next(iter(mismatches.items()))
+        desired = requested_on_off_controls(tool_calls).get(entity_id, "")
+        service = "turn_on" if desired == "on" else "turn_off"
+        return (
+            "SYSTEM (internal — not from the user): "
+            f"`{entity_id}` is `{observed}` after {service}. "
+            f"Call the same {service} service once more on that entity_id, "
+            "then ha_get_state. Do not toggle. Do not search again. "
+            "Answer from the confirmed state only."
+        )
+    pending = [
+        entity_id
+        for entity_id in requested_on_off_controls(tool_calls)
+        if entity_id not in loop_state.confirmed_entity_states
+    ]
+    target = pending[0] if pending else "the entity you just controlled"
+    return (
+        "SYSTEM (internal — not from the user): A control tool succeeded. "
+        f"Call ha_get_state on `{target}` and answer from that state. "
+        "Do not say the command failed unless the state disagrees. "
+        "Do not toggle. Do not search again."
+    )
+
+
+def should_retry_control_confirmation(
+    loop_state: LoopState,
+    *,
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Retry once when a failure claim is not backed by a matching state."""
+    if iteration >= max_iterations - 1:
+        return False
+    if not claims_action_failure(assistant_text):
+        return False
+    requested = requested_on_off_controls(tool_calls)
+    if not requested:
+        return False
+    matches, mismatches = confirmed_on_off_matches(loop_state, tool_calls)
+    if matches and not mismatches and len(matches) == len(requested):
+        return False
+    if loop_state.control_confirm_retries >= 1:
+        return False
+    if not mismatches and all(
+        entity_id in loop_state.confirmed_entity_states for entity_id in requested
+    ):
+        return False
+    loop_state.control_confirm_retries += 1
+    return True
+
+
+def confirmed_control_reply(
+    loop_state: LoopState,
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
+) -> str | None:
+    """Replace a failure claim when every on/off control was confirmed."""
+    if not claims_action_failure(assistant_text):
+        return None
+    requested = requested_on_off_controls(tool_calls)
+    matches, mismatches = confirmed_on_off_matches(loop_state, tool_calls)
+    if not requested or mismatches or set(matches) != set(requested):
+        return None
+    return honest_confirmed_control_message(matches)
 
 
 def build_failed_tools_answer_nudge(loop_state: LoopState) -> str:

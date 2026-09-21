@@ -188,3 +188,119 @@ def test_had_successful_control_tool() -> None:
     assert policy.had_successful_control_tool(
         [{"toolName": "home_assistant__ha_call_service", "succeeded": True}]
     )
+
+
+def test_false_failure_replaced_when_state_matches() -> None:
+    """A couldn't/error reply is replaced when get_state matches turn_on/off."""
+    policy = _load_loop_policy()
+    entity_id = "light.example_lamp"
+    calls = [
+        {
+            "toolName": "home_assistant__ha_call_service",
+            "succeeded": True,
+            "arguments": {"entity_id": entity_id, "service": "light.turn_on"},
+        }
+    ]
+    state = policy.LoopState()
+    policy.analyze_entity_lookup_result(
+        state,
+        "home_assistant__ha_get_state",
+        '{"state": "on"}',
+        {"entity_id": entity_id},
+    )
+    apology = "I'm sorry, I couldn't turn on the lights. There was an error."
+    reply = policy.confirmed_control_reply(state, apology, calls)
+    assert reply is not None
+    assert entity_id in reply
+    assert "Turned on" in reply
+    assert "error" not in reply.lower()
+    assert (
+        policy.should_retry_control_confirmation(
+            state,
+            assistant_text=apology,
+            tool_calls=calls,
+            iteration=0,
+            max_iterations=6,
+        )
+        is False
+    )
+
+
+def test_unconfirmed_control_retries_once_without_toggle() -> None:
+    """Failure after turn_on asks for state or one same-service retry, not toggle."""
+    policy = _load_loop_policy()
+    entity_id = "light.example_lamp"
+    calls = [
+        {
+            "toolName": "home_assistant__ha_call_service",
+            "succeeded": True,
+            "arguments": {"entity_id": entity_id, "service": "light.turn_on"},
+        }
+    ]
+    apology = "I couldn't turn on the lights. There was an error with the command."
+    state = policy.LoopState()
+    assert (
+        policy.should_retry_control_confirmation(
+            state,
+            assistant_text=apology,
+            tool_calls=calls,
+            iteration=0,
+            max_iterations=6,
+        )
+        is True
+    )
+    nudge = policy.build_control_confirm_nudge(state, calls)
+    assert entity_id in nudge
+    assert "ha_get_state" in nudge
+    assert "Do not toggle" in nudge
+    assert (
+        policy.should_retry_control_confirmation(
+            state,
+            assistant_text=apology,
+            tool_calls=calls,
+            iteration=1,
+            max_iterations=6,
+        )
+        is False
+    )
+
+    mismatched = policy.LoopState(confirmed_entity_states={entity_id: "off"})
+    assert (
+        policy.should_retry_control_confirmation(
+            mismatched,
+            assistant_text=apology,
+            tool_calls=calls,
+            iteration=0,
+            max_iterations=6,
+        )
+        is True
+    )
+    retry = policy.build_control_confirm_nudge(mismatched, calls)
+    assert "turn_on" in retry
+    assert "Do not toggle" in retry
+    assert "search" in retry.lower()
+
+
+def test_toggle_does_not_confirm_control() -> None:
+    """Toggle is not treated as a confirmed on/off."""
+    policy = _load_loop_policy()
+    calls = [
+        {
+            "toolName": "home_assistant__ha_call_service",
+            "succeeded": True,
+            "arguments": {
+                "entity_id": "light.example_lamp",
+                "service": "homeassistant.toggle",
+            },
+        }
+    ]
+    state = policy.LoopState(confirmed_entity_states={"light.example_lamp": "on"})
+    assert policy.requested_on_off_controls(calls) == {}
+    assert (
+        policy.confirmed_control_reply(
+            state,
+            "I couldn't toggle the light.",
+            calls,
+        )
+        is None
+    )
