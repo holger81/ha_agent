@@ -273,6 +273,21 @@ def test_is_status_then_act_query_detects_compound_asks() -> None:
     assert not context.is_status_then_act_query("open the guestroom window")
 
 
+def test_includes_device_command_clause_for_check_and_act() -> None:
+    """Joined command clauses keep mutate skills eligible; pure reads do not."""
+    assert context.includes_device_command_clause(
+        "check if the windows are closed and lock the front door"
+    )
+    assert context.includes_device_command_clause(
+        "is the guestroom window open? if not, open it"
+    )
+    assert not context.includes_device_command_clause("is the guestroom window open?")
+    assert not context.includes_device_command_clause("did anyone open the garage")
+    assert not context.includes_device_command_clause(
+        "is it safe to open the windows air quality wise"
+    )
+
+
 def test_is_device_action_query_matches_media_control_verbs() -> None:
     """Pause/play/stop are device-control requests, not chat."""
     assert context.is_device_action_query("stop the music")

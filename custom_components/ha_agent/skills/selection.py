@@ -13,6 +13,7 @@ from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..context import (
     continues_prior_topic,
+    includes_device_command_clause,
     is_casual_chat_query,
     is_chat_route,
     is_device_action_query,
@@ -409,8 +410,14 @@ def skill_matches_route(
     # workflow must not serve an unrelated chat turn.
     # A read-only question must not run a state-changing workflow on any
     # route ("is the window open" is not "open the window", even when
-    # prepass routed to action).
-    if user_text and is_state_question(user_text) and skill_changes_state(skill):
+    # prepass routed to action). Compound check+act asks still need the
+    # mutate skill ("check if … and lock …").
+    if (
+        user_text
+        and is_state_question(user_text)
+        and skill_changes_state(skill)
+        and not includes_device_command_clause(user_text)
+    ):
         return False
     if user_text and route_key in {"", "chat"}:
         declared = _skill_soft_domains(skill)

@@ -1398,6 +1398,14 @@ def test_prose_only_control_skill_counts_as_mutate() -> None:
         )
         is True
     )
+    assert (
+        selection.skill_matches_route(
+            dining,
+            "action",
+            user_text="check if the lights are off and turn them on",
+        )
+        is True
+    )
 
 
 def test_unknown_domain_skill_needs_no_marker_entry() -> None:

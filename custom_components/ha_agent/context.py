@@ -205,6 +205,18 @@ _MUTATE_AFTER_STATUS = re.compile(
     r"\b(?:open|close|turn\s+on|turn\s+off|lock|unlock|toggle|switch\s+on|switch\s+off)\b",
     re.IGNORECASE,
 )
+# "check if … and lock …" — a command clause joined to a status read.
+_COMMAND_CLAUSE = re.compile(
+    r"(?:[,;]|\b(?:and|then|also)\b)\s+(?:please\s+)?(?:also\s+)?"
+    r"(?:"
+    r"open|close|toggle|lock|unlock|"
+    r"switch\s+(?:on|off)|"
+    r"switch\b(?:\s+\w+){0,6}\s+(?:on|off)|"
+    r"turn\s+(?:on|off)|"
+    r"turn\b(?:\s+\w+){0,6}\s+(?:on|off)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def is_status_then_act_query(query: str) -> bool:
@@ -216,6 +228,19 @@ def is_status_then_act_query(query: str) -> bool:
     if not is_state_question(text):
         return False
     return bool(_STATUS_THEN_ACT.search(text) and _MUTATE_AFTER_STATUS.search(text))
+
+
+def includes_device_command_clause(query: str) -> bool:
+    """True when a status-shaped ask also issues a device change.
+
+    Pure reads ("is the window open?") stay False. Compound check+act
+    ("check if … and lock …") and status-then-act stay True so mutate
+    skills remain eligible.
+    """
+    text = query or ""
+    if is_status_then_act_query(text):
+        return True
+    return bool(is_state_question(text) and _COMMAND_CLAUSE.search(text))
 
 
 def is_generic_chitchat(query: str) -> bool:
