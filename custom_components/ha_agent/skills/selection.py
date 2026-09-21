@@ -57,7 +57,7 @@ _ROUTE_DOMAIN_MARKERS: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "news": re.compile(
-        r"\b(news|headlines?|briefings?|rss|nachrichten|curate)\b",
+        r"\b(news(?:room)?|headlines?|briefings?|rss|nachrichten|curate)\b",
         re.IGNORECASE,
     ),
     # Prefer "stock market" / ticker vocabulary over bare "market" so a news
@@ -103,6 +103,14 @@ _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
 
 # Soft workflow domains on chat (not device-control/action).
 _SOFT_DOMAIN_HINTS = frozenset(key for key in _ROUTE_DOMAIN_MARKERS if key != "action")
+
+
+def normalize_soft_domain_hint(hint: str | None) -> str | None:
+    """Keep only real soft-domain hints; drop placeholders like ``chat``."""
+    cleaned = (hint or "").strip().lower()
+    if cleaned in _SOFT_DOMAIN_HINTS:
+        return cleaned
+    return None
 
 
 _CATALOG_LIMIT = 30

@@ -312,6 +312,8 @@ def test_resolve_turn_goal_keeps_prior_ask_on_short_follow_up() -> None:
         ("same for microsoft", True),
         ("compared to yesterday", True),
         ("what else about that", True),
+        ("tell me more about the bills newsroom vetoed", True),
+        ("more detail on the Newsom veto", True),
         ("turn off the kitchen lights", False),
         ("what is the temperature in the kitchen", False),
         ("give me the headlines", False),

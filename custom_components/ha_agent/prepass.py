@@ -32,6 +32,7 @@ from .skills.selection import (
     infer_soft_domain_hint,
     is_chat_route,
     keep_selected_skill,
+    normalize_soft_domain_hint,
     skill_matches_route,
 )
 from .skills.store import get_skill_store
@@ -98,7 +99,9 @@ def _parse_prepass_payload(
     history: list[dict[str, str]] | None = None,
 ) -> TurnPrepassResult | None:
     route_value = str(data.get("route", "")).strip().lower()
-    domain_hint = str(data.get("domain_hint") or "").strip().lower() or None
+    domain_hint = normalize_soft_domain_hint(
+        str(data.get("domain_hint") or "").strip().lower() or None
+    )
     if route_value in {"email", "news"}:
         domain_hint = domain_hint or route_value
         route_value = "chat"

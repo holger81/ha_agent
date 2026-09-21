@@ -194,6 +194,7 @@ from .skills.selection import (
     SkillSelectionResult,
     infer_soft_domain_hint,
     keep_selected_skill,
+    normalize_soft_domain_hint,
     resolve_skills_for_turn,
     skill_matches_route,
 )
@@ -1733,7 +1734,8 @@ async def run_agent(
     # Soft-domain markers in the user text — or a prior soft topic on a
     # follow-up ("mark them as read" after email) — fill domain_hint when the
     # router omitted one (keeps email/news/… asks from pinning HA skills).
-    if not route_resolution.domain_hint:
+    # Drop placeholder hints like "chat" so history inference can still run.
+    if normalize_soft_domain_hint(route_resolution.domain_hint) is None:
         inferred_hint = infer_soft_domain_hint(turn_goal or user_text, history)
         if inferred_hint:
             # Soft domains are chat workflows, not device-control/action.
@@ -1752,6 +1754,16 @@ async def run_agent(
                 domain_hint=inferred_hint,
             )
             route = next_route
+        elif route_resolution.domain_hint:
+            route_resolution = RouteResolution(
+                route=route_resolution.route,
+                method=route_resolution.method,
+                classifier_summary=route_resolution.classifier_summary,
+                classifier_detail=route_resolution.classifier_detail,
+                keyword_hint=route_resolution.keyword_hint,
+                classifier_raw=route_resolution.classifier_raw,
+                domain_hint=None,
+            )
     if matched_skills:
         kept = [
             skill
@@ -2676,9 +2688,21 @@ async def run_agent(
                     bool(loop_state.confirmed_reading_entity_id)
                     or bool(loop_state.referenced_entity_ids)
                 )
-                if grounded_reading:
-                    # Answer already cites a looked-up reading — soft-fail at
-                    # final verify instead of re-streaming a duplicate sentence.
+                # Soft-fail instead of re-streaming when the draft is already
+                # grounded: looked-up reading, justified skill override, or a
+                # successful non-discovery tool already produced the answer.
+                tool_grounded = bool(assistant_text.strip()) and any(
+                    call.get("succeeded")
+                    and not is_discovery_tool_name(
+                        str(call.get("toolName") or call.get("name") or "")
+                    )
+                    for call in trace.tool_calls
+                )
+                if (
+                    grounded_reading
+                    or loop_state.skill_plan_override
+                    or tool_grounded
+                ):
                     pass
                 else:
                     # Always replace the draft answer; do not preserve content.

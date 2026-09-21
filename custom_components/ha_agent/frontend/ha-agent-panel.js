@@ -2248,8 +2248,9 @@ class HaAgentPanel extends HTMLElement {
           const msg = this._messages[index];
           if (msg.role !== "assistant") continue;
           msg.turnMeta = this._mergeTurnMeta(msg.turnMeta, data.meta);
-          if (data.content) {
-            msg.content = `${String(msg.content || "").trim()} ${data.content}`.trim();
+          // Late meta must not append a second answer onto a finished bubble.
+          if (data.content && !String(msg.content || "").trim()) {
+            msg.content = data.content;
           }
           break;
         }

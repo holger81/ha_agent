@@ -396,6 +396,18 @@ _RELATIVE_FOLLOW_UP = re.compile(
     r"\b(?:how\s+about|what\s+about|same\s+for|compared?\s+to|versus|vs\.?)\b",
     re.IGNORECASE,
 )
+# "tell me more about the Newsom veto" after a briefing — longer than a
+# pronoun follow-up but still continues the prior soft-domain topic.
+_DETAIL_FOLLOW_UP = re.compile(
+    r"\b(?:"
+    r"tell\s+me\s+more|"
+    r"more\s+(?:detail|details|info|information|about)|"
+    r"explain\s+(?:that|this|more|it)|"
+    r"go\s+(?:deeper|further)|"
+    r"what\s+else\s+about"
+    r")\b",
+    re.IGNORECASE,
+)
 
 # Unit-only asks that restate a prior reading in another scale
 # ("and in Fahrenheit?", "convert that to celsius").
@@ -529,6 +541,9 @@ def continues_prior_topic(query: str) -> bool:
         return True
     # "what about microsoft" / "compared to yesterday" after a quote or list.
     if len(tokens) <= 8 and _RELATIVE_FOLLOW_UP.search(text):
+        return True
+    # "tell me more about the bills Newsom vetoed" after a news briefing.
+    if len(tokens) <= 16 and _DETAIL_FOLLOW_UP.search(text):
         return True
     # "please mark all of them as read" still depends on the prior topic.
     return len(tokens) <= 12 and bool(_FOLLOW_UP_REF.search(text))

@@ -641,6 +641,32 @@ def test_follow_up_inherits_soft_domain_from_history(
     assert selection.infer_soft_domain_hint(text, history) == expected
 
 
+def test_normalize_soft_domain_hint_drops_chat_placeholder() -> None:
+    """Prepass sometimes returns domain_hint=chat; that is not a soft domain."""
+    selection = _load("skills.selection")
+    assert selection.normalize_soft_domain_hint("chat") is None
+    assert selection.normalize_soft_domain_hint("news") == "news"
+    assert selection.normalize_soft_domain_hint("") is None
+
+
+def test_newsroom_follow_up_inherits_news_domain() -> None:
+    """'tell me more about … newsroom …' continues a prior news briefing."""
+    selection = _load("skills.selection")
+    history = [
+        {"role": "user", "content": "what are todays news"},
+        {
+            "role": "assistant",
+            "content": "Governor Newsom has vetoed bills concerning campus jobs.",
+        },
+    ]
+    assert (
+        selection.infer_soft_domain_hint(
+            "tell me more about the bills newsroom vetoed", history
+        )
+        == "news"
+    )
+
+
 def test_email_follow_up_keeps_email_skill_rejects_lights() -> None:
     """History-carried email hint keeps mail workflows and drops lights."""
     selection = _load("skills.selection")
