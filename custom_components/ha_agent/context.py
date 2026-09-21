@@ -196,6 +196,27 @@ def is_state_question(query: str) -> bool:
     return bool(_STATE_QUESTION.match(query or ""))
 
 
+_STATUS_THEN_ACT = re.compile(
+    r"\b(?:if\s+not|if\s+it(?:'s|\s+is)\s+not|otherwise|then)\b",
+    re.IGNORECASE,
+)
+_MUTATE_AFTER_STATUS = re.compile(
+    r"\b(?:open|close|turn\s+on|turn\s+off|lock|unlock|toggle|switch\s+on|switch\s+off)\b",
+    re.IGNORECASE,
+)
+
+
+def is_status_then_act_query(query: str) -> bool:
+    """True for compound status-then-conditional-act asks.
+
+    Example: "is the guestroom window open? if not, open it".
+    """
+    text = query or ""
+    if not is_state_question(text):
+        return False
+    return bool(_STATUS_THEN_ACT.search(text) and _MUTATE_AFTER_STATUS.search(text))
+
+
 def is_generic_chitchat(query: str) -> bool:
     """Return True for greetings and other non-task small talk."""
     return bool(_GENERIC_CHITCHAT.match(query.strip()))

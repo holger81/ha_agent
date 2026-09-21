@@ -341,8 +341,37 @@ def skill_changes_state(skill: Skill) -> bool:
 
     Verb-based via :func:`steps_change_state`, so a control workflow on any MCP
     server counts — not just the Home Assistant tools we happen to ship.
+
+    Prose-only / empty-plan skills that narrate turn-on/open/lock workflows are
+    also treated as mutate so status questions cannot pin them.
     """
-    return steps_change_state(skill.tool_steps)
+    if steps_change_state(skill.tool_steps):
+        return True
+    has_named_step = any(
+        str(step.get("toolName") or step.get("name") or "").strip()
+        for step in (skill.tool_steps or [])
+        if isinstance(step, dict)
+    )
+    if has_named_step:
+        return False
+    blob = " ".join(
+        [
+            skill.title,
+            skill.description,
+            *[str(trigger) for trigger in skill.triggers],
+            skill.body,
+        ]
+    )
+    return bool(_CONTROL_SKILL_TEXT.search(blob))
+
+
+_CONTROL_SKILL_TEXT = re.compile(
+    r"\b("
+    r"turn\s+on|turn\s+off|toggle|open|close|lock|unlock|set\s+the|"
+    r"switch\s+on|switch\s+off|activate|deactivate"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _skill_soft_domains(skill: Skill) -> frozenset[str]:
@@ -370,16 +399,17 @@ def skill_matches_route(
     # the ask — or a history-carried domain_hint for follow-ups like
     # "mark them as read" after an email turn. Without either, an email/news
     # workflow must not serve an unrelated chat turn.
+    # A read-only question must not run a state-changing workflow on any
+    # route ("is the window open" is not "open the window", even when
+    # prepass routed to action).
+    if user_text and is_state_question(user_text) and skill_changes_state(skill):
+        return False
     if user_text and route_key in {"", "chat"}:
         declared = _skill_soft_domains(skill)
         supported = soft_domains_in_text(user_text)
         if hint in _SOFT_DOMAIN_HINTS:
             supported = supported | {hint}
         if declared and not declared & supported:
-            return False
-        # A read-only question must not run a state-changing workflow, however
-        # it was proposed ("is the front door locked" is not "lock the door").
-        if is_state_question(user_text) and skill_changes_state(skill):
             return False
 
     # Soft domain on chat: prefer matching scope/tools; reject other domains.

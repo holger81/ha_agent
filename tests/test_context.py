@@ -261,6 +261,18 @@ def test_is_device_action_query_matches_turn_them_back_off() -> None:
     assert context.is_device_action_query("turn them back off")
 
 
+def test_is_status_then_act_query_detects_compound_asks() -> None:
+    """Status check plus conditional mutate is a compound turn."""
+    assert context.is_status_then_act_query(
+        "is the guestroom window open? if not, open it"
+    )
+    assert context.is_status_then_act_query(
+        "is the front door locked? if it's not, lock it"
+    )
+    assert not context.is_status_then_act_query("is the guestroom window open?")
+    assert not context.is_status_then_act_query("open the guestroom window")
+
+
 def test_is_device_action_query_matches_media_control_verbs() -> None:
     """Pause/play/stop are device-control requests, not chat."""
     assert context.is_device_action_query("stop the music")

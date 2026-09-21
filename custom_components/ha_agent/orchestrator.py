@@ -9,7 +9,12 @@ from enum import StrEnum
 from typing import Any
 
 from .const import LOGGER
-from .context import is_device_action_query, is_email_query, is_news_query
+from .context import (
+    is_device_action_query,
+    is_email_query,
+    is_news_query,
+    is_status_then_act_query,
+)
 from .llm_client import LlmClient
 from .llm_telemetry import record_llm_call
 from .role_registry import ModelRole, RoleRegistry
@@ -25,7 +30,8 @@ _COMPLEXITY_PROMPT = (
     '"routes": ["chat"|"action", ...], "reason": "..."}.\n'
     "- simple: greeting, joke, factual chat, no tools.\n"
     "- single: one domain, one workflow (email OR device OR news via skills).\n"
-    "- complex: multiple domains, multiple unrelated goals, or AND-chained tasks."
+    "- complex: multiple domains, multiple unrelated goals, AND-chained tasks, "
+    "or status-then-conditional-act (e.g. 'is X open? if not, open it')."
 )
 
 _REPLAN_PROMPT = (
@@ -42,7 +48,9 @@ _PLAN_PROMPT = (
     'Return ONLY JSON: {"subtasks": [{"id": "t1", "subgoal": "...", '
     '"route": "action|chat", "depends_on": []}]}. '
     "Max 4 subtasks. depends_on lists prior subtask ids. "
-    "Use action only for device control; email and news use chat."
+    "Use action only for device control; email and news use chat. "
+    "For status-then-act asks, emit a read/check subtask first, then a "
+    "conditional control subtask that depends on it."
 )
 
 
@@ -87,6 +95,9 @@ def _strip_json(content: str) -> str:
 def heuristic_complexity(user_text: str) -> Complexity:
     """Fast complexity estimate without LLM."""
     text = user_text.lower()
+    # Status-then-act compounds need a plan (check, then maybe mutate).
+    if is_status_then_act_query(user_text):
+        return Complexity.COMPLEX
     domains = 0
     if is_email_query(user_text):
         domains += 1
@@ -197,17 +208,54 @@ async def triage_complexity(
         complexity = Complexity(raw)
     except ValueError:
         complexity = hint
+    # Status-then-act must stay complex even if the LLM downgrades.
+    if is_status_then_act_query(user_text) and complexity != Complexity.COMPLEX:
+        complexity = Complexity.COMPLEX
     routes_raw = data.get("routes")
     routes = (
         [str(r) for r in routes_raw if isinstance(routes_raw, list)]
         if isinstance(routes_raw, list)
         else []
     )
+    reason = str(data.get("reason", ""))
+    if is_status_then_act_query(user_text) and "status-then-act" not in reason.lower():
+        reason = (reason + "; ").lstrip("; ") + "status-then-act requires plan"
     return OrchestrationPlan(
         complexity=complexity,
-        reason=str(data.get("reason", "")),
+        reason=reason,
         routes=routes,
     )
+
+
+_STATUS_THEN_ACT_SPLIT = re.compile(
+    r"[?]?\s*\b(?:if\s+not|if\s+it(?:'s|\s+is)\s+not|otherwise|,?\s*then)\b\s*",
+    re.IGNORECASE,
+)
+
+
+def heuristic_status_then_act_subtasks(user_text: str) -> list[SubtaskSpec] | None:
+    """Split a status-then-act ask into check + conditional-act subtasks."""
+    if not is_status_then_act_query(user_text):
+        return None
+    parts = _STATUS_THEN_ACT_SPLIT.split(user_text.strip(), maxsplit=1)
+    if len(parts) != 2:
+        return None
+    status = parts[0].strip(" ?.!")
+    act = parts[1].strip(" ?.!")
+    if not status or not act:
+        return None
+    act_verbs = ("open", "close", "turn", "lock", "unlock", "switch")
+    if not act.lower().startswith(act_verbs):
+        act = f"if needed, {act}"
+    return [
+        SubtaskSpec(id="t1", subgoal=status, route="action"),
+        SubtaskSpec(
+            id="t2",
+            subgoal=act,
+            route="action",
+            depends_on=["t1"],
+        ),
+    ]
 
 
 async def plan_subtasks(
@@ -248,6 +296,10 @@ async def plan_subtasks(
     except Exception as err:
         LOGGER.warning("Planner LLM failed: %s", err)
         record_llm_call(trace, role="planner", backend=backend, error=str(err))
+        seeded = heuristic_status_then_act_subtasks(user_text)
+        if seeded:
+            plan.subtasks = seeded
+            return plan
         fallback_route = plan.routes[0] if plan.routes else "chat"
         plan.subtasks = [SubtaskSpec(id="t1", subgoal=user_text, route=fallback_route)]
         return plan
@@ -258,6 +310,11 @@ async def plan_subtasks(
         user_text=user_text,
         fallback_route=fallback_route,
     )
+    # Prefer a two-step status→act split when the planner collapsed the compound.
+    if len(plan.subtasks) < 2:
+        seeded = heuristic_status_then_act_subtasks(user_text)
+        if seeded:
+            plan.subtasks = seeded
     return plan
 
 

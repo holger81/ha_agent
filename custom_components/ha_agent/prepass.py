@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from .config_helpers import LlmBackend, RouterConfig
 from .const import LOGGER
-from .context import is_casual_chat_query
+from .context import is_casual_chat_query, is_status_then_act_query
 from .llm_client import LlmClient
 from .llm_telemetry import record_llm_call
 from .orchestrator import Complexity, OrchestrationPlan, heuristic_complexity
@@ -118,6 +118,10 @@ def _parse_prepass_payload(
         complexity = heuristic
 
     reason = str(data.get("reason", "")).strip() or "prepass"
+    # Status-then-act compounds always need a multi-subgoal plan.
+    if is_status_then_act_query(user_text) and complexity != Complexity.COMPLEX:
+        complexity = Complexity.COMPLEX
+        reason = (reason + "; ").lstrip("; ") + "status-then-act requires plan"
     skill_slug = str(data.get("skill_slug", "")).strip()
     bindings_raw = data.get("slot_bindings")
     bindings = (

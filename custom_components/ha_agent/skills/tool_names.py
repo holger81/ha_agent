@@ -88,13 +88,18 @@ def steps_change_state(steps: list[dict[str, Any]] | None) -> bool:
 
     Unrecognized tools count as changing state: a workflow may only be treated
     as safe for a read-only question when every step is known to read.
+    An empty step list does not change state by itself — callers that need to
+    treat prose-only control skills as mutate must check skill text separately.
     """
     names = [
         str(step.get("toolName") or step.get("name") or "").strip()
         for step in (steps or [])
         if isinstance(step, dict)
     ]
-    return any(tool_effect_kind(name) != "read" for name in names if name)
+    concrete = [name for name in names if name]
+    if not concrete:
+        return False
+    return any(tool_effect_kind(name) != "read" for name in concrete)
 
 
 def _normalize_upstream_tool_name(name: str) -> str:

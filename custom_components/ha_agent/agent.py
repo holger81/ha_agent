@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -28,6 +28,7 @@ from .context import (
     build_tool_context,
     format_identity_context,
     is_affirmative,
+    is_status_then_act_query,
     resolve_turn_goal,
 )
 from .embedded_tools import (
@@ -58,6 +59,7 @@ from .loop_policy import (
     build_mcp_tool_adherence_hint,
     build_missing_control_nudge,
     build_missing_reading_nudge,
+    build_missing_status_nudge,
     build_pending_failure_summary,
     build_reasoning_stuck_nudge,
     build_skill_discovery_block_message,
@@ -70,6 +72,7 @@ from .loop_policy import (
     honest_failed_tools_message,
     honest_missing_control_message,
     honest_missing_reading_message,
+    honest_missing_status_message,
     initialize_loop_plan,
     inject_loop_context,
     is_reasoning_loop,
@@ -80,6 +83,7 @@ from .loop_policy import (
     maybe_omit_plan_steps_from_reasoning,
     maybe_suspend_skill_plan_from_reasoning,
     needs_confirmed_reading,
+    needs_grounded_status_answer,
     note_executed_tool,
     off_plan_tool_block,
     plan_preferred_tool_names,
@@ -104,6 +108,7 @@ from .loop_policy import (
     should_retry_empty_response,
     should_retry_missing_control,
     should_retry_missing_reading,
+    should_retry_missing_status,
     should_retry_reasoning_stuck,
     skill_plan_blocks_discovery,
     skill_plan_locks_catalog,
@@ -1804,6 +1809,25 @@ async def run_agent(
                     classifier_raw=skill_selection.classifier_raw,
                 )
 
+    # Status-then-act compounds: plan first, select skills per subgoal.
+    # A single top-level control skill would skip decomposition.
+    if is_status_then_act_query(turn_goal or user_text):
+        if orch_plan.complexity != Complexity.COMPLEX:
+            reason = orch_plan.reason.strip()
+            if reason and "status-then-act" not in reason.lower():
+                reason = f"{reason}; status-then-act requires plan"
+            elif not reason:
+                reason = "status-then-act requires plan"
+            orch_plan = replace(
+                orch_plan,
+                complexity=Complexity.COMPLEX,
+                reason=reason,
+            )
+        if matched_skills:
+            matched_skills = []
+            skill_selection = None
+            slot_bindings = {}
+
     # Selected skill owns route via route_scope; soft domain hints run on chat.
     primary = matched_skills[0] if matched_skills else None
     primary_scope = primary.route_scope if primary else None
@@ -2529,6 +2553,26 @@ async def run_agent(
             use_chat_backend = _stick_action_or_chat(route)
             continue
 
+        if assistant_text and should_retry_missing_status(
+            loop_state,
+            assistant_text=assistant_text,
+            tool_calls=trace.tool_calls,
+            iteration=iteration,
+            max_iterations=agent_config.max_iterations,
+        ):
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            messages.append(
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_missing_status_nudge(loop_state),
+                }
+            )
+            _prepare_next_loop_iteration(loop_state)
+            mark_iteration_preserve_stream(loop_state)
+            use_chat_backend = _stick_action_or_chat(route)
+            continue
+
         if (
             assistant_text
             and route == TaskRoute.HA_ACTION
@@ -2551,6 +2595,16 @@ async def run_agent(
             history=history,
         ):
             assistant_text = honest_missing_reading_message(loop_state)
+            false_action_success = True
+            if streamed_answer:
+                yield AgentDelta(content_clear=True)
+            yield AgentDelta(content=assistant_text)
+        elif assistant_text and needs_grounded_status_answer(
+            loop_state,
+            assistant_text,
+            trace.tool_calls,
+        ):
+            assistant_text = honest_missing_status_message()
             false_action_success = True
             if streamed_answer:
                 yield AgentDelta(content_clear=True)

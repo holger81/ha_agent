@@ -1307,6 +1307,39 @@ def test_state_change_detection_generalizes_past_ha_tools(
     assert selection.skill_changes_state(skill) is changes_state
 
 
+def test_prose_only_control_skill_counts_as_mutate() -> None:
+    """Empty-plan skills that narrate open/turn-on still block status asks."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    dining = models.Skill(
+        id="1",
+        slug="dining-lights",
+        title="Turn on/off Dining Room Lights",
+        description="Control the dining room lights",
+        triggers=["turn on dining lights", "turn off dining lights"],
+        body="# Turn the dining lights on or off",
+        tool_steps=[],
+        route_scope="action",
+    )
+    assert selection.skill_changes_state(dining) is True
+    assert (
+        selection.skill_matches_route(
+            dining,
+            "action",
+            user_text="is the guestroom window open",
+        )
+        is False
+    )
+    assert (
+        selection.skill_matches_route(
+            dining,
+            "action",
+            user_text="turn on the dining lights",
+        )
+        is True
+    )
+
+
 def test_unknown_domain_skill_needs_no_marker_entry() -> None:
     """A brand-new domain works without adding it to any marker table."""
     selection = _load("skills.selection")

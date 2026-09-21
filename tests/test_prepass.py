@@ -404,3 +404,32 @@ def test_heuristic_complexity_marks_and_chained_domains() -> None:
         == Complexity.COMPLEX
     )
     assert orchestrator.heuristic_complexity("hello") == Complexity.SIMPLE
+
+
+def test_heuristic_complexity_marks_status_then_act() -> None:
+    """Status-then-conditional-act asks always need a multi-subgoal plan."""
+    orchestrator = _load("orchestrator")
+    Complexity = orchestrator.Complexity
+    assert (
+        orchestrator.heuristic_complexity(
+            "is the guestroom window open? if not, open it"
+        )
+        == Complexity.COMPLEX
+    )
+
+
+def test_heuristic_status_then_act_subtasks_splits_check_and_act() -> None:
+    """Fallback planner splits status+act into ordered action subtasks."""
+    orchestrator = _load("orchestrator")
+    subtasks = orchestrator.heuristic_status_then_act_subtasks(
+        "is the guestroom window open? if not, open it"
+    )
+    assert subtasks is not None
+    assert len(subtasks) == 2
+    assert "guestroom window" in subtasks[0].subgoal.lower()
+    assert subtasks[0].route == "action"
+    assert "open" in subtasks[1].subgoal.lower()
+    assert subtasks[1].depends_on == ["t1"]
+    assert (
+        orchestrator.heuristic_status_then_act_subtasks("is the window open?") is None
+    )

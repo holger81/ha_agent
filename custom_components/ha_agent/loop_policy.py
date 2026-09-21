@@ -2558,7 +2558,15 @@ _READING_VALUE_CLAIM = re.compile(
     r"\b\d+(?:\.\d+)?\s*(?:°\s*[cf]|degrees?(?:\s+[cf])?|%|aqi|ppm|hpa|mbar)?\b",
     re.IGNORECASE,
 )
+_DEVICE_STATUS_CLAIM = re.compile(
+    r"\b(?:"
+    r"open|opened|closed|close|locked|unlocked|on|off|"
+    r"running|stopped|paused|playing|home|away|armed|disarmed"
+    r")\b",
+    re.IGNORECASE,
+)
 _MAX_MISSING_READING_RETRIES = 2
+_MAX_MISSING_STATUS_RETRIES = 2
 
 
 def claims_reading_answer(text: str) -> bool:
@@ -2567,6 +2575,85 @@ def claims_reading_answer(text: str) -> bool:
     if not cleaned or _FAILURE_ADMISSION.search(cleaned):
         return False
     return bool(_READING_VALUE_CLAIM.search(cleaned))
+
+
+def claims_device_status_answer(text: str) -> bool:
+    """Return True when the assistant asserts a device open/closed/on/off state."""
+    cleaned = (text or "").strip()
+    if not cleaned or _FAILURE_ADMISSION.search(cleaned):
+        return False
+    return bool(_DEVICE_STATUS_CLAIM.search(cleaned))
+
+
+def had_successful_read_tool(tool_calls: list[dict[str, Any]]) -> bool:
+    """True when a non-discovery read tool succeeded this turn."""
+    from .skills.tool_names import tool_effect_kind
+    from .tools import is_discovery_tool_name
+
+    for call in tool_calls:
+        if not call.get("succeeded"):
+            continue
+        name = str(call.get("toolName") or call.get("name") or "")
+        if not name or is_discovery_tool_name(name):
+            continue
+        if tool_effect_kind(name) == "read":
+            return True
+    return False
+
+
+def needs_grounded_status_answer(
+    loop_state: LoopState,
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
+) -> bool:
+    """True when a state question was answered without a successful read tool."""
+    if not is_state_question(loop_state.plan_goal or ""):
+        return False
+    if loop_state.confirmed_reading_entity_id:
+        return False
+    if had_successful_read_tool(tool_calls):
+        return False
+    return claims_device_status_answer(assistant_text) or claims_reading_answer(
+        assistant_text
+    )
+
+
+def should_retry_missing_status(
+    loop_state: LoopState,
+    *,
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Block status answers that invent open/closed/on/off without a read."""
+    if not needs_grounded_status_answer(loop_state, assistant_text, tool_calls):
+        return False
+    if iteration >= max_iterations - 1:
+        return False
+    if loop_state.missing_reading_retries >= _MAX_MISSING_STATUS_RETRIES:
+        return False
+    loop_state.missing_reading_retries += 1
+    return True
+
+
+def build_missing_status_nudge(loop_state: LoopState) -> str:
+    """Directive when a device status was claimed without a tool read."""
+    return (
+        "SYSTEM (internal — not from the user): You stated a device status "
+        "without a successful read tool this turn. Discover/search for the "
+        "entity, call ha_get_state (or the matching read tool) with the exact "
+        "entity_id, then answer from that state only. Do not invent open/closed "
+        f"or on/off. {describe_plan_next_action(loop_state)}"
+    )
+
+
+def honest_missing_status_message() -> str:
+    """User-visible fallback when status was claimed without a tool read."""
+    return (
+        "I haven't confirmed that device's state with a tool call yet, "
+        "so I can't report whether it is open or closed. Please try again."
+    )
 
 
 def prior_reading_answer_in_history(

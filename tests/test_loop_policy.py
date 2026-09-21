@@ -2130,6 +2130,33 @@ def test_should_retry_missing_reading_without_confirmed_state() -> None:
     assert policy.needs_confirmed_reading(state, claim) is False
 
 
+def test_should_retry_missing_status_without_read_tool() -> None:
+    """Device open/closed answers need a successful read before they stand."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "is the guestroom window open"
+    claim = "The guestroom window is closed."
+    assert policy.needs_grounded_status_answer(state, claim, []) is True
+    assert (
+        policy.should_retry_missing_status(
+            state,
+            assistant_text=claim,
+            tool_calls=[],
+            iteration=0,
+            max_iterations=6,
+        )
+        is True
+    )
+    assert "haven't confirmed" in policy.honest_missing_status_message().lower()
+    grounded = [
+        {
+            "toolName": "home_assistant__ha_get_state",
+            "succeeded": True,
+        }
+    ]
+    assert policy.needs_grounded_status_answer(state, claim, grounded) is False
+
+
 def test_unit_conversion_follow_up_skips_missing_reading_gate() -> None:
     """Converting a prior reading is not treated as inventing a new value."""
     policy = _load_loop_policy()
