@@ -367,3 +367,50 @@ requires resolving *who* is on each turn (HA login for text, speaker ID for voic
 
 **Not in scope for skills:** parameter defaults and profile facts; route those to memory,
 not forced skill save.
+
+---
+
+### Phase 11 — Architecture redesign (pipeline, roles, retrieval, HA hot path, skills)
+
+**Scope:** Full 5-track rework of the agent internals with strict backward compat
+(config entry v11 keys, skills on disk + markdown frontmatter, MCP proxy protocol,
+multi-backend role configs all keep working). Shipped incrementally behind flags
+with eval parity gates. Full working plan: `.cursor/plans/ha-agent-redesign_fb2e66fe.plan.md`.
+
+**Tracks:**
+
+- [ ] **0. Baseline + gates** — freeze behavior with `eval/runner.py`, `TurnTrace`
+  (`skills/models.py`), `tests/skills/test_selection_corpus.py` + fixtures;
+  per-turn latency/token breakdown in traces
+- [ ] **1. Pipeline split** — extract `turn/pipeline.py`, `turn/perceive.py`,
+  `turn/retrieve.py`, `turn/execute.py`, `turn/verify.py` out of `agent.py` /
+  `loop_policy.py` (no behavior change first); `LoopState` (~30 mutable fields)
+  becomes frozen `TurnContext` + append-only `ExecutionTrace`; `run_agent()`
+  becomes a thin orchestrator, `subagent.py run_worker()` reuses `execute.py`
+- [ ] **2. Role collapse + deterministic verifier** — 8 configured roles resolve
+  to 2 effective backends (`worker`, `critic`); `RoleRegistry` gains
+  `collapsed_backends()` with single-machine detection (same base_url+model);
+  deterministic checks first (control tool succeeded? `ha_get_state` matches?),
+  LLM `verify_turn()` only on ambiguity; observer/evaluator/repair fully async
+- [ ] **3. Unified retrieval** — one index over skill triggers/titles/bodies +
+  tool descriptions + area/friendly names replaces FTS + Jaccard + marker
+  tables in `skills/selection.py`; `context.py` regexes stay as cheap
+  fast-paths only; intent entity resolution happens once in `perceive.py`
+- [ ] **4. Direct HA hot path** — new `ha_tools.py` calls HA registries/services
+  in-process for control/lookup; `tools.py` normalization shared by both paths;
+  MCP proxy kept for mail/news/external with fallback when direct reports
+  unavailable; `tool_pruning.py` offers plan tools + direct HA tools + `callTool`
+- [ ] **5. Skills simplification** — `observe_*` / `evaluate_skill_use` /
+  `auto_repair_skill` / `generalize_skill` merge into propose -> evaluate ->
+  promote with explicit versioning in `skills/store.py`; `Skill` dataclass and
+  markdown format unchanged
+- [ ] **6. Rollout** — flags extend the `structured_output_enabled` /
+  `prepass_enabled` pattern (`pipeline_v2`, `direct_ha_tools`,
+  `unified_retrieval`), default off until eval parity; additive migration;
+  `docs/agentic-loop-redesign.md` exit criteria per phase
+
+#### Exit criteria
+
+- [ ] Each phase lands behind a flag with eval-set accuracy >= baseline
+- [ ] Typical tool turn <= 3 LLM calls; verifier off hot path for standard turns
+- [ ] ruff CI green; corpus + unit tests pass at every step
