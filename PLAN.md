@@ -375,7 +375,16 @@ not forced skill save.
 **Scope:** Full 5-track rework of the agent internals with strict backward compat
 (config entry v11 keys, skills on disk + markdown frontmatter, MCP proxy protocol,
 multi-backend role configs all keep working). Shipped incrementally behind flags
-with eval parity gates. Full working plan: `.cursor/plans/ha-agent-redesign_fb2e66fe.plan.md`.
+with eval parity gates. Implementable spec (interfaces, file lists, steps,
+exit criteria per phase):
+[docs/architecture-redesign-plan.md](docs/architecture-redesign-plan.md).
+
+**Implementer quickstart:** `ruff check custom_components tests`,
+`python -m pytest tests/ -q --tb=short`, corpus focus
+`python -m pytest tests/skills/test_selection_corpus.py tests/skills/test_selection.py tests/test_context.py -q`.
+Baseline `eval/runner.py` before Phase 1; new flags `pipeline_v2`,
+`direct_ha_tools`, `unified_retrieval` default off; shared normalization in
+`tools.py` applies to both HA-direct and MCP paths.
 
 **Tracks:**
 
