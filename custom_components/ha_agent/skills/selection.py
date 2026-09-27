@@ -52,18 +52,58 @@ _SELECT_PROMPT = (
     "a device-control request)."
 )
 
-# Route scopes that indicate specialized domains (folded from marker tables)
-_SPECIALIZED_ROUTE_SCOPES = frozenset({"email", "news", "stock", "action"})
+_ROUTE_DOMAIN_MARKERS: dict[str, re.Pattern[str]] = {
+    "email": re.compile(
+        r"\b(e-?mails?|mails?|inbox|imap|mailbox|unread)\b",
+        re.IGNORECASE,
+    ),
+    "news": re.compile(
+        r"\b(news(?:room)?|headlines?|briefings?|rss|nachrichten|curate)\b",
+        re.IGNORECASE,
+    ),
+    # Prefer "stock market" / ticker vocabulary over bare "market" so a news
+    # line like "markets rose" does not become a stock-domain hit.
+    "stock": re.compile(
+        r"\b("
+        r"stocks?|stock\s+market|tickers?|shares|equities|nasdaq|nyse|"
+        r"dow\s*jones|s\s*&\s*p|sandp|portfolio|share\s+price|"
+        r"stock\s+quote|earnings(?:\s+report)?"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "action": re.compile(
+        r"\b("
+        r"light|switch|cover|fan|lock|climate|camera|entity_id|snapshot|"
+        r"ha_call_service|turn\s+on|turn\s+off|toggle"
+        r")\b",
+        re.IGNORECASE,
+    ),
+}
 
-# Soft workflow domains on chat (not device-control/action).
-_SOFT_DOMAIN_HINTS = frozenset({"email", "news", "stock"})
+_SPECIALIZED_ROUTES = frozenset(_ROUTE_DOMAIN_MARKERS)
 
-# Route scope to search hints mapping
-_ROUTE_SCOPE_SEARCH_HINTS: dict[str, str] = {
+_ROUTE_SEARCH_HINTS: dict[str, str] = {
     "email": "email mail inbox unread messages",
     "news": "news headlines briefing curate",
     "stock": "stock market ticker shares quote portfolio",
 }
+
+_ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
+    "email": re.compile(r"mail|imap|inbox|email|mailbox", re.IGNORECASE),
+    "news": re.compile(r"news|curate|headline|rss", re.IGNORECASE),
+    "stock": re.compile(
+        r"stock|ticker|finance|equity|equities|quote|portfolio",
+        re.IGNORECASE,
+    ),
+    "action": re.compile(
+        r"ha_call_service|turn_on|turn_off|snapshot|open_cover|close_cover|"
+        r"home_assistant|ha_search|ha_get_|ha_bulk_|ha_set_",
+        re.IGNORECASE,
+    ),
+}
+
+# Soft workflow domains on chat (not device-control/action).
+_SOFT_DOMAIN_HINTS = frozenset(key for key in _ROUTE_DOMAIN_MARKERS if key != "action")
 
 
 def normalize_soft_domain_hint(hint: str | None) -> str | None:
@@ -229,17 +269,14 @@ def _skill_text(skill: Skill) -> str:
 
 def soft_domains_in_text(user_text: str) -> frozenset[str]:
     """Return every soft chat domain whose markers appear in the user text."""
-    text = (user_text or "").strip().lower()
+    text = (user_text or "").strip()
     if not text:
         return frozenset()
-    
-    domains = set()
-    for domain, hints in _ROUTE_SCOPE_SEARCH_HINTS.items():
-        for hint in hints.split():
-            if hint in text:
-                domains.add(domain)
-                break
-    return frozenset(domains)
+    return frozenset(
+        domain
+        for domain in _SOFT_DOMAIN_HINTS
+        if _ROUTE_DOMAIN_MARKERS[domain].search(text)
+    )
 
 
 def soft_domain_from_history(
@@ -269,13 +306,13 @@ def infer_soft_domain_hint(
     Follow-ups without domain words ("mark them as read") inherit the prior
     soft domain; a clear new device-control ask does not.
     """
-    text = (user_text or "").strip().lower()
+    text = (user_text or "").strip()
     if not text:
         return None
     hits = [
         domain
-        for domain, hints in _ROUTE_SCOPE_SEARCH_HINTS.items()
-        if any(hint in text for hint in hints.split())
+        for domain in _SOFT_DOMAIN_HINTS
+        if _ROUTE_DOMAIN_MARKERS[domain].search(text)
     ]
     if len(hits) == 1:
         return hits[0]
@@ -302,11 +339,9 @@ def _skill_tool_domains(skill: Skill) -> set[str]:
     """Specialized domains implied by a skill's concrete tool steps."""
     domains: set[str] = set()
     for name in _skill_step_names(skill):
-        name_lower = name.lower()
-        for domain, hints in _ROUTE_SCOPE_SEARCH_HINTS.items():
-            if any(hint in name_lower for hint in hints.split()):
+        for domain, pattern in _ROUTE_TOOL_MARKERS.items():
+            if pattern.search(name):
                 domains.add(domain)
-                break
     return domains
 
 
@@ -394,9 +429,16 @@ def skill_matches_route(
 
     # Soft domain on chat: prefer matching scope/tools; reject other domains.
     if route_key in {"", "chat"} and hint in _SOFT_DOMAIN_HINTS:
-        if scope and scope != hint and scope in _SPECIALIZED_ROUTE_SCOPES:
+        if scope and scope != hint and scope in _SPECIALIZED_ROUTES:
             return False
         if scope == hint:
+            return True
+        target = _ROUTE_DOMAIN_MARKERS.get(hint)
+        if target and target.search(_skill_text(skill)):
+            return True
+        step_names = _skill_step_names(skill)
+        marker = _ROUTE_TOOL_MARKERS.get(hint)
+        if marker and any(marker.search(name) for name in step_names):
             return True
         tool_domains = _skill_tool_domains(skill)
         # Concrete tools for a different specialized domain cannot serve this hint
@@ -404,9 +446,9 @@ def skill_matches_route(
         if tool_domains and hint not in tool_domains:
             return False
         # Keep unmarked / tool-less skills eligible for FTS/LLM.
-        return scope not in _SPECIALIZED_ROUTE_SCOPES or not scope
+        return scope not in _SPECIALIZED_ROUTES or not scope
 
-    if route_key not in _SPECIALIZED_ROUTE_SCOPES:
+    if route_key not in _SPECIALIZED_ROUTES:
         return True
 
     # Explicit scope wins when it matches the active specialized route.
@@ -425,11 +467,20 @@ def skill_matches_route(
     ):
         return False
 
-    # Route scope or tool steps determine the match for specialized routes
+    target = _ROUTE_DOMAIN_MARKERS[route_key]
+    text = _skill_text(skill)
+    if target.search(text):
+        return True
+
+    for other_route, other_pattern in _ROUTE_DOMAIN_MARKERS.items():
+        if other_route == route_key:
+            continue
+        if other_pattern.search(text):
+            return False
+
     return bool(
         step_names
         and all(tool_step_matches_route(name, route_key) for name in step_names)
-        or scope == route_key
     )
 
 
@@ -453,11 +504,20 @@ def _filter_by_route(
 def tool_step_matches_route(tool_name: str, route: str | None) -> bool:
     """Return True when a structured tool step fits the active route."""
     route_key = (route or "").lower()
-    if route_key not in _SPECIALIZED_ROUTE_SCOPES:
+    if route_key not in _SPECIALIZED_ROUTES:
         return True
 
     name_lower = tool_name.lower()
-    
+    target = _ROUTE_TOOL_MARKERS[route_key]
+    if target.search(name_lower):
+        return True
+
+    for other_route, other_pattern in _ROUTE_TOOL_MARKERS.items():
+        if other_route == route_key:
+            continue
+        if other_pattern.search(name_lower):
+            return False
+
     # On action, allow non-conflicting tools (e.g. ha_search / ha_get_state).
     # Soft domains still require a positive marker match.
     return route_key == "action"
@@ -632,7 +692,7 @@ def _load_skill_candidates(
     fts_skills = store.load_skills_by_ids([row.id for row in fts_rows])
     fts_skills = _filter_by_route(fts_skills, route)
 
-    route_hint = _ROUTE_SCOPE_SEARCH_HINTS.get(route or "")
+    route_hint = _ROUTE_SEARCH_HINTS.get(route or "")
     if route_hint is None:
         # Unrouted turn: offer the whole enabled catalog for discovery.
         return enabled, fts_skills
@@ -660,8 +720,8 @@ def _resolve_chat_route_skills(
     """On chat routes, pin a skill when user text or domain hint clearly matches."""
     query = user_text.strip()
     hint = (domain_hint or "").lower().strip()
-    if hint in _ROUTE_SCOPE_SEARCH_HINTS:
-        query = f"{query} {_ROUTE_SCOPE_SEARCH_HINTS[hint]}".strip()
+    if hint in _ROUTE_SEARCH_HINTS:
+        query = f"{query} {_ROUTE_SEARCH_HINTS[hint]}".strip()
     rows = store.search(query, limit=3 if hint else 2, enabled_only=True)
     skills = store.load_skills_by_ids([row.id for row in rows]) if rows else []
     skills = _filter_by_route(
@@ -675,6 +735,10 @@ def _resolve_chat_route_skills(
             skill
             for skill in skills
             if (skill.route_scope or "").lower() == hint
+            or (
+                hint in _ROUTE_DOMAIN_MARKERS
+                and _ROUTE_DOMAIN_MARKERS[hint].search(_skill_text(skill))
+            )
         ]
         if len(scoped) == 1:
             skill = scoped[0]
