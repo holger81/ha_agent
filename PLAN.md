@@ -386,6 +386,41 @@ Baseline `eval/runner.py` before Phase 1; new flags `pipeline_v2`,
 `direct_ha_tools`, `unified_retrieval` default off; shared normalization in
 `tools.py` applies to both HA-direct and MCP paths.
 
+**What is good today (keep):** small-model-first constraints (structured
+output, pruned tool sets, stable prompt prefix for KV-cache, merged prepass);
+no hallucinated control (success claims checked against tools, `ha_get_state`
+confirmation after `ha_call_service`); mechanism over domain lists
+(`route_scope` owns routing, soft hints are always `chat`); the skill
+selection test corpus (`tests/skills/test_selection_corpus.py` + fixtures).
+
+**What I would change (why each track exists):**
+
+1. **`agent.py` + `loop_policy.py` are god modules (~7k lines).**
+   `LoopState` carries ~30 mutable fields and `agent.py` imports ~50 policy
+   helpers. Every bugfix adds another regex + `should_retry_*` + nudge string,
+   and nudges can fight each other. Fix: explicit pipeline stages with narrow
+   interfaces — `TurnContext` (frozen inputs) + append-only `ExecutionTrace`,
+   policies as pure `Trace -> Decision` functions.
+2. **Too many LLM roles (chat, action, classifier, planner, verifier,
+   observer, email, news).** A box that loads one model at a time pays
+   swap stalls for role-splitting that only helps multi-GPU/multi-host. Fix:
+   collapse to `worker` + `critic`, deterministic verification first, LLM
+   critic only on ambiguity.
+3. **Regex intent layer overlaps the LLM classifiers.** `context.py`
+   (`_DEVICE_ACTION`, `_STATE_QUESTION`, `_COMMAND_CLAUSE`, ...) and the
+   route/complexity/skill prompts disagree on edges (e.g. "open" in "is it
+   open" read as action). Fix: regex stays for cheap fast-paths only; one
+   retrieval + intent parse owns the decision.
+4. **MCP-everything adds a hop on the hot path.**
+   `searchToolsForDomain` -> `searchTool` -> `callTool` -> `ha_call_service` ->
+   `ha_get_state` is 3-4 round trips to flip a light, plus a schema-mismatch
+   class (e.g. `service: light.turn_on` 400s). Fix: in-process HA calls for
+   control/lookup, MCP reserved for external domains.
+5. **Skills are a second product inside the agent** (store, files, defaults,
+   bundled, learning_policy, evaluator, observer, repair...). Fix: keep the
+   markdown-with-frontmatter format, but reduce learning to propose ->
+   evaluate -> promote with versioning, opt-in per turn.
+
 **Tracks:**
 
 - [ ] **0. Baseline + gates** — freeze behavior with `eval/runner.py`, `TurnTrace`
