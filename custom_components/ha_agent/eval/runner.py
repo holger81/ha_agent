@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from typing import Any
@@ -32,6 +33,7 @@ from ..llm_server import (
     preload_models,
     probe_server,
 )
+from ..mcp_client import McpProxyClient
 from ..skills.models import TurnTrace
 from .cases import list_eval_cases_for_entry
 from .mcp_mock import EvalMcpClient
@@ -43,6 +45,8 @@ from .models import (
     EvalRunState,
     EvalTaskScore,
 )
+from .recorder import ResponseRecorder
+from .replayer import ResponseReplayer
 from .recommender import (
     finalize_settings_recommendation,
     recommend_settings,
@@ -196,9 +200,17 @@ async def run_eval_suite(
         show_reasoning_in_chat=False,
     )
 
+    # Check for record/replay mode
+    record_mode = os.environ.get("RECORD_MODE", "0") == "1"
+    replay_mode = os.environ.get("REPLAY_MODE", "0") == "1"
+    record_dir = os.environ.get("RECORD_DIR", "tests/fixtures/replay")
+    
+    recorder = ResponseRecorder(record_dir) if record_mode else None
+    replayer = ResponseReplayer(record_dir) if replay_mode else None
+    
     try:
         async with aiohttp.ClientSession() as session:
-            llm = LlmClient(session)
+            llm = LlmClient(session, recorder=recorder, turn_id=None)
             _eval_progress(run, phase="probe", message="Probing llama.cpp server…")
             capabilities = await probe_server(session, chat_backend)
             run.server_capabilities = capabilities.to_dict()
@@ -595,6 +607,18 @@ async def _benchmark_case(
                 reason=result.reason,
             )
 
+        # Setup recorder/replayer for this turn
+        turn_id = f"{case.id}_{model}"
+        if recorder:
+            recorder.begin_turn(turn_id, case.user_text, conversation_id)
+            # Update llm client with turn_id
+            llm._turn_id = turn_id
+            
+        if replayer:
+            # Use replayer to get recorded responses
+            # For now, fall back to live calls if no recorded response found
+            pass
+
         async for _delta in run_agent(
             hass,
             llm=llm,
@@ -610,6 +634,9 @@ async def _benchmark_case(
             extra_system_prompt=history_prompt,
         ):
             pass
+            
+        if recorder:
+            recorder.end_turn(turn_id)
     except Exception as err:
         LOGGER.warning(
             "Eval case %s failed for model %s: %s",

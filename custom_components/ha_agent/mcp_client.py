@@ -30,6 +30,9 @@ class McpProxyClient:
         self,
         session: aiohttp.ClientSession,
         config: McpConfig,
+        *,
+        recorder: Any = None,
+        turn_id: str | None = None,
     ) -> None:
         """Initialize the client."""
         self._session = session
@@ -41,6 +44,8 @@ class McpProxyClient:
         self._instructions = ""
         self._session_tools: list[dict[str, Any]] = []
         self._session_tools_cached_at = 0.0
+        self._recorder = recorder
+        self._turn_id = turn_id
 
     @property
     def url(self) -> str:
@@ -193,7 +198,18 @@ class McpProxyClient:
                 "arguments": arguments or {},
             },
         )
-        return self._extract_tool_result(result)
+        extracted_result = self._extract_tool_result(result)
+        
+        if self._recorder and self._turn_id:
+            self._recorder.record_mcp_call(
+                turn_id=self._turn_id,
+                tool_name=tool_name,
+                arguments=arguments or {},
+                result=result,
+                extracted_result=extracted_result,
+            )
+            
+        return extracted_result
 
     async def _rpc(
         self,

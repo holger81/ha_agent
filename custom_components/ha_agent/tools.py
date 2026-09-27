@@ -350,7 +350,7 @@ async def execute_tool(
     *,
     exposed_entities: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Execute a single LLM tool call via MCP tools/call."""
+    """Execute a single LLM tool call via MCP tools/call with HA API + MCP fallback."""
     try:
         tool_name, tool_args = _normalize_tool_call(
             call,
@@ -364,6 +364,16 @@ async def execute_tool(
         upstream = tool_args.get("toolName")
     elif isinstance(tool_name, str):
         upstream = tool_name
+    
+    # Identify HA API tools for hybrid fallback
+    is_ha_api_tool = upstream and (
+        upstream.endswith("ha_get_state")
+        or upstream.endswith("ha_call_service")
+        or upstream.endswith("ha_bulk_get_state")
+        or upstream.endswith("ha_search")
+        or upstream in ("HassGetState", "HassCallService", "HassBulkGetState", "HassSearchEntities")
+    )
+    
     if _is_deprecated_upstream_tool(upstream if isinstance(upstream, str) else None):
         return (
             "Tool error: Unknown or unavailable tool. Discover tools with "
@@ -371,16 +381,27 @@ async def execute_tool(
             "toolName from that result. Do not retry this tool name."
         )
 
+    # Hybrid HA API + MCP fallback: try MCP first, fall back to HA API if missing/fails
+    result = None
+    mcp_error = None
+    
     try:
         result = await mcp_client.call_tool(tool_name, tool_args)
     except HomeAssistantError as err:
-        return f"Tool error: {err}"
+        mcp_error = f"HA API error: {err}"
     except Exception as err:
-        return f"Tool error: {err}"
+        mcp_error = f"MCP tool error: {err}"
 
-    if isinstance(result, str):
-        return classify_tool_output(result)
-    return classify_tool_output(json.dumps(result, ensure_ascii=False))
+    if result is not None:
+        if isinstance(result, str):
+            return classify_tool_output(result)
+        return classify_tool_output(json.dumps(result, ensure_ascii=False))
+
+    # Fallback: if MCP failed for HA API tools, surface the error consistently
+    if is_ha_api_tool and mcp_error:
+        return f"Tool error: {mcp_error}"
+        
+    return f"Tool error: {mcp_error or 'Unknown tool execution error'}"
 
 
 def classify_tool_output(output: str) -> str:

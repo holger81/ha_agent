@@ -142,10 +142,18 @@ def build_assistant_message(
 class LlmClient:
     """Async OpenAI-compatible chat client."""
 
-    def __init__(self, session: aiohttp.ClientSession) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        recorder: Any = None,
+        turn_id: str | None = None,
+    ) -> None:
         """Initialize the client."""
         self._session = session
         self._request_id = 0
+        self._recorder = recorder
+        self._turn_id = turn_id
 
     def _next_id(self) -> int:
         self._request_id += 1
@@ -281,6 +289,16 @@ class LlmClient:
         if usage:
             result.prompt_tokens = _optional_int(usage.get("prompt_tokens"))
             result.completion_tokens = _optional_int(usage.get("completion_tokens"))
+        
+        if self._recorder and self._turn_id:
+            self._recorder.record_llm_call(
+                turn_id=self._turn_id,
+                model=backend.model,
+                messages=messages,
+                tools=tools,
+                response=data,
+            )
+            
         return result
 
     async def chat_stream(
@@ -328,6 +346,24 @@ class LlmClient:
                 if session is not None:
                     session.content = stream_session.content
                     session.tool_calls = stream_session.tool_calls
+                    
+                # Record the stream response
+                if self._recorder and self._turn_id:
+                    assistant_msg = build_assistant_message(
+                        content=stream_session.content or None,
+                        tool_calls=stream_session.tool_calls or None,
+                        reasoning_content=stream_session.reasoning_content or None,
+                    )
+                    self._recorder.record_llm_stream_call(
+                        turn_id=self._turn_id,
+                        model=backend.model,
+                        messages=messages,
+                        tools=tools,
+                        assistant_message=assistant_msg,
+                        content=stream_session.content,
+                        reasoning_content=stream_session.reasoning_content,
+                        tool_calls=stream_session.tool_calls,
+                    )
         except TimeoutError as err:
             raise HomeAssistantError(
                 "LLM stream timed out waiting for the server. "

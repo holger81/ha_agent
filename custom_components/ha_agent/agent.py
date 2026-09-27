@@ -603,6 +603,54 @@ def _schedule_post_turn_skills(
     hass.async_create_task(_run())
 
 
+async def _schedule_post_turn_verification(
+    hass: HomeAssistant,
+    llm: LlmClient,
+    verifier_backend: LlmBackend,
+    user_text: str,
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
+    tool_errors: int,
+    skill: Any | None,
+    slot_bindings: dict[str, Any] | None,
+    structured_output_enabled: bool,
+    trace: TurnTrace,
+    entry_id: str,
+    conversation_id: str | None,
+) -> None:
+    """Run verification off the critical path for learned skills."""
+    try:
+        from ..verifier import verify_turn
+
+        result = await verify_turn(
+            llm,
+            verifier_backend,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            tool_calls=tool_calls,
+            tool_errors=tool_errors,
+            skill=skill,
+            slot_bindings=slot_bindings,
+            structured_output_enabled=structured_output_enabled,
+            trace=trace,
+        )
+        if not result.passed:
+            LOGGER.info(
+                "Post-turn verification failed for skill %s: %s",
+                skill.id if skill else "unknown",
+                result.reason,
+            )
+            # Update verification notes in the activity log
+            publish_chat_delta(
+                hass,
+                entry_id,
+                conversation_id,
+                meta={"verification_failed": True, "reason": result.reason},
+            )
+    except Exception as err:
+        LOGGER.warning("Post-turn verification failed: %s", err)
+
+
 def _handle_tool_result(
     call: ToolCall,
     raw_output: str,
@@ -2699,59 +2747,85 @@ async def run_agent(
         should_verify = (
             primary_learned is not None or trace.tool_errors > 0 or failed_ha_verify
         )
-        if (
-            should_verify
-            and skill_results_ready_to_answer(loop_state)
-            and loop_state.verifier_retries < 1
-            and iteration < agent_config.max_iterations - 1
-        ):
-            v_early = await verify_turn(
-                llm,
-                role_registry.backend_for(ModelRole.VERIFIER),
-                user_text=user_text,
-                assistant_text=assistant_text,
-                tool_calls=trace.tool_calls,
-                tool_errors=trace.tool_errors,
-                skill=primary_learned,
-                slot_bindings=slot_bindings,
-                structured_output_enabled=structured,
-                trace=trace,
-            )
-            if not v_early.passed:
-                loop_state.verifier_retries += 1
-                grounded_reading = claims_reading_answer(assistant_text) and (
-                    bool(loop_state.confirmed_reading_entity_id)
-                    or bool(loop_state.referenced_entity_ids)
-                )
-                # Soft-fail instead of re-streaming when the draft is already
-                # grounded: looked-up reading, justified skill override, or a
-                # successful non-discovery tool already produced the answer.
-                tool_grounded = bool(assistant_text.strip()) and any(
-                    call.get("succeeded")
-                    and not is_discovery_tool_name(
-                        str(call.get("toolName") or call.get("name") or "")
+        
+        # Fire-and-forget verification for learned skills - do not block the answer
+        if should_verify and skill_results_ready_to_answer(loop_state):
+            # Schedule post-turn verification asynchronously
+            if hass and hasattr(hass, "async_create_task"):
+                hass.async_create_task(
+                    _schedule_post_turn_verification(
+                        hass,
+                        llm,
+                        role_registry.backend_for(ModelRole.VERIFIER),
+                        user_text=user_text,
+                        assistant_text=assistant_text,
+                        tool_calls=trace.tool_calls,
+                        tool_errors=trace.tool_errors,
+                        skill=primary_learned,
+                        slot_bindings=slot_bindings,
+                        structured_output_enabled=structured,
+                        trace=trace,
+                        entry_id=entry_id,
+                        conversation_id=conversation_id,
                     )
-                    for call in trace.tool_calls
                 )
-                if (
-                    grounded_reading
-                    or loop_state.skill_plan_override
-                    or tool_grounded
-                ):
-                    pass
-                else:
-                    # Always replace the draft answer; do not preserve content.
-                    if streamed_answer:
-                        yield AgentDelta(content_clear=True)
-                    messages.append(
-                        {
-                            "role": INTERNAL_GUIDANCE_ROLE,
-                            "content": build_verifier_retry_guidance(v_early),
-                        }
+        else:
+            # Blocking verifier only for tool errors or failed state checks
+            if (
+                should_verify
+                and skill_results_ready_to_answer(loop_state)
+                and loop_state.verifier_retries < 1
+                and iteration < agent_config.max_iterations - 1
+                and trace.tool_errors > 0
+                and failed_ha_verify
+            ):
+                v_early = await verify_turn(
+                    llm,
+                    role_registry.backend_for(ModelRole.VERIFIER),
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    tool_calls=trace.tool_calls,
+                    tool_errors=trace.tool_errors,
+                    skill=primary_learned,
+                    slot_bindings=slot_bindings,
+                    structured_output_enabled=structured,
+                    trace=trace,
+                )
+                if not v_early.passed:
+                    loop_state.verifier_retries += 1
+                    grounded_reading = claims_reading_answer(assistant_text) and (
+                        bool(loop_state.confirmed_reading_entity_id)
+                        or bool(loop_state.referenced_entity_ids)
                     )
-                    _prepare_next_loop_iteration(loop_state)
-                    use_chat_backend = _stick_action_or_chat(route)
-                    continue
+                    # Soft-fail instead of re-streaming when the draft is already
+                    # grounded: looked-up reading, justified skill override, or a
+                    # successful non-discovery tool already produced the answer.
+                    tool_grounded = bool(assistant_text.strip()) and any(
+                        call.get("succeeded")
+                        and not is_discovery_tool_name(
+                            str(call.get("toolName") or call.get("name") or "")
+                        )
+                        for call in trace.tool_calls
+                    )
+                    if (
+                        grounded_reading
+                        or loop_state.skill_plan_override
+                        or tool_grounded
+                    ):
+                        pass
+                    else:
+                        # Always replace the draft answer; do not preserve content.
+                        if streamed_answer:
+                            yield AgentDelta(content_clear=True)
+                        messages.append(
+                            {
+                                "role": INTERNAL_GUIDANCE_ROLE,
+                                "content": build_verifier_retry_guidance(v_early),
+                            }
+                        )
+                        _prepare_next_loop_iteration(loop_state)
+                        use_chat_backend = _stick_action_or_chat(route)
+                        continue
 
         trace.assistant_text = assistant_text
         trace.controlled_entity_ids = list(controlled_entity_ids)
