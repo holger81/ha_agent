@@ -158,6 +158,28 @@ def test_normalize_ha_call_service_service_aliases() -> None:
     assert tool_args["arguments"]["domain"] == "light"
 
 
+def test_normalize_ha_call_service_splits_domain_service() -> None:
+    """Combined light.turn_on is split so HA does not get a 400."""
+    call = llm_client.ToolCall(
+        id="call_4c",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "entity_id": "light.patio_lights_wall",
+                    "service": "light.turn_on",
+                },
+            }
+        ),
+    )
+
+    _, tool_args = tools._normalize_tool_call(call)
+
+    assert tool_args["arguments"]["domain"] == "light"
+    assert tool_args["arguments"]["service"] == "turn_on"
+
+
 def test_normalize_ha_call_service_infers_domain() -> None:
     """ha_call_service calls missing domain are repaired from entity_id."""
     call = llm_client.ToolCall(

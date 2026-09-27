@@ -147,7 +147,13 @@ def _normalize_service_name(service: Any) -> Any:
     """Map common LLM service spellings to homeassistant service ids."""
     if not isinstance(service, str):
         return service
-    key = service.strip().lower().replace("-", " ").replace("_", " ")
+    cleaned = service.strip()
+    # Models often pass "light.turn_on"; only the service verb belongs here.
+    if "." in cleaned and " " not in cleaned:
+        _domain, _, tail = cleaned.partition(".")
+        if _domain and tail and "." not in tail:
+            cleaned = tail
+    key = cleaned.lower().replace("-", " ").replace("_", " ")
     aliases = {
         "turn on": "turn_on",
         "turn off": "turn_off",
@@ -163,7 +169,7 @@ def _normalize_service_name(service: Any) -> Any:
     if key in aliases:
         return aliases[key]
     if " " not in key:
-        return service.strip()
+        return cleaned
     return key.replace(" ", "_")
 
 
@@ -174,6 +180,11 @@ def _normalize_ha_call_service_arguments(
 ) -> dict[str, Any]:
     """Fill missing ha_call_service fields the local LLM often omits."""
     normalized = dict(arguments)
+    raw_service = normalized.get("service")
+    if isinstance(raw_service, str) and "." in raw_service.strip():
+        domain_part, _, _tail = raw_service.strip().partition(".")
+        if domain_part and not normalized.get("domain"):
+            normalized["domain"] = domain_part
     if "service" in normalized:
         normalized["service"] = _normalize_service_name(normalized["service"])
     if "entity_id" in normalized:
