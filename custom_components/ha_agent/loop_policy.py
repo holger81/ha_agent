@@ -892,17 +892,101 @@ def off_plan_tool_block(loop_state: LoopState, tool_name: str) -> str | None:
     )
 
 
+def _entity_id_from_tool_arguments(arguments: dict[str, Any]) -> str:
+    """Normalize entity_id from common HA service argument shapes."""
+    raw = arguments.get("entity_id")
+    if raw is None and isinstance(arguments.get("data"), dict):
+        raw = arguments["data"].get("entity_id")
+    if raw is None and isinstance(arguments.get("target"), dict):
+        raw = arguments["target"].get("entity_id")
+    if isinstance(raw, list):
+        parts = [str(item).strip().lower() for item in raw if item is not None]
+        return ",".join(parts)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().lower()
+    return ""
+
+
+def tool_call_fingerprint(tool_name: str, arguments: dict[str, Any] | None) -> str:
+    """Stable key for whether two explore calls are the same step.
+
+    Service tools share one MCP name for many domain/service pairs; fingerprint
+    by domain + service + target so snapshot vs notify are distinct steps.
+    """
+    args = arguments if isinstance(arguments, dict) else {}
+    nested = args.get("arguments")
+    if isinstance(nested, dict):
+        # callTool payload shape
+        inner_name = args.get("toolName")
+        if isinstance(inner_name, str) and inner_name.strip():
+            tool_name = inner_name
+        args = nested
+    lowered = (tool_name or "").lower()
+    if lowered.endswith("ha_call_service") or lowered.endswith("call_service"):
+        domain = str(args.get("domain") or "").strip().lower()
+        service = str(args.get("service") or "").strip().lower()
+        entity = _entity_id_from_tool_arguments(args)
+        return f"service:{domain}.{service}:{entity}"
+    entity = _entity_id_from_tool_arguments(args)
+    if entity:
+        return f"{lowered.split('__')[-1]}:{entity}"
+    mailbox = str(args.get("mailbox") or "").strip().lower()
+    if mailbox:
+        return f"{lowered.split('__')[-1]}:mailbox:{mailbox}"
+    query = str(args.get("query") or "").strip().lower()
+    if query:
+        return f"{lowered.split('__')[-1]}:query:{query[:80]}"
+    return lowered.split("__")[-1]
+
+
+def _explore_step_matches_call(
+    step: dict[str, Any],
+    tool_name: str,
+    fingerprint: str,
+) -> bool:
+    """True when an explore plan step is the same concrete call as this tool."""
+    plan_tool = str(step.get("toolName") or "")
+    if not plan_tool or not _tool_names_match(plan_tool, tool_name):
+        return False
+    step_fp = str(step.get("fingerprint") or "")
+    # Without fingerprints (legacy steps or args omitted), match on tool name.
+    if not step_fp or not fingerprint:
+        return True
+    return step_fp == fingerprint
+
+
+def build_explore_plan_continue_nudge() -> str:
+    """After an explore step finishes, allow more tools if the goal needs them."""
+    return (
+        "Explore plan step finished. If the user goal still needs another "
+        "concrete tool or a different service call, call it now. Otherwise "
+        "answer from the tool results already in this turn."
+    )
+
+
 def redundant_override_tool_block(
     loop_state: LoopState,
     tool_name: str,
+    arguments: dict[str, Any] | None = None,
 ) -> str | None:
-    """Block repeat discovery/search when an explore/override plan advanced."""
+    """Block repeat discovery/search when an explore/override plan advanced.
+
+    Distinct service fingerprints (e.g. camera.snapshot vs notify) are not
+    treated as redos. When every explore step is done, identical redos are
+    still blocked; new fingerprints are allowed so multi-service goals can
+    finish.
+    """
     if not is_exploring(loop_state) or not loop_state.plan_steps:
         return None
     if _pagination_allows_repeat(loop_state, tool_name):
         return None
     from .tools import is_discovery_tool_name
 
+    # Omit fingerprint when args were not provided so callers that only pass
+    # the tool name keep tool-name redo semantics.
+    fingerprint = (
+        tool_call_fingerprint(tool_name, arguments) if arguments else ""
+    )
     if is_discovery_tool_name(tool_name) and any(
         status == "done" for status in loop_state.plan_step_statuses
     ):
@@ -915,8 +999,7 @@ def redundant_override_tool_block(
                 "Do not repeat discovery."
             )
     for index, step in enumerate(loop_state.plan_steps):
-        plan_tool = str(step.get("toolName", "")).lower()
-        if not plan_tool or not _tool_names_match(plan_tool, tool_name):
+        if not _explore_step_matches_call(step, tool_name, fingerprint):
             continue
         if (
             index < len(loop_state.plan_step_statuses)
@@ -924,15 +1007,6 @@ def redundant_override_tool_block(
         ):
             if _pagination_allows_repeat(loop_state, tool_name):
                 continue
-            if all(
-                status in _PLAN_TERMINAL_STATUSES
-                for status in loop_state.plan_step_statuses
-            ):
-                return (
-                    "Tool error: All override plan steps are complete. "
-                    "STOP calling tools and write the final answer to the user "
-                    "using the prior tool results."
-                )
             next_index = _next_incomplete_plan_step(loop_state)
             if next_index is not None and next_index != index:
                 next_tool = str(
@@ -943,9 +1017,12 @@ def redundant_override_tool_block(
                     f"succeeded. Call `{next_tool}` next or answer the user if "
                     "all steps are done."
                 )
+            # Soft-complete: identical redo of a finished explore step only.
             return (
-                "Tool error: This plan step already succeeded. STOP calling "
-                "tools and answer the user from prior results."
+                "Tool error: This explore plan step already succeeded with the "
+                "same arguments. If the user goal still needs a different "
+                "service or tool, call that next; otherwise answer from prior "
+                "results."
             )
     return None
 
@@ -3065,7 +3142,11 @@ def guide_after_override_tool_result(
     if not succeeded:
         return
     if skill_results_ready_to_answer(loop_state):
-        nudge = build_skill_results_answer_nudge(loop_state)
+        nudge = (
+            build_explore_plan_continue_nudge()
+            if is_exploring(loop_state)
+            else build_skill_results_answer_nudge(loop_state)
+        )
         if nudge not in loop_state.mcp_guidance:
             loop_state.mcp_guidance.insert(0, nudge)
         return
@@ -3178,12 +3259,37 @@ def record_plan_tool_result(
     ):
         loop_state.plan_completed_tools.append(tool_name)
 
+    fingerprint = tool_call_fingerprint(tool_name, arguments)
     step_index = _match_plan_step_index(loop_state, tool_name)
+    if (
+        is_exploring(loop_state)
+        and succeeded
+        and not verification_failed
+        and step_index is not None
+        and step_index < len(loop_state.plan_step_statuses)
+        and loop_state.plan_step_statuses[step_index] == "done"
+        and str(loop_state.plan_steps[step_index].get("fingerprint") or "")
+        and fingerprint
+        and str(loop_state.plan_steps[step_index].get("fingerprint")) != fingerprint
+    ):
+        # Distinct service/target under the same tool name — new explore step.
+        loop_state.plan_steps.append(
+            {"toolName": tool_name, "fingerprint": fingerprint}
+        )
+        loop_state.plan_step_statuses.append("done")
+        loop_state.plan_step_notes.append("")
+        loop_state.plan_current_step_index = _next_incomplete_plan_step(loop_state)
+        reconcile_plan_after_tools(loop_state)
+        guide_after_override_tool_result(loop_state, tool_name, succeeded=True)
+        return
+
     if step_index is None:
         return
 
     if succeeded and not verification_failed:
         loop_state.plan_step_statuses[step_index] = "done"
+        if fingerprint:
+            loop_state.plan_steps[step_index]["fingerprint"] = fingerprint
         if step_index < len(loop_state.plan_step_notes):
             loop_state.plan_step_notes[step_index] = ""
         loop_state.plan_current_step_index = _next_incomplete_plan_step(loop_state)
@@ -3233,6 +3339,8 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
             for status in loop_state.plan_step_statuses
         )
     ):
+        if is_exploring(loop_state):
+            return build_explore_plan_continue_nudge()
         return build_skill_results_answer_nudge(loop_state)
 
     hint = _ROUTE_DISCOVERY_DOMAINS.get(loop_state.plan_route)

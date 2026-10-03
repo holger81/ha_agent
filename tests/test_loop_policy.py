@@ -1093,6 +1093,116 @@ def test_redundant_override_tool_block_after_search() -> None:
     assert "bulk_update_flags" in block
 
 
+def test_explore_allows_distinct_ha_call_service_fingerprints() -> None:
+    """camera.snapshot then notify are different explore steps, same tool name."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "send front camera snapshot to my phone"
+    state.plan_route = "action"
+    policy.begin_explore(state)
+    state.plan_steps = [{"toolName": "home_assistant__ha_call_service"}]
+    state.plan_step_statuses = ["pending"]
+    state.plan_step_notes = [""]
+    policy.record_plan_tool_result(
+        state,
+        "home_assistant__ha_call_service",
+        {
+            "domain": "camera",
+            "service": "snapshot",
+            "entity_id": "camera.front_2",
+            "data": {"filename": "/tmp/front.jpg"},
+        },
+        succeeded=True,
+    )
+    assert state.plan_step_statuses == ["done"]
+    assert "service:camera.snapshot:camera.front_2" in str(
+        state.plan_steps[0].get("fingerprint")
+    )
+
+    block = policy.redundant_override_tool_block(
+        state,
+        "home_assistant__ha_call_service",
+        {
+            "domain": "notify",
+            "service": "mobile_app_holgers_iphone_17",
+            "data": {"message": "Front camera snapshot"},
+        },
+    )
+    assert block is None
+
+    policy.record_plan_tool_result(
+        state,
+        "home_assistant__ha_call_service",
+        {
+            "domain": "notify",
+            "service": "mobile_app_holgers_iphone_17",
+            "data": {"message": "Front camera snapshot"},
+        },
+        succeeded=True,
+    )
+    assert len(state.plan_steps) == 2
+    assert state.plan_step_statuses == ["done", "done"]
+    assert any(
+        "still needs another" in hint.lower() or "different service" in hint.lower()
+        for hint in state.mcp_guidance
+    )
+
+
+def test_explore_blocks_identical_service_fingerprint_redo() -> None:
+    """Repeating the exact same explore service call stays blocked."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "snapshot the front camera"
+    state.plan_route = "action"
+    policy.begin_explore(state)
+    state.plan_steps = [{"toolName": "home_assistant__ha_call_service"}]
+    state.plan_step_statuses = ["pending"]
+    state.plan_step_notes = [""]
+    args = {
+        "domain": "camera",
+        "service": "snapshot",
+        "entity_id": "camera.front_2",
+    }
+    policy.record_plan_tool_result(
+        state,
+        "home_assistant__ha_call_service",
+        args,
+        succeeded=True,
+    )
+    block = policy.redundant_override_tool_block(
+        state,
+        "home_assistant__ha_call_service",
+        args,
+    )
+    assert block is not None
+    assert "already succeeded" in block.lower()
+    assert "STOP calling tools" not in block
+
+
+def test_explore_allows_same_tool_different_entity() -> None:
+    """A second get_camera_image on another entity_id is not a redo."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "send front camera snapshot to my phone"
+    state.plan_route = "action"
+    policy.begin_explore(state)
+    state.plan_steps = [{"toolName": "home_assistant__ha_get_camera_image"}]
+    state.plan_step_statuses = ["pending"]
+    state.plan_step_notes = [""]
+    policy.record_plan_tool_result(
+        state,
+        "home_assistant__ha_get_camera_image",
+        {"entity_id": "camera.front_door"},
+        succeeded=True,
+    )
+    block = policy.redundant_override_tool_block(
+        state,
+        "home_assistant__ha_get_camera_image",
+        {"entity_id": "camera.front_2"},
+    )
+    assert block is None
+
+
 def test_reasoning_skill_override_marker() -> None:
     """SKILL_OVERRIDE marker suspends the enforced skill plan."""
     policy = _load_loop_policy()

@@ -750,7 +750,9 @@ async def _process_tool_calls(
         if call.id in blocked_ids:
             continue
         tool_name, arguments = _tool_call_payload(call)
-        if block := redundant_override_tool_block(loop_state, tool_name):
+        if block := redundant_override_tool_block(
+            loop_state, tool_name, arguments
+        ):
             record_override_block_guidance(loop_state, tool_name, block)
             record_iteration_failure(loop_state, tool_name, arguments, block)
             record_plan_tool_result(
