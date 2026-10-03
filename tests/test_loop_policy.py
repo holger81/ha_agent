@@ -2502,7 +2502,7 @@ def test_skill_plan_locks_catalog_until_done_or_override() -> None:
 
 
 def test_off_plan_tool_block_and_append_discovered() -> None:
-    """Off-plan tools are blocked; discovered tools re-lock the override plan."""
+    """Titled skills lock off-plan tools; explore append prefers without locking."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     policy.initialize_loop_plan(
@@ -2520,9 +2520,10 @@ def test_off_plan_tool_block_and_append_discovered() -> None:
 
     policy.suspend_skill_plan(state, "Curate missing.")
     assert policy.append_discovered_plan_tool(state, "mcp_news__news_searx_search")
-    assert state.include_full_tool_catalog is False
+    assert state.include_full_tool_catalog is True
     assert policy.plan_preferred_tool_names(state) == ["mcp_news__news_searx_search"]
-    assert policy.skill_plan_locks_catalog(state) is True
+    assert policy.skill_plan_locks_catalog(state) is False
+    assert policy.off_plan_tool_block(state, "home_assistant__ha_search") is None
 
 
 def test_analyze_search_control_goal_stops_paging_and_blocks_discovery() -> None:
@@ -2571,8 +2572,8 @@ def test_analyze_search_control_goal_stops_paging_and_blocks_discovery() -> None
     assert "searchTool" in blocked
 
 
-def test_no_skill_explores_then_locks_after_discover() -> None:
-    """Empty plans explore with an open catalog, then lock onto a discovered tool."""
+def test_no_skill_explores_then_prefers_without_locking() -> None:
+    """Empty plans explore openly; a discovered tool is preferred, not exclusive."""
     policy = _load_loop_policy()
     state = policy.LoopState()
     policy.initialize_loop_plan(
@@ -2605,11 +2606,33 @@ def test_no_skill_explores_then_locks_after_discover() -> None:
     assert any(
         step.get("toolName") == "mcp_news__news_curate" for step in state.plan_steps
     )
-    assert state.include_full_tool_catalog is False
-    assert policy.skill_plan_locks_catalog(state) is True
-    assert policy.skill_plan_blocks_discovery(state) is True
-    assert policy.off_plan_tool_block(state, "mail_mcp__imap_search_messages")
-    assert "news_curate" in policy.build_skill_discovery_block_message(state)
+    assert state.include_full_tool_catalog is True
+    assert policy.skill_plan_locks_catalog(state) is False
+    assert policy.skill_plan_blocks_discovery(state) is False
+    assert policy.off_plan_tool_block(state, "home_assistant__ha_list_services") is None
+    assert "mcp_news__news_curate" in policy.plan_preferred_tool_names(state)
+
+
+def test_skill_override_resets_stuck_explore_plan() -> None:
+    """SKILL_OVERRIDE clears an explore one-step plan so lookup can continue."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.begin_explore(state)
+    state.plan_goal = "send front camera snapshot to my phone"
+    state.plan_steps = [{"toolName": "home_assistant__ha_call_service"}]
+    state.plan_step_statuses = ["pending"]
+    state.plan_step_notes = [""]
+    state.skill_plan_override = True
+    assert policy.off_plan_tool_block(state, "home_assistant__ha_list_services") is None
+
+    reasoning = (
+        "Need the notify target first. SKILL_OVERRIDE: explore plan only has "
+        "ha_call_service; must list notify services before sending."
+    )
+    assert policy.maybe_suspend_skill_plan_from_reasoning(state, reasoning) is True
+    assert state.plan_steps == []
+    assert state.include_full_tool_catalog is True
+    assert any("EXPLORE PLAN RESET" in hint for hint in state.mcp_guidance)
 
 
 def test_titled_skill_plan_is_not_explore_mode() -> None:

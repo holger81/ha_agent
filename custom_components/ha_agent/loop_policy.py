@@ -753,11 +753,25 @@ def is_exploring(loop_state: LoopState) -> bool:
 
 
 def begin_explore(loop_state: LoopState, reason: str = "") -> None:
-    """Open the empty-plan explore path: discover, then append-and-lock."""
+    """Open explore: discover freely, append preferred tools, keep lookup open."""
     loop_state.explore_mode = True
     loop_state.include_full_tool_catalog = True
     if reason:
         loop_state.mcp_guidance.insert(0, reason)
+
+
+def reset_explore_plan(loop_state: LoopState, reason: str) -> None:
+    """Clear a stuck explore/override plan so lookup tools can run again."""
+    loop_state.plan_steps = []
+    loop_state.plan_step_statuses = []
+    loop_state.plan_step_notes = []
+    loop_state.plan_current_step_index = None
+    loop_state.plan_completed_tools = []
+    loop_state.control_ready = False
+    begin_explore(
+        loop_state,
+        f"EXPLORE PLAN RESET — {reason.strip()[:200]}. {_EXPLORATION_GUIDANCE}",
+    )
 
 
 def suspend_skill_plan(loop_state: LoopState, reason: str) -> None:
@@ -785,12 +799,17 @@ def maybe_suspend_skill_plan_from_reasoning(
     loop_state: LoopState,
     reasoning: str,
 ) -> bool:
-    """Suspend the skill plan when reasoning explicitly declares a mismatch."""
-    if loop_state.skill_plan_override:
-        return False
+    """Suspend a skill plan, or reset a stuck explore plan, from reasoning."""
     reason = extract_skill_override_reason(reasoning)
     if not reason:
         return False
+    if is_exploring(loop_state):
+        # Already exploring — SKILL_OVERRIDE clears a locked one-step plan so
+        # ha_search / list_services / discovery can run for the rest of the goal.
+        if not loop_state.plan_steps:
+            return False
+        reset_explore_plan(loop_state, reason)
+        return True
     suspend_skill_plan(loop_state, reason)
     return True
 
@@ -800,16 +819,16 @@ def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
 
     Any non-empty concrete skill plan is enforceable (including 1-step skills
     like news-briefing). Empty plans / no skill title still allow discovery.
-    Once every plan step is terminal (and pagination is not pending), discovery
-    unlocks so a useless completed step cannot trap the loop.
+    Explore mode never blocks discovery: appended tools are preferences, not a
+    closed catalog. Once every plan step is terminal (and pagination is not
+    pending), discovery unlocks so a useless completed step cannot trap the loop.
     """
     if loop_state.control_ready:
         return True
     if not loop_state.plan_steps:
         return False
     if is_exploring(loop_state):
-        # Empty explore stays open for discovery; appended steps re-lock.
-        return True
+        return False
     if skill_results_ready_to_answer(loop_state) and not loop_state.pagination_pending:
         return False
     return bool(loop_state.plan_skill_title)
@@ -824,12 +843,13 @@ def is_call_tool_name(tool_name: str) -> bool:
 def skill_plan_locks_catalog(loop_state: LoopState) -> bool:
     """True when the LLM should only see plan tools plus callTool.
 
-    Suspended empty plans unlock discovery. A fully done plan without
-    pending pagination unlocks so the model can answer (not rediscover).
+    Explore mode never hard-locks the catalog — preferred tools are hinted,
+    but ha_search / list_services / discovery stay available. A fully done
+    titled skill plan unlocks so the model can answer (not rediscover).
     """
     if loop_state.control_ready:
         return True
-    if is_exploring(loop_state) and not loop_state.plan_steps:
+    if is_exploring(loop_state):
         return False
     if not skill_plan_blocks_discovery(loop_state):
         return False
@@ -852,7 +872,12 @@ def plan_preferred_tool_names(loop_state: LoopState) -> list[str]:
 
 
 def append_discovered_plan_tool(loop_state: LoopState, tool_name: str) -> bool:
-    """Add a discovered tool to the explore/override plan and re-lock the catalog."""
+    """Add a discovered tool to the explore plan as a preferred next step.
+
+    Explore keeps the full catalog open so later lookups (search, list_services)
+    are not off-plan-blocked. Identical finished fingerprints are still blocked
+    by ``redundant_override_tool_block``.
+    """
     name = (tool_name or "").strip()
     if not name or is_call_tool_name(name):
         return False
@@ -865,7 +890,10 @@ def append_discovered_plan_tool(loop_state: LoopState, tool_name: str) -> bool:
         loop_state.plan_current_step_index = len(loop_state.plan_steps) - 1
     if name not in loop_state.preferred_tool_names:
         loop_state.preferred_tool_names.append(name)
-    loop_state.include_full_tool_catalog = False
+    if is_exploring(loop_state):
+        loop_state.include_full_tool_catalog = True
+    else:
+        loop_state.include_full_tool_catalog = False
     return True
 
 
