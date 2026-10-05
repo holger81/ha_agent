@@ -56,6 +56,7 @@ class LoopState:
     skill_plan_override: bool = False
     skill_plan_override_reason: str = ""
     explore_mode: bool = False
+    explore_reset_reason: str = ""
     empty_responses: int = 0
     reasoning_stalls: int = 0
     failed_tool_answer_retries: int = 0
@@ -106,14 +107,36 @@ _SKILL_RESULTS_ANSWER_NUDGE = (
 _SKILL_RESULTS_ANSWER_NEXT = (
     "ANSWER NOW from tool results; paginate via callTool if truncated."
 )
+_EXPLORE_RESULTS_NEXT = (
+    "Explore step done — call the next tool the goal still needs, or ANSWER "
+    "NOW from tool results."
+)
 _MAX_MCP_GUIDANCE_CHARS = 600
-_MAX_LOOP_GUIDANCE_CHARS = 500
-# Route → MCP discovery domain when no skill tool_steps are seeded.
+_MAX_LOOP_GUIDANCE_CHARS = 600
+# Route → MCP discovery domain when no skill tool_steps are seeded. Only
+# aliases live here; any other route/scope string is used as the domain id
+# itself (see :func:`_discovery_domain_for_route`).
 _ROUTE_DISCOVERY_DOMAINS: dict[str, str] = {
     "email": "email",
     "news": "news",
     "action": "smart-home",
 }
+# Routes that are not MCP domains: plain conversation has nothing to discover.
+_NON_DISCOVERY_ROUTES = frozenset({"", "chat", "general"})
+
+
+def _discovery_domain_for_route(route: str | None) -> str | None:
+    """Map a route / skill scope to an MCP proxy domain id.
+
+    Known aliases are translated; any other non-chat value is assumed to be
+    the proxy domain itself so new domains need no code changes.
+    """
+    key = (route or "").strip().lower()
+    if key in _NON_DISCOVERY_ROUTES:
+        return None
+    return _ROUTE_DISCOVERY_DOMAINS.get(key, key)
+
+
 _GENERIC_NEXT_HINT = (
     "Discover MCP tools if needed (searchToolsForDomain or searchTool), "
     "then adhere strictly to each tool's MCP definition. "
@@ -126,8 +149,13 @@ _REASONING_FILLER_PREFIX = re.compile(
     r"try to|trying to|going to)\s+",
     re.IGNORECASE,
 )
+# MCP proxy tool name: ``server__tool_name``. Single underscores separate
+# alnum runs and ``__`` separates server from tool, so no character can be
+# consumed by more than one branch (no catastrophic backtracking on
+# ``a_______…`` inputs).
+_MCP_TOOL_NAME = r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*(?:__[a-z0-9]+(?:_[a-z0-9]+)*)+"
 _REASONING_TOOL_MENTION = re.compile(
-    r"\b([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)\b",
+    rf"\b({_MCP_TOOL_NAME})\b",
     re.IGNORECASE,
 )
 _MAX_UNPRODUCTIVE_ITERATIONS = 4
@@ -195,11 +223,11 @@ _CONTROL_GOAL_INTENT = re.compile(
     re.IGNORECASE,
 )
 _REASONING_WILL_CALL = re.compile(
-    r"\b(?:will|should|i'?ll|going to)\s+call\s+`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?",
+    rf"\b(?:will|should|i'?ll|going to)\s+call\s+`?({_MCP_TOOL_NAME})`?",
     re.IGNORECASE,
 )
 _REASONING_TOOL_BACKTICK = re.compile(
-    r"`([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`",
+    rf"`({_MCP_TOOL_NAME})`",
     re.IGNORECASE,
 )
 _SKILL_OVERRIDE_MARKER = re.compile(
@@ -221,7 +249,7 @@ _USER_SKILL_OVERRIDE = re.compile(
 _PLAN_TERMINAL_STATUSES = frozenset({"done", "omitted"})
 _OMIT_TOOL_MARKER = re.compile(
     r"OMIT(?:TED)?(?::|\s+step\s+\d+\s*[:\-])?\s*"
-    r"`?([a-z][a-z0-9_]*(?:__[a-z0-9_]+)+)`?"
+    rf"`?({_MCP_TOOL_NAME})`?"
     r"(?:\s*[—\-:]\s*(.+))?",
     re.IGNORECASE,
 )
@@ -353,6 +381,15 @@ def skill_results_ready_to_answer(loop_state: LoopState) -> bool:
     )
 
 
+def skill_plan_results_ready_to_answer(loop_state: LoopState) -> bool:
+    """True when a titled (non-explore) skill plan is finished and an answer is due.
+
+    Explore plans are open-ended: finished steps are preferences, so the
+    "skill plan finished — answer now" nudges must not fire for them.
+    """
+    return skill_results_ready_to_answer(loop_state) and not is_exploring(loop_state)
+
+
 def build_skill_results_answer_nudge(loop_state: LoopState) -> str:
     """Strong post-plan-done directive: answer now; paginate only if truncated."""
     if loop_state.pagination_pending:
@@ -396,7 +433,7 @@ def mark_reasoning_stuck(loop_state: LoopState) -> None:
 
 def build_reasoning_stuck_nudge(loop_state: LoopState) -> str:
     """Return a directive when the model looped in reasoning without acting."""
-    if skill_results_ready_to_answer(loop_state):
+    if skill_plan_results_ready_to_answer(loop_state):
         return (
             "SYSTEM (internal — not from the user): Your previous reply got "
             "stuck in repetitive reasoning after the skill plan finished. "
@@ -762,6 +799,7 @@ def begin_explore(loop_state: LoopState, reason: str = "") -> None:
 
 def reset_explore_plan(loop_state: LoopState, reason: str) -> None:
     """Clear a stuck explore/override plan so lookup tools can run again."""
+    loop_state.explore_reset_reason = _normalize_override_reason(reason)
     loop_state.plan_steps = []
     loop_state.plan_step_statuses = []
     loop_state.plan_step_notes = []
@@ -806,12 +844,20 @@ def maybe_suspend_skill_plan_from_reasoning(
     if is_exploring(loop_state):
         # Already exploring — SKILL_OVERRIDE clears a locked one-step plan so
         # ha_search / list_services / discovery can run for the rest of the goal.
+        # Models often keep the marker in every later reasoning block; the same
+        # reason must not wipe progress again.
         if not loop_state.plan_steps:
+            return False
+        if _normalize_override_reason(reason) == loop_state.explore_reset_reason:
             return False
         reset_explore_plan(loop_state, reason)
         return True
     suspend_skill_plan(loop_state, reason)
     return True
+
+
+def _normalize_override_reason(reason: str) -> str:
+    return " ".join(reason.lower().split())[:200]
 
 
 def skill_plan_blocks_discovery(loop_state: LoopState) -> bool:
@@ -844,13 +890,15 @@ def skill_plan_locks_catalog(loop_state: LoopState) -> bool:
     """True when the LLM should only see plan tools plus callTool.
 
     Explore mode never hard-locks the catalog — preferred tools are hinted,
-    but ha_search / list_services / discovery stay available. A fully done
-    titled skill plan unlocks so the model can answer (not rediscover).
+    but ha_search / list_services / discovery stay available. ``control_ready``
+    only blocks discovery during explore (see ``skill_plan_blocks_discovery``);
+    the control tool itself must stay callable. A fully done titled skill plan
+    unlocks so the model can answer (not rediscover).
     """
-    if loop_state.control_ready:
-        return True
     if is_exploring(loop_state):
         return False
+    if loop_state.control_ready:
+        return True
     if not skill_plan_blocks_discovery(loop_state):
         return False
     if skill_results_ready_to_answer(loop_state) and not loop_state.pagination_pending:
@@ -910,6 +958,12 @@ def off_plan_tool_block(loop_state: LoopState, tool_name: str) -> str | None:
     if _pagination_allows_repeat(loop_state, tool_name):
         return None
     if _match_plan_step_index(loop_state, tool_name) is not None:
+        return None
+    # Preferred tools (e.g. the control tool required after entity search) are
+    # offered in the locked catalog, so calling them is never off-plan.
+    if any(
+        _tool_names_match(name, tool_name) for name in loop_state.preferred_tool_names
+    ):
         return None
     next_tool = _next_plan_tool_name(loop_state)
     extra = f" Call `{next_tool}` (or callTool) next." if next_tool else ""
@@ -1012,9 +1066,7 @@ def redundant_override_tool_block(
 
     # Omit fingerprint when args were not provided so callers that only pass
     # the tool name keep tool-name redo semantics.
-    fingerprint = (
-        tool_call_fingerprint(tool_name, arguments) if arguments else ""
-    )
+    fingerprint = tool_call_fingerprint(tool_name, arguments) if arguments else ""
     if is_discovery_tool_name(tool_name) and any(
         status == "done" for status in loop_state.plan_step_statuses
     ):
@@ -1152,9 +1204,13 @@ def _infer_next_catalog_tool(loop_state: LoopState, *, after_tool: str) -> str |
         return None
     if not _is_search_like_tool(after_tool):
         return None
+    from .skills.tool_names import tool_effect_kind
+
     completed = {name.lower() for name in loop_state.plan_completed_tools}
     prefix = after_tool.split("__", 1)[0].lower() if "__" in after_tool else ""
-    candidates: list[str] = []
+    allow_mutate = _goal_allows_mutation(loop_state)
+    read_candidates: list[str] = []
+    other_candidates: list[str] = []
     for key in loop_state.mcp_tool_catalog:
         lowered = key.lower()
         if _is_search_like_tool(key):
@@ -1165,8 +1221,15 @@ def _infer_next_catalog_tool(loop_state: LoopState, *, after_tool: str) -> str |
             continue
         if prefix and not lowered.startswith(prefix):
             continue
-        candidates.append(key)
-    return sorted(candidates)[0] if candidates else None
+        kind = tool_effect_kind(key)
+        if kind == "mutate" and not allow_mutate:
+            # Never steer a status/reading turn toward a state-changing tool.
+            continue
+        (read_candidates if kind == "read" else other_candidates).append(key)
+    # Deterministic: prefer read tools, then the rest, each alphabetically.
+    if read_candidates:
+        return sorted(read_candidates)[0]
+    return sorted(other_candidates)[0] if other_candidates else None
 
 
 def _catalog_tool_key(tool_name: str) -> str:
@@ -1367,7 +1430,7 @@ def resolve_plan_discovery_domain(
     if discovery_domain and discovery_domain.strip():
         scope = discovery_domain.strip().lower()
         return _ROUTE_DISCOVERY_DOMAINS.get(scope, scope)
-    return _ROUTE_DISCOVERY_DOMAINS.get(route)
+    return _discovery_domain_for_route(route)
 
 
 async def prefetch_planned_tool_mcp_meta(
@@ -1491,6 +1554,28 @@ def _is_control_goal(loop_state: LoopState) -> bool:
     if loop_state.plan_route == "action" and is_device_action_query(goal):
         return True
     return bool(_CONTROL_GOAL_INTENT.search(goal))
+
+
+# Prose-side counterpart of the verb list ``skills.tool_names`` uses to tag a
+# tool as mutating — any domain, not just devices ("mark … as read", "send").
+_MUTATE_GOAL_VERB = re.compile(
+    r"\b(?:set|update|mark|flag|delete|remove|create|send|turn|write|apply|"
+    r"move|copy|add|clear|toggle|enable|disable|play|pause|resume|stop|start|"
+    r"skip|mute|unmute|broadcast|open|close|lock|unlock|dim|activate|"
+    r"deactivate|arm|disarm|run|cast|press|trigger|restart|cancel|archive|"
+    r"reply|forward|change|adjust)\b",
+    re.IGNORECASE,
+)
+
+
+def _goal_allows_mutation(loop_state: LoopState) -> bool:
+    """True when the user asked to change something (device or otherwise)."""
+    if _is_control_goal(loop_state):
+        return True
+    goal = loop_state.plan_goal or ""
+    if not goal.strip() or is_state_question(goal):
+        return False
+    return bool(_MUTATE_GOAL_VERB.search(goal))
 
 
 def _entity_ids_from_search_entries(entries: list[Any]) -> list[str]:
@@ -2506,13 +2591,18 @@ def _entity_lookup_failed_id(
     return None
 
 
+# Entity-id fragments that never help a replacement search: the domain itself,
+# aggregation suffixes, and the generic "home" prefix many integrations add.
+_ENTITY_ID_NOISE_TOKENS = frozenset({"home", "mean", "min", "max", "avg"})
+
+
 def _comparable_entity_search_hint(entity_id: str, goal: str) -> str:
     """Guide a search for replacements when a concrete entity_id failed."""
     domain = entity_id.split(".", 1)[0] if "." in entity_id else "sensor"
     id_tokens = [
         tok
         for tok in re.findall(r"[a-z0-9]{3,}", entity_id.lower().replace(".", " "))
-        if tok not in {domain, "home", "mean", "min", "san", "jose"}
+        if tok != domain and tok not in _ENTITY_ID_NOISE_TOKENS
     ]
     goal_tokens = [
         tok
@@ -2662,12 +2752,30 @@ def _note_referenced_entity(loop_state: LoopState, entity_id: str) -> None:
     loop_state.referenced_entity_ids.append(cleaned)
 
 
+_NUMBER = r"\d+(?:[.,]\d+)?"
+# A number is only a *reading* when a unit sits right after it, or a
+# reading-kind word is within a few tokens — "I found 3 sensors" is not one.
+_READING_UNIT = (
+    r"(?:%|°(?:\s*[cfk])?|(?:degrees?(?:\s+[cfk])?|percent|aqi|ppm|hpa|mbar|"
+    r"celsius|fahrenheit|kelvin|kwh|kw|watts?|lux|db|µg/m³|mg/m³)\b)"
+)
+_READING_KIND_WORD = (
+    r"(?:temperature|temp|humidity|pressure|aqi|air\s+quality|co2|co₂|"
+    r"reading|level|power|energy|battery|brightness|consumption|usage|"
+    r"value|reads|measures|measured)"
+)
 _READING_VALUE_CLAIM = re.compile(
-    r"\b\d+(?:\.\d+)?\s*(?:°\s*[cf]|degrees?(?:\s+[cf])?|%|aqi|ppm|hpa|mbar)?\b",
+    rf"\b{_NUMBER}\s*{_READING_UNIT}"
+    rf"|\b{_READING_KIND_WORD}\b(?:\W+\w+){{0,6}}?\W+{_NUMBER}\b"
+    rf"|\b{_NUMBER}\b(?:\W+\w+){{0,1}}?\W+{_READING_KIND_WORD}\b",
     re.IGNORECASE,
 )
+# A status claim needs a copula ("is on", "are closed", "is currently locked"),
+# so "the lamp on the porch?" or "turn it off" are not treated as assertions.
 _DEVICE_STATUS_CLAIM = re.compile(
-    r"\b(?:"
+    r"\b(?:is|are|was|were|'s|'re|currently|now|remains?|stays?)\s+"
+    r"(?:(?:currently|now|still|already|also)\s+)?"
+    r"(?:"
     r"open|opened|closed|close|locked|unlocked|on|off|"
     r"running|stopped|paused|playing|home|away|armed|disarmed"
     r")\b",
@@ -2677,12 +2785,18 @@ _MAX_MISSING_READING_RETRIES = 2
 _MAX_MISSING_STATUS_RETRIES = 2
 
 
+def _assertive_sentences(text: str) -> str:
+    """Drop question sentences — they ask, they do not claim."""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(s for s in sentences if not s.rstrip().endswith("?"))
+
+
 def claims_reading_answer(text: str) -> bool:
     """Return True when the assistant states a numeric reading value."""
     cleaned = (text or "").strip()
     if not cleaned or _FAILURE_ADMISSION.search(cleaned):
         return False
-    return bool(_READING_VALUE_CLAIM.search(cleaned))
+    return bool(_READING_VALUE_CLAIM.search(_assertive_sentences(cleaned)))
 
 
 def claims_device_status_answer(text: str) -> bool:
@@ -2690,7 +2804,7 @@ def claims_device_status_answer(text: str) -> bool:
     cleaned = (text or "").strip()
     if not cleaned or _FAILURE_ADMISSION.search(cleaned):
         return False
-    return bool(_DEVICE_STATUS_CLAIM.search(cleaned))
+    return bool(_DEVICE_STATUS_CLAIM.search(_assertive_sentences(cleaned)))
 
 
 def had_successful_read_tool(tool_calls: list[dict[str, Any]]) -> bool:
@@ -3240,7 +3354,7 @@ def initialize_loop_plan(
                 ),
             )
     if not steps:
-        domain = discovery_domain or _ROUTE_DISCOVERY_DOMAINS.get(route)
+        domain = discovery_domain or _discovery_domain_for_route(route)
         if domain:
             loop_state.mcp_guidance.insert(
                 0,
@@ -3371,7 +3485,7 @@ def describe_plan_next_action(loop_state: LoopState) -> str:
             return build_explore_plan_continue_nudge()
         return build_skill_results_answer_nudge(loop_state)
 
-    hint = _ROUTE_DISCOVERY_DOMAINS.get(loop_state.plan_route)
+    hint = _discovery_domain_for_route(loop_state.plan_route)
     if hint:
         domain_hint = (
             f"Discover tools in domain `{hint}` if none are known yet, then "
@@ -3511,7 +3625,12 @@ def inject_loop_context(
     if not next_step and skill_results_ready_to_answer(loop_state):
         # Plan is complete — do not fall back to the plan-progress header; that
         # leaves small models looping in reasoning with no actionable next step.
-        next_step = _SKILL_RESULTS_ANSWER_NEXT
+        # Explore plans stay open-ended: another tool may still be needed.
+        next_step = (
+            _EXPLORE_RESULTS_NEXT
+            if is_exploring(loop_state)
+            else _SKILL_RESULTS_ANSWER_NEXT
+        )
     if not next_step:
         plan = build_plan_progress_summary(loop_state)
         if plan:
@@ -3520,14 +3639,19 @@ def inject_loop_context(
     if next_step:
         parts.append(next_step)
 
+    mcp_hint = loop_state.mcp_guidance[0].strip() if loop_state.mcp_guidance else ""
     if loop_state.pending_failure_summary:
-        parts.append(loop_state.pending_failure_summary.strip()[:300])
+        # Leave room for the MCP hint when both are present.
+        failure_cap = 200 if mcp_hint else 300
+        parts.append(loop_state.pending_failure_summary.strip()[:failure_cap])
         loop_state.pending_failure_summary = None
-    elif loop_state.mcp_guidance:
-        # One highest-priority MCP hint only.
-        hint = loop_state.mcp_guidance[0].strip()
-        if hint:
-            parts.append(f"MCP: {hint[:240]}")
+    if mcp_hint:
+        # One highest-priority MCP hint only — emitted alongside a failure
+        # summary too, since the hint usually says how to recover from it.
+        used = sum(len(part) + 1 for part in parts)
+        remaining = _MAX_LOOP_GUIDANCE_CHARS - used - len("MCP: ")
+        if remaining >= 40:
+            parts.append(f"MCP: {mcp_hint[: min(240, remaining)]}")
     # Always clear queued MCP hints so they do not stack across iterations.
     loop_state.mcp_guidance = []
 
@@ -3709,7 +3833,7 @@ def record_pagination_state(
 
 def build_empty_response_nudge(loop_state: LoopState) -> str:
     """Return a directive when the model produced no answer and no tool call."""
-    if skill_results_ready_to_answer(loop_state):
+    if skill_plan_results_ready_to_answer(loop_state):
         return (
             "SYSTEM (internal — not from the user): Your previous reply was "
             "empty after the skill plan finished. "
@@ -3745,12 +3869,27 @@ _TOOL_CRITICAL_ROUTES = frozenset({"action"})
 
 
 def had_successful_control_tool(tool_calls: list[dict[str, Any]]) -> bool:
-    """Return True when a mutating HA/control tool succeeded this turn."""
+    """Return True when a mutating HA/control tool succeeded this turn.
+
+    The regex is a fast path for the most common HA control tools; any other
+    verb-shaped mutate tool (HassLightSet, ha_bulk_control, HassSetPosition…)
+    is recognised generically via :func:`tool_effect_kind`.
+    """
+    from .skills.tool_names import tool_effect_kind
+    from .tools import is_discovery_tool_name
+
     for call in tool_calls:
         if not call.get("succeeded"):
             continue
         name = str(call.get("toolName") or call.get("name") or "")
+        if not name or is_discovery_tool_name(name):
+            continue
         if _CONTROL_TOOL_TAIL.search(name):
+            return True
+        # Session wrappers carry no effect of their own.
+        if name.lower() in {"calltool", "mcp_call_tool"}:
+            continue
+        if tool_effect_kind(name) == "mutate":
             return True
     return False
 
@@ -4168,16 +4307,70 @@ def enrich_tool_output(
     return output + "\n\nRECOVERY HINTS:\n" + "\n".join(f"- {hint}" for hint in unique)
 
 
-def _expected_states_for_service(service: str) -> set[str] | None:
-    """Return acceptable HA states after a service call."""
+_ON_LIKE_SERVICES = frozenset({"turn_on", "open_cover", "unlock", "media_play"})
+_OFF_LIKE_SERVICES = frozenset(
+    {"turn_off", "close_cover", "lock", "media_pause", "media_stop"}
+)
+# Per-domain terminal states after an "on-like" / "off-like" service.
+_DOMAIN_ON_STATES: dict[str, set[str]] = {
+    "cover": {"open"},
+    "lock": {"unlocked"},
+    "media_player": {"playing", "idle", "paused", "on"},
+}
+_DOMAIN_OFF_STATES: dict[str, set[str]] = {
+    "cover": {"closed"},
+    "lock": {"locked"},
+    "media_player": {"idle", "standby", "off", "paused"},
+}
+# States a device passes through on the way to the target; the service was
+# accepted but the physical change is still in progress.
+_DOMAIN_TRANSITIONAL_STATES: dict[str, dict[str, set[str]]] = {
+    "cover": {"on": {"opening"}, "off": {"closing"}},
+    "lock": {"on": {"unlocking"}, "off": {"locking"}},
+    "media_player": {"on": {"buffering"}, "off": set()},
+}
+# States that mean the device failed to complete the change.
+_DOMAIN_FAILURE_STATES: dict[str, set[str]] = {
+    "lock": {"jammed"},
+}
+_GENERIC_ON_STATES = {"on", "open", "unlocked", "playing", "idle", "paused"}
+_GENERIC_OFF_STATES = {"off", "closed", "locked", "idle", "standby"}
+
+
+def _service_direction(service: str) -> str | None:
+    """Return ``on`` / ``off`` for services with a known target state."""
     key = service.strip().lower().replace("-", "_").replace(" ", "_")
-    if key in {"turn_on", "open_cover", "unlock", "media_play"}:
-        return {"on", "open", "unlocked", "playing", "idle", "paused"}
-    if key in {"turn_off", "close_cover", "lock", "media_pause", "media_stop"}:
-        return {"off", "closed", "locked", "idle", "standby"}
-    if key == "toggle":
-        return None
+    if key in _ON_LIKE_SERVICES:
+        return "on"
+    if key in _OFF_LIKE_SERVICES:
+        return "off"
     return None
+
+
+def _expected_states_for_service(
+    service: str,
+    *,
+    domain: str | None = None,
+) -> set[str] | None:
+    """Return acceptable HA states after a service call.
+
+    When ``domain`` (from the entity_id) is known, the expectation narrows to
+    that domain's terminal states; otherwise the broad cross-domain set is used.
+    """
+    direction = _service_direction(service)
+    if direction is None:
+        return None
+    table = _DOMAIN_ON_STATES if direction == "on" else _DOMAIN_OFF_STATES
+    if domain and domain in table:
+        return set(table[domain])
+    return set(_GENERIC_ON_STATES if direction == "on" else _GENERIC_OFF_STATES)
+
+
+def _transitional_states_for_service(service: str, domain: str | None) -> set[str]:
+    direction = _service_direction(service)
+    if direction is None or not domain:
+        return set()
+    return set(_DOMAIN_TRANSITIONAL_STATES.get(domain, {}).get(direction, set()))
 
 
 def verify_ha_service(
@@ -4201,14 +4394,29 @@ def verify_ha_service(
     if state is None:
         return f"VERIFICATION: {entity_id} was not found in Home Assistant."
 
-    expected = _expected_states_for_service(service)
+    domain = entity_id.split(".", 1)[0].lower() if "." in entity_id else None
+    expected = _expected_states_for_service(service, domain=domain)
     if expected is None:
         return f"VERIFICATION: {entity_id} is '{state.state}' after {service}."
 
-    if state.state in expected:
-        return f"VERIFICATION: {entity_id} is '{state.state}' after {service}."
+    current = str(state.state)
+    if current in expected:
+        return f"VERIFICATION: {entity_id} is '{current}' after {service}."
+    if current in _transitional_states_for_service(service, domain):
+        # Service accepted; the device is still moving. Not a failure.
+        return (
+            f"VERIFICATION PENDING: {entity_id} is {current} after {service}. "
+            "The change is in progress; tell the user it is underway rather "
+            "than already complete."
+        )
+    if domain and current in _DOMAIN_FAILURE_STATES.get(domain, set()):
+        return (
+            f"VERIFICATION FAILED: {entity_id} is '{current}' after {service}. "
+            "The device reported a fault. Do not tell the user the action "
+            "succeeded."
+        )
     return (
-        f"VERIFICATION FAILED: {entity_id} is '{state.state}' after {service} "
+        f"VERIFICATION FAILED: {entity_id} is '{current}' after {service} "
         f"(expected one of {', '.join(sorted(expected))}). "
         "Do not tell the user the action succeeded."
     )

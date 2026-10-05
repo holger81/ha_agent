@@ -22,6 +22,7 @@ from .structured_output import (
     COMPLEXITY_SCHEMA,
     PLAN_SUBTASKS_SCHEMA,
     json_schema_format,
+    strip_json_fence,
 )
 
 _COMPLEXITY_PROMPT = (
@@ -84,14 +85,6 @@ class OrchestrationPlan:
     routes: list[str] = field(default_factory=list)
 
 
-def _strip_json(content: str) -> str:
-    text = content.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    return text
-
-
 def heuristic_complexity(user_text: str) -> Complexity:
     """Fast complexity estimate without LLM."""
     text = user_text.lower()
@@ -138,10 +131,9 @@ def _parse_subtasks_payload(
         if not isinstance(item, dict):
             continue
         route = str(item.get("route") or fallback_route).lower()
-        if route in {"email", "news"}:
+        # Soft domain routes (email, news, …) are chat workflows.
+        if route not in {"chat", "action"}:
             route = "chat"
-        elif route not in {"chat", "action"}:
-            route = fallback_route
         subtasks.append(
             SubtaskSpec(
                 id=str(item.get("id") or f"t{index + 1}"),
@@ -194,7 +186,7 @@ async def triage_complexity(
             response_format=response_format,
         )
         record_llm_call(trace, role="planner_triage", backend=backend, result=result)
-        data = json.loads(_strip_json(result.content or ""))
+        data = json.loads(strip_json_fence(result.content or ""))
     except Exception as err:
         LOGGER.debug("Complexity triage LLM failed: %s", err)
         record_llm_call(trace, role="planner_triage", backend=backend, error=str(err))
@@ -292,7 +284,7 @@ async def plan_subtasks(
             response_format=response_format,
         )
         record_llm_call(trace, role="planner", backend=backend, result=result)
-        data = json.loads(_strip_json(result.content or ""))
+        data = json.loads(strip_json_fence(result.content or ""))
     except Exception as err:
         LOGGER.warning("Planner LLM failed: %s", err)
         record_llm_call(trace, role="planner", backend=backend, error=str(err))
@@ -362,10 +354,13 @@ async def replan_after_failure(
             response_format=response_format,
         )
         record_llm_call(trace, role="replan", backend=backend, result=result)
-        data = json.loads(_strip_json(result.content or ""))
+        data = json.loads(strip_json_fence(result.content or ""))
     except Exception as err:
         LOGGER.warning("Replan LLM failed: %s", err)
         record_llm_call(trace, role="replan", backend=backend, error=str(err))
+        # Retry only the failed step; do not re-queue the whole prior plan.
+        plan.subtasks = [failed_subtask]
+        plan.reason = "replan_failed"
         return plan
 
     plan.subtasks = _parse_subtasks_payload(

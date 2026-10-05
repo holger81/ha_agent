@@ -88,28 +88,46 @@ _ROUTE_SEARCH_HINTS: dict[str, str] = {
     "stock": "stock market ticker shares quote portfolio",
 }
 
+
+def _tool_segment_pattern(*segments: str) -> re.Pattern[str]:
+    """Match tool-name segments bounded by start/underscore/end."""
+    alt = "|".join(re.escape(seg) for seg in segments)
+    return re.compile(rf"(?:^|_)(?:{alt})(?:_|$)", re.IGNORECASE)
+
+
 _ROUTE_TOOL_MARKERS: dict[str, re.Pattern[str]] = {
-    "email": re.compile(r"mail|imap|inbox|email|mailbox", re.IGNORECASE),
-    "news": re.compile(r"news|curate|headline|rss", re.IGNORECASE),
-    "stock": re.compile(
-        r"stock|ticker|finance|equity|equities|quote|portfolio",
-        re.IGNORECASE,
+    "email": _tool_segment_pattern("mail", "imap", "inbox", "email", "mailbox"),
+    "news": _tool_segment_pattern("news", "curate", "headline", "rss"),
+    "stock": _tool_segment_pattern(
+        "stock",
+        "ticker",
+        "finance",
+        "equity",
+        "equities",
+        "quote",
+        "portfolio",
     ),
     "action": re.compile(
+        r"(?:^|_)(?:"
         r"ha_call_service|turn_on|turn_off|snapshot|open_cover|close_cover|"
-        r"home_assistant|ha_search|ha_get_|ha_bulk_|ha_set_",
+        r"home_assistant|ha_search|ha_get_|ha_bulk_|ha_set_"
+        r")",
         re.IGNORECASE,
     ),
 }
 
 # Soft workflow domains on chat (not device-control/action).
 _SOFT_DOMAIN_HINTS = frozenset(key for key in _ROUTE_DOMAIN_MARKERS if key != "action")
+_RESERVED_DOMAIN_HINTS = frozenset({"", "chat", "action", "general"})
 
 
 def normalize_soft_domain_hint(hint: str | None) -> str | None:
-    """Keep only real soft-domain hints; drop placeholders like ``chat``."""
+    """Keep any non-reserved soft-domain token; drop chat/action/general."""
     cleaned = (hint or "").strip().lower()
-    if cleaned in _SOFT_DOMAIN_HINTS:
+    if not cleaned or cleaned in _RESERVED_DOMAIN_HINTS:
+        return None
+    # Prefer known soft domains; still accept novel scope tokens generically.
+    if cleaned in _SOFT_DOMAIN_HINTS or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", cleaned):
         return cleaned
     return None
 
@@ -193,8 +211,17 @@ def _jaccard_content_overlap(user_text: str, skill: Skill) -> float:
 
 
 def _strong_fts_match(user_text: str, skill: Skill) -> bool:
-    """Return True when FTS match is strong enough to pin without LLM."""
-    return trigger_overlap_score(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
+    """Return True when FTS match is strong enough to pin without LLM.
+
+    Requires Jaccard content overlap at the unsupervised threshold **and** at
+    least two shared content tokens so a single common verb cannot pin a skill.
+    """
+    user_tokens = _content_tokens(user_text)
+    skill_tokens = _skill_content_tokens(skill)
+    shared = user_tokens & skill_tokens
+    if len(shared) < 2:
+        return False
+    return _jaccard_content_overlap(user_text, skill) >= _MIN_FTS_TRIGGER_SCORE
 
 
 def skill_applies_to_user_text(user_text: str, skill: Skill) -> bool:
@@ -384,10 +411,14 @@ _CONTROL_SKILL_TEXT = re.compile(
 
 
 def _skill_soft_domains(skill: Skill) -> frozenset[str]:
-    """Soft chat domains a skill declares via its scope or its concrete tools."""
+    """Known soft domains a skill declares via scope or concrete tools.
+
+    Novel ``route_scope`` values are omitted so the marker-based gate does not
+    reject brand-new domains; those match via hint/scope equality instead.
+    """
     domains = set(_skill_tool_domains(skill))
     scope = (skill.route_scope or "").lower()
-    if scope:
+    if scope in _SOFT_DOMAIN_HINTS:
         domains.add(scope)
     return frozenset(domains & _SOFT_DOMAIN_HINTS)
 
@@ -419,31 +450,32 @@ def skill_matches_route(
         and not includes_device_command_clause(user_text)
     ):
         return False
+    soft_hint = normalize_soft_domain_hint(hint)
     if user_text and route_key in {"", "chat"}:
         declared = _skill_soft_domains(skill)
         supported = soft_domains_in_text(user_text)
-        if hint in _SOFT_DOMAIN_HINTS:
-            supported = supported | {hint}
+        if soft_hint:
+            supported = supported | {soft_hint}
         if declared and not declared & supported:
             return False
 
     # Soft domain on chat: prefer matching scope/tools; reject other domains.
-    if route_key in {"", "chat"} and hint in _SOFT_DOMAIN_HINTS:
-        if scope and scope != hint and scope in _SPECIALIZED_ROUTES:
+    if route_key in {"", "chat"} and soft_hint:
+        if scope and scope != soft_hint and scope in _SPECIALIZED_ROUTES:
             return False
-        if scope == hint:
+        if scope == soft_hint:
             return True
-        target = _ROUTE_DOMAIN_MARKERS.get(hint)
+        target = _ROUTE_DOMAIN_MARKERS.get(soft_hint)
         if target and target.search(_skill_text(skill)):
             return True
         step_names = _skill_step_names(skill)
-        marker = _ROUTE_TOOL_MARKERS.get(hint)
+        marker = _ROUTE_TOOL_MARKERS.get(soft_hint)
         if marker and any(marker.search(name) for name in step_names):
             return True
         tool_domains = _skill_tool_domains(skill)
         # Concrete tools for a different specialized domain cannot serve this hint
         # (e.g. ha_search status skill on an email ask).
-        if tool_domains and hint not in tool_domains:
+        if tool_domains and soft_hint not in tool_domains:
             return False
         # Keep unmarked / tool-less skills eligible for FTS/LLM.
         return scope not in _SPECIALIZED_ROUTES or not scope

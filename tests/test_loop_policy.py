@@ -2564,12 +2564,36 @@ def test_analyze_search_control_goal_stops_paging_and_blocks_discovery() -> None
     assert state.control_ready is True
     assert state.suppress_pagination is True
     assert policy.skill_plan_blocks_discovery(state) is True
-    assert policy.skill_plan_locks_catalog(state) is True
+    # Explore (no skill): control_ready blocks discovery but must not lock the
+    # catalog against the control tool it demands.
+    assert policy.is_exploring(state) is True
+    assert policy.skill_plan_locks_catalog(state) is False
+    assert policy.off_plan_tool_block(state, "home_assistant__ha_call_service") is None
+    assert policy.off_plan_tool_block(state, "HassTurnOff") is None
     assert "home_assistant__ha_call_service" in policy.plan_preferred_tool_names(state)
     assert any("device-control" in hint for hint in state.mcp_guidance)
     blocked = policy.build_skill_discovery_block_message(state)
     assert "ha_call_service" in blocked
     assert "searchTool" in blocked
+
+
+def test_control_ready_titled_plan_allows_preferred_control_tool() -> None:
+    """Preferred control tools are callable even when a titled plan locks."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    policy.initialize_loop_plan(
+        state,
+        goal="turn off the kitchen speaker",
+        route="action",
+        skill_title="Media control",
+        tool_steps=[{"toolName": "home_assistant__ha_search"}],
+    )
+    assert policy.is_exploring(state) is False
+    policy._mark_control_ready(state, ["media_player.kitchen"])
+    assert policy.skill_plan_locks_catalog(state) is True
+    assert policy.off_plan_tool_block(state, "home_assistant__ha_call_service") is None
+    assert policy.off_plan_tool_block(state, "HassTurnOff") is None
+    assert policy.off_plan_tool_block(state, "mcp_news__news_curate") is not None
 
 
 def test_no_skill_explores_then_prefers_without_locking() -> None:
@@ -2633,6 +2657,82 @@ def test_skill_override_resets_stuck_explore_plan() -> None:
     assert state.plan_steps == []
     assert state.include_full_tool_catalog is True
     assert any("EXPLORE PLAN RESET" in hint for hint in state.mcp_guidance)
+
+
+def test_repeated_skill_override_marker_does_not_wipe_explore_progress() -> None:
+    """The same SKILL_OVERRIDE reason repeated later must not reset again."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "send front camera snapshot to my phone"
+    state.plan_route = "action"
+    policy.begin_explore(state)
+    tool = "home_assistant__ha_call_service"
+    snapshot = {"domain": "camera", "service": "snapshot", "entity_id": "camera.front"}
+    policy.append_discovered_plan_tool(state, tool)
+    policy.record_plan_tool_result(state, tool, snapshot, succeeded=True)
+    reasoning = "SKILL_OVERRIDE: need the notify service list first."
+    assert policy.maybe_suspend_skill_plan_from_reasoning(state, reasoning) is True
+    assert state.plan_steps == []
+
+    # Progress after the reset, then the model keeps the marker in reasoning.
+    policy.append_discovered_plan_tool(state, tool)
+    policy.record_plan_tool_result(state, tool, snapshot, succeeded=True)
+    assert state.plan_step_statuses == ["done"]
+    again = "Still exploring.  skill_override:   need the notify service list first."
+    assert policy.maybe_suspend_skill_plan_from_reasoning(state, again) is False
+    assert state.plan_step_statuses == ["done"]
+    assert policy.redundant_override_tool_block(state, tool, snapshot) is not None
+    assert sum("EXPLORE PLAN RESET" in hint for hint in state.mcp_guidance) == 1
+
+    # A genuinely new reason may reset once more.
+    fresh = "SKILL_OVERRIDE: snapshot path differs; need camera entity lookup."
+    assert policy.maybe_suspend_skill_plan_from_reasoning(state, fresh) is True
+    assert state.plan_steps == []
+
+
+def test_explore_done_nudges_stay_open_ended() -> None:
+    """Finished explore steps must not trigger 'skill plan finished' nudges."""
+    policy = _load_loop_policy()
+    state = policy.LoopState()
+    state.plan_goal = "send front camera snapshot to my phone"
+    state.plan_route = "action"
+    policy.begin_explore(state)
+    tool = "home_assistant__ha_call_service"
+    policy.append_discovered_plan_tool(state, tool)
+    policy.record_plan_tool_result(
+        state,
+        tool,
+        {"domain": "camera", "service": "snapshot", "entity_id": "camera.front"},
+        succeeded=True,
+    )
+    assert policy.skill_results_ready_to_answer(state) is True
+    assert policy.skill_plan_results_ready_to_answer(state) is False
+
+    messages: list[dict[str, object]] = []
+    policy.inject_loop_context(messages, state)
+    injected = str(messages[-1]["content"])
+    assert "ANSWER NOW from tool results; paginate" not in injected
+    assert "Explore step done" in injected
+
+    empty = policy.build_empty_response_nudge(state)
+    assert "skill plan finished" not in empty
+    assert "SKILL RESULTS READY" not in empty
+    stuck = policy.build_reasoning_stuck_nudge(state)
+    assert "skill plan finished" not in stuck
+    assert "SKILL RESULTS READY" not in stuck
+
+    # Titled plans keep the strong answer-now directive.
+    titled = policy.LoopState()
+    policy.initialize_loop_plan(
+        titled,
+        goal="what's the news",
+        route="chat",
+        skill_title="News briefing",
+        tool_steps=[{"toolName": "mcp_news__news_curate"}],
+    )
+    policy.record_plan_tool_result(titled, "mcp_news__news_curate", {}, succeeded=True)
+    assert policy.skill_plan_results_ready_to_answer(titled) is True
+    assert "SKILL RESULTS READY" in policy.build_empty_response_nudge(titled)
 
 
 def test_titled_skill_plan_is_not_explore_mode() -> None:

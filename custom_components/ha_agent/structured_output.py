@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+def strip_json_fence(content: str) -> str:
+    """Remove optional markdown code fences around JSON LLM output."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text
+
 
 ROUTE_SCHEMA: dict[str, Any] = {
     "type": "object",

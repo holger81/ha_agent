@@ -44,10 +44,32 @@ def record_turn(
             "entry_id": entry_id,
             "conversation_id": trace.conversation_id,
             "timestamp": item.get("timestamp"),
-            "turn": item,
+            # Compact summary only — full turn stays in the activity buffer.
+            "summary": _turn_event_summary(item),
         },
     )
     return item
+
+
+def _turn_event_summary(item: dict[str, Any]) -> dict[str, Any]:
+    """Compact turn fields safe to broadcast on the event bus."""
+    tool_calls = item.get("tool_calls") or []
+    return {
+        "user_text": str(item.get("user_text") or "")[:200],
+        "assistant_text": str(item.get("assistant_text") or "")[:200],
+        "conversation_id": item.get("conversation_id"),
+        "route": item.get("route"),
+        "domain_hint": item.get("domain_hint"),
+        "outcome": item.get("outcome"),
+        "tool_errors": item.get("tool_errors"),
+        "iterations": item.get("iterations"),
+        "tool_count": len(tool_calls) if isinstance(tool_calls, list) else 0,
+        "matched_skill_ids": list(item.get("matched_skill_ids") or [])[:8],
+        "verifier_verdict": item.get("verifier_verdict"),
+        "stuck_kind": item.get("stuck_kind"),
+        "agent_user_display_name": item.get("agent_user_display_name"),
+        "identity_source": item.get("identity_source"),
+    }
 
 
 @callback

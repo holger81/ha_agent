@@ -2,8 +2,85 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+# Hard caps for learned skill text that ends up in the system prompt.
+MAX_SKILL_TITLE_CHARS = 64
+MAX_SKILL_DESCRIPTION_CHARS = 512
+MAX_SKILL_BODY_CHARS = 4000
+MAX_SKILL_TRIGGERS = 12
+MAX_SKILL_TRIGGER_CHARS = 80
+MAX_ADDITIONAL_WORKFLOW_SECTIONS = 3
+
+# Lines that look like chat-role / prompt-injection markers are dropped from
+# skill bodies before they can be rendered into the system prompt.
+_INSTRUCTION_MARKER_LINE = re.compile(
+    r"^\s*(?:"
+    r"(?:system|assistant|user|developer|tool)\s*:"
+    r"|<\|"
+    r"|\[/?inst\]"
+    r"|<<\s*/?sys\s*>>"
+    r"|system\s*\(internal"
+    r"|ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def cap_triggers(raw: Any, *, limit: int = MAX_SKILL_TRIGGERS) -> list[str]:
+    """Return deduplicated, length-capped trigger phrases (at most ``limit``)."""
+    if isinstance(raw, str):
+        items: list[Any] = [raw]
+    elif isinstance(raw, list | tuple):
+        items = list(raw)
+    else:
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if item is None:
+            continue
+        text = " ".join(str(item).split())[:MAX_SKILL_TRIGGER_CHARS].strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def sanitize_skill_body(body: Any) -> str:
+    """Strip role/instruction marker lines and cap the body length."""
+    text = str(body or "")
+    kept = [
+        line for line in text.splitlines() if not _INSTRUCTION_MARKER_LINE.match(line)
+    ]
+    cleaned = "\n".join(kept).strip()
+    return cleaned[:MAX_SKILL_BODY_CHARS].rstrip()
+
+
+def validate_skill_fields(skill: Skill) -> Skill:
+    """Normalize and cap skill text fields in place before persisting.
+
+    Title/description/body are coerced to stripped strings and truncated;
+    triggers are deduplicated and capped; role-marker lines are removed from
+    the body. Returns the same ``Skill`` for chaining.
+    """
+    skill.title = " ".join(str(skill.title or "").split())[:MAX_SKILL_TITLE_CHARS]
+    skill.description = str(skill.description or "").strip()[
+        :MAX_SKILL_DESCRIPTION_CHARS
+    ]
+    skill.body = sanitize_skill_body(skill.body)
+    skill.triggers = cap_triggers(skill.triggers)
+    skill.tool_steps = [
+        step for step in (skill.tool_steps or []) if isinstance(step, dict)
+    ]
+    skill.preconditions = str(skill.preconditions or "")[:MAX_SKILL_BODY_CHARS]
+    return skill
 
 
 @dataclass(slots=True)

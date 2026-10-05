@@ -10,6 +10,7 @@ import aiohttp
 from homeassistant.core import HomeAssistant, callback
 
 from ..activity import list_turns
+from ..api.helpers import track_entry_task
 from ..config_helpers import (
     AgentConfig,
     LlmBackend,
@@ -33,7 +34,7 @@ from ..llm_server import (
     probe_server,
 )
 from ..skills.models import TurnTrace
-from .cases import list_eval_cases_for_entry
+from .cases import async_list_eval_cases_for_entry
 from .mcp_mock import EvalMcpClient
 from .models import (
     EVAL_TASKS,
@@ -160,7 +161,7 @@ async def run_eval_suite(
     if existing and existing.run.status == "running" and existing.run.id != "pending":
         raise RuntimeError("An eval run is already in progress for this entry.")
 
-    run = store.create_run(entry_id)
+    run = await hass.async_add_executor_job(store.create_run, entry_id)
     state = EvalRunState(run=run)
     state_store[entry_id] = state
 
@@ -319,7 +320,9 @@ async def run_eval_suite(
                 )
 
             selected_tasks = list(tasks or EVAL_TASKS)
-            cases = list_eval_cases_for_entry(hass, entry_id, tasks=selected_tasks)
+            cases = await async_list_eval_cases_for_entry(
+                hass, entry_id, tasks=selected_tasks
+            )
             if not cases:
                 raise RuntimeError("No eval cases matched the requested tasks.")
             total_cases = len(cases)
@@ -456,7 +459,10 @@ async def run_eval_suite(
                 phase="failed",
                 message=run.error or "Eval failed.",
             )
-        store.finish_run(run)
+        try:
+            await hass.async_add_executor_job(store.finish_run, run)
+        except Exception as err:
+            LOGGER.exception("Could not persist eval run %s: %s", run.id, err)
         state_store[entry_id] = state
 
     return run
@@ -681,7 +687,7 @@ async def benchmark_single_model(
         timeout=chat_backend.timeout,
         thinking_level="off",
     )
-    cases = list_eval_cases_for_entry(hass, entry_id)
+    cases = await async_list_eval_cases_for_entry(hass, entry_id)
     case_scores: list[EvalCaseScore] = []
 
     async with aiohttp.ClientSession() as session:
@@ -760,7 +766,7 @@ async def start_eval_background(
             preload_models_flag=preload_models_flag,
         )
 
-    hass.async_create_task(_run())
+    track_entry_task(hass, entry_id, _run(), name=f"ha_agent_eval_{entry_id}")
     return placeholder
 
 

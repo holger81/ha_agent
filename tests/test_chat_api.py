@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 async def _fake_run_agent(*_args, **_kwargs):
@@ -182,3 +180,68 @@ async def test_stream_chat_fires_delta_and_done_events() -> None:
     assert fired[4][1]["last_route"] == "chat"
     assert fired[4][1]["turn_meta"]["route"] == "news"
     assert "classification" in fired[4][1]["turn_meta"]
+
+
+@pytest.mark.asyncio
+async def test_start_chat_reraises_cancelled_error_explicitly() -> None:
+    """Cancelled turns finish the chat event then raise CancelledError()."""
+    chat = _load_chat_module()
+
+    entry = MagicMock()
+    entry.entry_id = "entry-cancel"
+    entry.data = {}
+    entry.domain = "ha_agent"
+
+    hass = MagicMock()
+    hass.data = {}
+    hass.bus = MagicMock()
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_get_entry.return_value = entry
+
+    def create_task(coro, name=None):
+        return asyncio.create_task(coro, name=name)
+
+    hass.async_create_task = create_task
+
+    async def _canceling_agent(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+        yield  # pragma: no cover — make this an async generator
+
+    with (
+        patch.object(chat, "get_entry", return_value=entry),
+        patch.object(
+            chat,
+            "get_agent_config",
+            return_value=MagicMock(history_turns=6, max_iterations=8),
+        ),
+        patch.object(
+            chat,
+            "get_llm_backend",
+            return_value=MagicMock(timeout=120),
+        ),
+        patch.object(
+            chat,
+            "get_mcp_config",
+            return_value=MagicMock(timeout=120),
+        ),
+        patch.object(chat, "get_router_config", return_value=MagicMock()),
+        patch.object(chat, "get_skills_config", return_value=MagicMock()),
+        patch.object(chat, "collect_exposed_entities", new=AsyncMock(return_value=[])),
+        patch.object(chat, "LlmClient", return_value=MagicMock()),
+        patch.object(chat, "McpProxyClient", return_value=MagicMock()),
+        patch.object(chat, "run_agent", new=_canceling_agent),
+        patch.object(chat, "get_agent_status", return_value={}),
+        patch.object(chat, "upsert_thread"),
+        patch.object(chat, "finish_chat_turn") as finish,
+    ):
+        task = chat.start_chat(
+            hass,
+            entry_id="entry-cancel",
+            conversation_id="conv-cancel",
+            text="hi",
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    finish.assert_called_once()
+    assert finish.call_args.kwargs["done_payload"] == {"cancelled": True}

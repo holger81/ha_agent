@@ -45,6 +45,14 @@ def _load_module(relative: str):
     else:
         path = COMPONENT / f"{relative}.py"
     _ensure_ha_stubs()
+    if "homeassistant.exceptions" not in sys.modules:
+        hexc = types.ModuleType("homeassistant.exceptions")
+
+        class HomeAssistantError(Exception):
+            pass
+
+        hexc.HomeAssistantError = HomeAssistantError
+        sys.modules["homeassistant.exceptions"] = hexc
     if "ha_agent.const" not in sys.modules:
         spec = importlib.util.spec_from_file_location(
             "ha_agent.const", COMPONENT / "const.py"
@@ -53,6 +61,14 @@ def _load_module(relative: str):
         mod = importlib.util.module_from_spec(spec)
         sys.modules["ha_agent.const"] = mod
         spec.loader.exec_module(mod)
+    if relative == "identity/store" and "ha_agent.skills.store" not in sys.modules:
+        if "ha_agent.skills" not in sys.modules:
+            sk = types.ModuleType("ha_agent.skills")
+            sk.__path__ = [str(COMPONENT / "skills")]  # type: ignore[attr-defined]
+            sys.modules["ha_agent.skills"] = sk
+        stub = types.ModuleType("ha_agent.skills.store")
+        stub.validate_entry_id = lambda entry_id: str(entry_id)
+        sys.modules["ha_agent.skills.store"] = stub
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -135,6 +151,8 @@ async def test_resolve_console_user_from_login(
     hass.data = {}
     hass.config = MagicMock()
     hass.config.path.return_value = str(identity_store._db_path.parent)
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_get_entry.return_value = None
 
     store_map = {"entry-1": identity_store}
     hass.data["ha_agent"] = {"identity_stores": store_map}
@@ -189,6 +207,8 @@ async def test_resolve_assist_without_voice_uses_guest(
     hass.data = {"ha_agent": {"identity_stores": {"entry-1": identity_store}}}
     hass.config = MagicMock()
     hass.config.path.return_value = str(identity_store._db_path.parent)
+    hass.config_entries = MagicMock()
+    hass.config_entries.async_get_entry.return_value = None
 
     resolved = await resolve_agent_user(
         hass,
@@ -197,3 +217,37 @@ async def test_resolve_assist_without_voice_uses_guest(
     )
     assert resolved.user.kind == UserKind.GUEST
     assert resolved.source == IdentitySource.ASSIST_GUEST
+
+
+def test_parse_voice_identity_unsigned_low_confidence() -> None:
+    payload = parse_voice_identity(
+        'HA_AGENT_IDENTITY: {"speaker_id": "abc", "confidence": 0.91}',
+        bridge_secret="s3cret",
+    )
+    assert payload is not None
+    assert payload["confidence"] == 0.0
+    assert payload.get("_signature_ok") is False
+
+
+def test_parse_voice_identity_valid_hmac() -> None:
+    import hashlib
+    import hmac
+    import json
+
+    verify_identity_signature = voicebm_mod.verify_identity_signature
+    body = {"speaker_id": "abc", "confidence": 0.91}
+    secret = "s3cret"
+    sig = hmac.new(
+        secret.encode(),
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    body["signature"] = sig
+    assert verify_identity_signature(body, secret=secret)
+    payload = parse_voice_identity(
+        "HA_AGENT_IDENTITY: " + json.dumps(body),
+        bridge_secret=secret,
+    )
+    assert payload is not None
+    assert payload.get("_signature_ok") is True
+    assert payload["confidence"] == 0.91

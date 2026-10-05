@@ -270,3 +270,65 @@ def test_delete_user_memory(memory_store: PersistentMemoryStore) -> None:
     memory_store.set_user("user-1", "email.default_mailbox", "Work")
     assert memory_store.delete_user("user-1", "email.default_mailbox") is True
     assert memory_store.get_user("user-1", "email.default_mailbox") is None
+
+
+def test_normalize_key_case_and_spaces(tmp_path):
+    """Keys are normalized once in get/set/delete."""
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
+
+    COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
+    if "ha_agent" not in sys.modules:
+        pkg = types.ModuleType("ha_agent")
+        pkg.__path__ = [str(COMPONENT)]
+        sys.modules["ha_agent"] = pkg
+    if "ha_agent.persistent_memory" not in sys.modules:
+        pm = types.ModuleType("ha_agent.persistent_memory")
+        pm.__path__ = [str(COMPONENT / "persistent_memory")]
+        sys.modules["ha_agent.persistent_memory"] = pm
+    if "homeassistant.core" not in sys.modules:
+        ha = types.ModuleType("homeassistant.core")
+        ha.HomeAssistant = object
+        sys.modules["homeassistant.core"] = ha
+    if "homeassistant.exceptions" not in sys.modules:
+        hexc = types.ModuleType("homeassistant.exceptions")
+        class HomeAssistantError(Exception):
+            pass
+        hexc.HomeAssistantError = HomeAssistantError
+        sys.modules["homeassistant.exceptions"] = hexc
+    if "ha_agent.skills" not in sys.modules:
+        sk = types.ModuleType("ha_agent.skills")
+        sk.__path__ = [str(COMPONENT / "skills")]
+        sys.modules["ha_agent.skills"] = sk
+    if "ha_agent.const" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "ha_agent.const", COMPONENT / "const.py"
+        )
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["ha_agent.const"] = m
+        spec.loader.exec_module(m)
+    if "ha_agent.skills.store" not in sys.modules:
+        stub = types.ModuleType("ha_agent.skills.store")
+        stub.validate_entry_id = lambda x: x
+        sys.modules["ha_agent.skills.store"] = stub
+    for name in ("models", "store"):
+        mod = f"ha_agent.persistent_memory.{name}"
+        if mod not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                mod, COMPONENT / "persistent_memory" / f"{name}.py"
+            )
+            m = importlib.util.module_from_spec(spec)
+            sys.modules[mod] = m
+            spec.loader.exec_module(m)
+    PersistentMemoryStore = sys.modules[
+        "ha_agent.persistent_memory.store"
+    ].PersistentMemoryStore
+    store = PersistentMemoryStore(tmp_path / "pm.db")
+    store.connect()
+    store.set_system("My Key", "value")
+    assert store.get_system("my_key") is not None
+    assert store.get_system("My Key").value == "value"
+    assert store.delete_system("MY KEY") is True
+    store.close()

@@ -132,7 +132,7 @@ class _HaAgentModelSelectBase(SelectEntity):
                     model=option,
                 )
 
-        await self.hass.config_entries.async_reload(self._entry.entry_id)
+        # Config entry update listener handles reload.
 
 
 class HaAgentChatModelSelect(_HaAgentModelSelectBase):
@@ -200,4 +200,4 @@ class HaAgentThinkingLevelSelect(SelectEntity):
         data = dict(self._entry.data)
         data[CONF_LLM_THINKING_LEVEL] = option
         self.hass.config_entries.async_update_entry(self._entry, data=data)
-        await self.hass.config_entries.async_reload(self._entry.entry_id)
+        # Config entry update listener handles reload.

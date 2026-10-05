@@ -383,20 +383,28 @@ def get_router_config(entry: ConfigEntry) -> RouterConfig:
     )
 
 
+def _as_int(value: object, default: int) -> int:
+    """Coerce config values to int; tolerate bool/float/str and bad input."""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def get_agent_config(entry: ConfigEntry) -> AgentConfig:
     """Return agent settings for the config entry."""
     data = entry.data
     return AgentConfig(
         system_prompt=data.get(CONF_AGENT_SYSTEM_PROMPT, DEFAULT_AGENT_SYSTEM_PROMPT),
         tool_instructions=data.get(CONF_TOOL_INSTRUCTIONS, DEFAULT_TOOL_INSTRUCTIONS),
-        max_iterations=int(
-            data.get(CONF_MAX_AGENT_ITERATIONS, DEFAULT_MAX_AGENT_ITERATIONS)
+        max_iterations=_as_int(
+            data.get(CONF_MAX_AGENT_ITERATIONS), DEFAULT_MAX_AGENT_ITERATIONS
         ),
-        history_turns=int(
-            data.get(
-                CONF_CONVERSATION_HISTORY_TURNS,
-                DEFAULT_CONVERSATION_HISTORY_TURNS,
-            )
+        history_turns=_as_int(
+            data.get(CONF_CONVERSATION_HISTORY_TURNS),
+            DEFAULT_CONVERSATION_HISTORY_TURNS,
         ),
         enable_streaming=bool(
             data.get(CONF_CONVERSATION_ENABLE_STREAMING, True),
@@ -410,15 +418,11 @@ def get_agent_config(entry: ConfigEntry) -> AgentConfig:
         prepass_enabled=bool(
             data.get(CONF_PREPAS_ENABLED, DEFAULT_PREPAS_ENABLED),
         ),
-        max_loop_tools=int(
-            data.get(CONF_MAX_LOOP_TOOLS, DEFAULT_MAX_LOOP_TOOLS),
+        max_loop_tools=_as_int(data.get(CONF_MAX_LOOP_TOOLS), DEFAULT_MAX_LOOP_TOOLS),
+        turn_token_budget=_as_int(
+            data.get(CONF_TURN_TOKEN_BUDGET), DEFAULT_TURN_TOKEN_BUDGET
         ),
-        turn_token_budget=int(
-            data.get(CONF_TURN_TOKEN_BUDGET, DEFAULT_TURN_TOKEN_BUDGET),
-        ),
-        max_replans=int(
-            data.get(CONF_MAX_REPLANS, DEFAULT_MAX_REPLANS),
-        ),
+        max_replans=_as_int(data.get(CONF_MAX_REPLANS), DEFAULT_MAX_REPLANS),
     )
 
 

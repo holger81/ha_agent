@@ -13,7 +13,8 @@ from ..config_helpers import LlmBackend
 from ..const import LOGGER
 from ..llm_client import LlmClient
 from ..status import update_agent_status
-from .models import Skill, SkillRunResult, TurnTrace
+from .files import mirror_skill_to_file
+from .models import Skill, SkillRunResult, TurnTrace, validate_skill_fields
 from .observer import is_discovery_tool
 from .repair import detect_repairable_issues
 from .store import get_skill_store
@@ -165,24 +166,49 @@ async def evaluate_skill_use(
     if improvement is None:
         return
 
-    def _save() -> Skill:
-        store.save_revision(skill, reason="Before LLM evaluation improvement")
-        skill.title = improvement.get("title", skill.title)
-        skill.description = improvement.get("description", skill.description)
-        if (triggers := improvement.get("triggers")) and isinstance(triggers, list):
-            skill.triggers = [str(item) for item in triggers]
-        if body := improvement.get("body"):
-            skill.body = str(body)
-        if (tool_steps := improvement.get("tool_steps")) and isinstance(
-            tool_steps, list
-        ):
-            skill.tool_steps = [item for item in tool_steps if isinstance(item, dict)]
-        skill.version += 1
-        skill.last_improved_at = time.time()
-        skill.last_evaluation_at = time.time()
-        return store.update_skill(skill)
+    def _save() -> Skill | None:
+        before = Skill(
+            id=skill.id,
+            slug=skill.slug,
+            title=skill.title,
+            description=skill.description,
+            triggers=list(skill.triggers),
+            body=skill.body,
+            tool_steps=[dict(step) for step in skill.tool_steps],
+            enabled=skill.enabled,
+            created_at=skill.created_at,
+            last_used_at=skill.last_used_at,
+            use_count=skill.use_count,
+            success_count=skill.success_count,
+            last_improved_at=skill.last_improved_at,
+            last_evaluation_at=skill.last_evaluation_at,
+            version=skill.version,
+            slots=list(skill.slots),
+            preconditions=skill.preconditions,
+            parent_id=skill.parent_id,
+            route_scope=skill.route_scope,
+            llm_model=skill.llm_model,
+            llm_base_url=skill.llm_base_url,
+            score=skill.score,
+            is_builtin=skill.is_builtin,
+        )
+        applied = _apply_improvement_fields(skill, improvement)
+        if applied is None:
+            return None
+        applied.version = before.version + 1
+        applied.last_improved_at = time.time()
+        applied.last_evaluation_at = time.time()
+        _revision_id, saved = store.save_revision_and_update(
+            before,
+            applied,
+            reason="Before LLM evaluation improvement",
+        )
+        return saved
 
     saved = await hass.async_add_executor_job(_save)
+    if saved is None:
+        return
+    await hass.async_add_executor_job(mirror_skill_to_file, hass, entry_id, saved)
     update_agent_status(
         hass,
         entry_id,
@@ -264,4 +290,74 @@ def _parse_eval_response(
         return None
     if force_improve and not data.get("improve"):
         data["improve"] = True
+    if not _improvement_fields_valid(data):
+        return None
     return data
+
+
+def _improvement_fields_valid(data: dict[str, Any]) -> bool:
+    """Reject malformed improvement payloads before they touch the store."""
+    if not data.get("improve"):
+        return True
+    title = data.get("title")
+    description = data.get("description")
+    body = data.get("body")
+    if title is not None and not isinstance(title, str):
+        return False
+    if description is not None and not isinstance(description, str):
+        return False
+    if body is not None and not isinstance(body, str):
+        return False
+    triggers = data.get("triggers")
+    if triggers is not None and not isinstance(triggers, list):
+        return False
+    tool_steps = data.get("tool_steps")
+    if tool_steps is not None and not isinstance(tool_steps, list):
+        return False
+    # Require at least one improvable text field when improve=true.
+    has_text = any(
+        isinstance(data.get(key), str) and str(data.get(key)).strip()
+        for key in ("title", "description", "body")
+    )
+    has_list = bool(triggers) or bool(tool_steps)
+    return has_text or has_list
+
+
+def _apply_improvement_fields(
+    skill: Skill, improvement: dict[str, Any]
+) -> Skill | None:
+    """Copy validated improvement fields onto a skill; return None if empty."""
+    if not _improvement_fields_valid(improvement):
+        return None
+    if title := improvement.get("title"):
+        skill.title = str(title)
+    if description := improvement.get("description"):
+        skill.description = str(description)
+    if (triggers := improvement.get("triggers")) and isinstance(triggers, list):
+        skill.triggers = [str(item) for item in triggers]
+    if body := improvement.get("body"):
+        skill.body = str(body)
+    if (tool_steps := improvement.get("tool_steps")) is not None:
+        skill.tool_steps = _coerce_improvement_tool_steps(tool_steps)
+    validate_skill_fields(skill)
+    return skill
+
+
+def _coerce_improvement_tool_steps(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    steps: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("toolName") or item.get("name") or "").strip()
+        if not name:
+            continue
+        arguments = item.get("arguments")
+        steps.append(
+            {
+                "toolName": name,
+                "arguments": arguments if isinstance(arguments, dict) else {},
+            }
+        )
+    return steps

@@ -19,8 +19,10 @@ _DISCOVERY_TOOL = re.compile(
     re.IGNORECASE,
 )
 _TOOL_OUTPUT_MAX_CHARS = 10_000
+_TOOL_ERROR_MAX_CHARS = 2_000
 _DISCOVERY_OUTPUT_MAX_CHARS = 6_000
 _DISCOVERY_MAX_TOOLS = 40
+_FAILED_OUTPUT_SCAN_CHARS = 600
 _FAILED_OUTPUT_PATTERN = re.compile(
     r"(?i)\b("
     r"failed to deserialize|missing field [\w']+|unknown tool|"
@@ -31,6 +33,18 @@ _FAILED_OUTPUT_PATTERN = re.compile(
     r")\b"
 )
 _MISSING_FIELD_PATTERN = re.compile(r"missing field ['\"]?(\w+)", re.IGNORECASE)
+
+
+class AmbiguousEntityError(ValueError):
+    """Raised when a display name matches more than one exposed entity."""
+
+    def __init__(self, candidate: str, matches: list[str]) -> None:
+        self.candidate = candidate
+        self.matches = matches
+        preview = ", ".join(matches[:6])
+        if len(matches) > 6:
+            preview += f", … (+{len(matches) - 6} more)"
+        super().__init__(f"Ambiguous entity {candidate!r}; matches: {preview}")
 
 
 def classify_tool_error(output: str) -> tuple[str | None, str, list[str]]:
@@ -108,8 +122,8 @@ def _resolve_entity_id(
             exact_ids.append(entity_id)
     if len(exact_ids) == 1:
         return exact_ids[0]
-    if exact_ids:
-        return exact_ids[0]
+    if len(exact_ids) > 1:
+        raise AmbiguousEntityError(candidate, exact_ids)
 
     # Partial entity_id prefixes from small models, e.g. light.dining_room →
     # light.dining_room_lights_ceiling when uniquely matched.
@@ -125,11 +139,6 @@ def _resolve_entity_id(
         return candidate
 
     return candidate
-
-
-_MCP_ROUTE_DOMAINS = frozenset(
-    {"smart-home", "smart_home", "email", "news", "mcp", "home"}
-)
 
 
 def _domain_from_entity_id(entity_id: Any) -> str | None:
@@ -194,13 +203,16 @@ def _normalize_ha_call_service_arguments(
         )
     entity_domain = _domain_from_entity_id(normalized.get("entity_id"))
     raw_domain = normalized.get("domain")
-    domain_key = (
-        str(raw_domain).strip().lower().replace("_", "-")
-        if raw_domain is not None
-        else ""
-    )
-    if entity_domain and (not domain_key or domain_key in _MCP_ROUTE_DOMAINS):
-        normalized["domain"] = entity_domain
+    domain_key = str(raw_domain).strip().lower() if raw_domain is not None else ""
+    # Prefer the entity_id domain over MCP/soft-route labels (smart-home,
+    # email, news, or any other turn-route string) and over empty domain.
+    if entity_domain:
+        entity_aliases = {
+            entity_domain.lower(),
+            entity_domain.lower().replace("_", "-"),
+        }
+        if not domain_key or domain_key not in entity_aliases:
+            normalized["domain"] = entity_domain
     return normalized
 
 
@@ -349,15 +361,20 @@ async def execute_tool(
     call: ToolCall,
     *,
     exposed_entities: list[dict[str, Any]] | None = None,
-) -> str:
-    """Execute a single LLM tool call via MCP tools/call."""
+) -> tuple[str, dict[str, Any]]:
+    """Execute a single LLM tool call via MCP tools/call.
+
+    Returns ``(output, normalized_arguments)`` so callers can record the
+    arguments actually sent after entity/domain normalization.
+    """
+    tool_args: dict[str, Any] = {}
     try:
         tool_name, tool_args = _normalize_tool_call(
             call,
             exposed_entities=exposed_entities,
         )
     except ValueError as err:
-        return f"Tool error: {err}"
+        return f"Tool error: {err}", tool_args
 
     upstream = None
     if tool_name == "callTool" and isinstance(tool_args, dict):
@@ -368,19 +385,44 @@ async def execute_tool(
         return (
             "Tool error: Unknown or unavailable tool. Discover tools with "
             "searchToolsForDomain / searchTool, then callTool with an exact "
-            "toolName from that result. Do not retry this tool name."
+            "toolName from that result. Do not retry this tool name.",
+            tool_args,
         )
 
     try:
         result = await mcp_client.call_tool(tool_name, tool_args)
     except HomeAssistantError as err:
-        return f"Tool error: {err}"
+        return f"Tool error: {err}", tool_args
     except Exception as err:
-        return f"Tool error: {err}"
+        return f"Tool error: {err}", tool_args
 
     if isinstance(result, str):
-        return classify_tool_output(result)
-    return classify_tool_output(json.dumps(result, ensure_ascii=False))
+        return classify_tool_output(result), tool_args
+    return classify_tool_output(json.dumps(result, ensure_ascii=False)), tool_args
+
+
+def _structured_error_text(data: Any) -> str | None:
+    """Return a string error field from a structured tool payload, if any."""
+    if not isinstance(data, dict):
+        return None
+    for key in ("error", "message", "detail", "errorMessage", "error_message"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _should_mark_failed_output(text: str) -> bool:
+    """True when failure markers are trustworthy (short / head / error field)."""
+    if len(text) < _FAILED_OUTPUT_SCAN_CHARS:
+        return bool(_FAILED_OUTPUT_PATTERN.search(text))
+    if _FAILED_OUTPUT_PATTERN.match(text):
+        return True
+    with suppress(json.JSONDecodeError):
+        err_text = _structured_error_text(json.loads(text))
+        if err_text and _FAILED_OUTPUT_PATTERN.search(err_text):
+            return True
+    return False
 
 
 def classify_tool_output(output: str) -> str:
@@ -390,7 +432,7 @@ def classify_tool_output(output: str) -> str:
         return text
     if text.startswith("Tool error:"):
         return text
-    if _FAILED_OUTPUT_PATTERN.search(text):
+    if _should_mark_failed_output(text):
         return f"Tool error: {text}"
     return text
 
@@ -572,7 +614,7 @@ def compact_discovery_tool_output(
 def compact_tool_output(tool_name: str, output: str) -> str:
     """Bound tool result size before it is appended to the LLM conversation."""
     if output.startswith("Tool error:"):
-        return output
+        return _truncate_text(output, max_chars=_TOOL_ERROR_MAX_CHARS)
     if is_discovery_tool_name(tool_name):
         return compact_discovery_tool_output(output, tool_name=tool_name)
     return _truncate_text(output, max_chars=_TOOL_OUTPUT_MAX_CHARS)

@@ -232,6 +232,32 @@ def test_prepass_aligns_from_custom_skill_scope_alone() -> None:
     assert result.route_resolution.domain_hint == "digest"
 
 
+def test_prepass_soft_route_string_becomes_chat_domain_hint() -> None:
+    """Routes outside the TaskRoute map become soft domain hints on chat."""
+    prepass = _load("prepass")
+    keyword = SimpleNamespace(
+        summary="default chat",
+        domain_hint=None,
+        route=prepass.TaskRoute.CHAT,
+    )
+    result = prepass._parse_prepass_payload(
+        {
+            "route": "email",
+            "domain_hint": "",
+            "complexity": "single",
+            "skill_slug": "",
+            "slot_bindings": {},
+        },
+        catalog_by_slug={},
+        keyword_decision=keyword,
+        heuristic=prepass.Complexity.SINGLE,
+        user_text="check my inbox",
+    )
+    assert result is not None
+    assert result.route_resolution.route == prepass.TaskRoute.CHAT
+    assert result.route_resolution.domain_hint == "email"
+
+
 def test_prepass_trusts_intent_skill_despite_weak_lexical_overlap() -> None:
     prepass = _load("prepass")
     models = _load("skills.models")

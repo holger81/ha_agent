@@ -102,7 +102,8 @@ def _parse_prepass_payload(
     domain_hint = normalize_soft_domain_hint(
         str(data.get("domain_hint") or "").strip().lower() or None
     )
-    if route_value in {"email", "news"}:
+    # Any route outside the TaskRoute map is a soft domain hint on chat.
+    if route_value and route_value not in _ROUTE_VALUE_TO_TASK:
         domain_hint = domain_hint or route_value
         route_value = "chat"
     # Fill soft-domain hint from user text or a prior soft topic on follow-ups.

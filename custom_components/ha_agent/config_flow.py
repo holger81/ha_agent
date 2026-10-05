@@ -133,7 +133,8 @@ def _llm_schema(
             ): model_field,
             vol.Optional(
                 CONF_LLM_API_KEY,
-                default=defaults.get(CONF_LLM_API_KEY, ""),
+                # Never prefill secrets; blank submission keeps the stored value.
+                default="",
             ): selector.TextSelector(
                 selector.TextSelectorConfig(
                     type=selector.TextSelectorType.PASSWORD,
@@ -203,7 +204,8 @@ def _mcp_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             ),
             vol.Optional(
                 CONF_MCP_BEARER_TOKEN,
-                default=defaults.get(CONF_MCP_BEARER_TOKEN, ""),
+                # Never prefill secrets; blank submission keeps the stored value.
+                default="",
             ): selector.TextSelector(
                 selector.TextSelectorConfig(
                     type=selector.TextSelectorType.PASSWORD,
@@ -397,10 +399,14 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 LOGGER.warning("LLM connection check failed: %s", err)
                 errors["base"] = "llm_connect_failed"
             else:
+                stored_key = self._data.get(CONF_LLM_API_KEY)
                 self._data.update(user_input)
                 self._data[CONF_LLM_BASE_URL] = base_url
-                if not api_key and CONF_LLM_API_KEY in self._data:
-                    self._data.pop(CONF_LLM_API_KEY, None)
+                if not api_key:
+                    if stored_key:
+                        self._data[CONF_LLM_API_KEY] = stored_key
+                    else:
+                        self._data.pop(CONF_LLM_API_KEY, None)
                 return await self.async_step_mcp()
 
         client = LlmClient(async_create_clientsession(self.hass))
@@ -436,11 +442,15 @@ class HaAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 LOGGER.warning("MCP connection check failed: %s", err)
                 errors["base"] = "mcp_connect_failed"
             else:
+                stored_token = self._data.get(CONF_MCP_BEARER_TOKEN)
                 self._data.update(user_input)
                 self._data[CONF_MCP_URL] = mcp_url
                 token = user_input.get(CONF_MCP_BEARER_TOKEN)
                 if not token:
-                    self._data.pop(CONF_MCP_BEARER_TOKEN, None)
+                    if stored_token:
+                        self._data[CONF_MCP_BEARER_TOKEN] = stored_token
+                    else:
+                        self._data.pop(CONF_MCP_BEARER_TOKEN, None)
                 if not self._reconfigure_entry:
                     await self.async_set_unique_id(f"{llm_url}|{mcp_url}")
                     self._abort_if_unique_id_configured()

@@ -535,23 +535,25 @@ def merge_parent_skill_draft(
             merged_steps.append(step)
             parent_tool_names.add(name)
 
-    merged_triggers: list[str] = []
-    seen_triggers: set[str] = set()
-    for trigger in [*parent.triggers, *enriched.triggers]:
-        key = trigger.strip().lower()
-        if key and key not in seen_triggers:
-            seen_triggers.add(key)
-            merged_triggers.append(trigger.strip())
+    from .models import (
+        MAX_ADDITIONAL_WORKFLOW_SECTIONS,
+        MAX_SKILL_TITLE_CHARS,
+        cap_triggers,
+    )
+
+    merged_triggers = cap_triggers([*parent.triggers, *enriched.triggers])
 
     body = parent.body.rstrip()
     addition = enriched.body.strip()
     if addition and addition not in body:
-        body = f"{body}\n\n## Additional workflow\n\n{addition}"
+        existing_sections = body.count("\n## Additional workflow\n")
+        if existing_sections < MAX_ADDITIONAL_WORKFLOW_SECTIONS:
+            body = f"{body}\n\n## Additional workflow\n\n{addition}"
 
     return SkillDraft(
-        title=parent.title,
+        title=(parent.title or "")[:MAX_SKILL_TITLE_CHARS],
         description=parent.description or enriched.description,
-        triggers=merged_triggers or enriched.triggers,
+        triggers=merged_triggers or cap_triggers(enriched.triggers),
         body=body,
         tool_steps=merged_steps,
         slots=parent.slots or enriched.slots,

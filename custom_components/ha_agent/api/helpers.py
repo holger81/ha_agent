@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from typing import Any, TypeVar
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -24,15 +28,59 @@ from ..const import (
     CONF_IDENTITY_GUEST_TIE_MARGIN,
     CONF_IDENTITY_MIN_UTTERANCE_MS,
     CONF_IDENTITY_VOICE_ENABLED,
+    DATA_KEY,
     DOMAIN,
 )
 from ..role_registry import ModelRole, build_role_registry, friendly_role_label
+
+_T = TypeVar("_T")
+ENTRY_TASKS_KEY = "entry_tasks"
 
 
 def require_admin(connection) -> None:
     """Raise if the connection user is not an admin."""
     if not connection.user.is_admin:
         raise HomeAssistantError("Admin access required")
+
+
+def track_entry_task(
+    hass: HomeAssistant,
+    entry_id: str,
+    coro: Coroutine[Any, Any, _T],
+    *,
+    name: str | None = None,
+) -> asyncio.Task[_T]:
+    """Create a task tied to a config entry; cancelled on unload.
+
+    Callers that start background work for an entry (e.g. console chat turns in
+    ``api/chat.py``) should use this instead of bare ``hass.async_create_task``
+    so unload can cancel in-flight work and clear ``hass.data``.
+    """
+    domain_data = hass.data.setdefault(DATA_KEY, {})
+    by_entry: dict[str, set[asyncio.Task[Any]]] = domain_data.setdefault(
+        ENTRY_TASKS_KEY, {}
+    )
+    tasks = by_entry.setdefault(entry_id, set())
+    task = hass.async_create_task(coro, name=name)
+
+    def _done(finished: asyncio.Task[Any]) -> None:
+        tasks.discard(finished)
+        if not tasks:
+            by_entry.pop(entry_id, None)
+
+    task.add_done_callback(_done)
+    tasks.add(task)
+    return task
+
+
+def cancel_entry_tasks(hass: HomeAssistant, entry_id: str) -> None:
+    """Cancel all tracked tasks for an entry (call from unload)."""
+    domain_data = hass.data.get(DATA_KEY, {})
+    by_entry: dict[str, set[asyncio.Task[Any]]] = domain_data.get(ENTRY_TASKS_KEY, {})
+    tasks = by_entry.pop(entry_id, set())
+    for task in tasks:
+        if not task.done():
+            task.cancel()
 
 
 def list_entries(hass: HomeAssistant) -> list[ConfigEntry]:

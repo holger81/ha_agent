@@ -137,3 +137,15 @@ def test_build_run_result_penalizes_skill_not_followed() -> None:
     )
     result = build_run_result(skill.id, trace, skill)
     assert result.succeeded is False
+
+
+def test_parse_eval_response_rejects_malformed_improve_payload() -> None:
+    parse = evaluator_mod._parse_eval_response
+    assert parse('{"improve": true, "title": 123}') is None
+    assert parse('{"improve": true, "triggers": "nope"}') is None
+    assert parse("not-json") is None
+    ok = parse(
+        '{"improve": true, "title": "Better", "description": "d", "body": "b"}'
+    )
+    assert ok is not None
+    assert ok["title"] == "Better"

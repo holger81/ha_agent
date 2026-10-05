@@ -37,6 +37,17 @@ async def resolve_agent_user(
     """Resolve who is acting for this turn."""
     store = get_identity_store(hass, entry_id)
     voice_cfg = voice_config or IDENTITY_VOICE_CONFIG
+    bridge_secret: str | None = None
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is not None:
+        from ..const import CONF_IDENTITY_BRIDGE_SECRET
+
+        bridge_secret = (
+            str(
+                {**entry.data, **entry.options}.get(CONF_IDENTITY_BRIDGE_SECRET) or ""
+            ).strip()
+            or None
+        )
 
     def _resolve() -> ResolvedIdentity:
         if admin_override_user_id:
@@ -65,7 +76,10 @@ async def resolve_agent_user(
                         override_by_ha_user_id=override_by_ha_user_id,
                     )
 
-        voice_payload = parse_voice_identity(extra_system_prompt)
+        voice_payload = parse_voice_identity(
+            extra_system_prompt,
+            bridge_secret=bridge_secret,
+        )
         if voice_payload:
             resolved = _resolve_voice_payload(store, voice_payload)
             if resolved is not None:

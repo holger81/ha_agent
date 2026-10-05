@@ -17,6 +17,11 @@ from .scorer import case_score_to_dict, task_score_to_dict
 
 EVAL_STORE_KEY = "eval_stores"
 
+# Retention: most recent eval runs kept, and most recent benchmark runs kept
+# per model (each run contributes one row per case for that model).
+MAX_EVAL_RUNS = 50
+MAX_BENCHMARK_RUNS_PER_MODEL = 50
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS eval_runs (
     id TEXT PRIMARY KEY,
@@ -127,6 +132,7 @@ class EvalStore:
             "(id, entry_id, status, started_at) VALUES (?, ?, ?, ?)",
             (run.id, run.entry_id, run.status, run.started_at),
         )
+        self._prune_eval_runs(conn)
         conn.commit()
         return run
 
@@ -167,7 +173,57 @@ class EvalStore:
                     _json_dumps(item.details),
                 ),
             )
+        self._prune_eval_runs(conn)
+        self._prune_model_benchmarks(conn)
         conn.commit()
+
+    def prune_history(
+        self,
+        *,
+        max_runs: int = MAX_EVAL_RUNS,
+        max_benchmark_runs_per_model: int = MAX_BENCHMARK_RUNS_PER_MODEL,
+    ) -> None:
+        """Apply retention to eval runs and per-model benchmark history."""
+        conn = self._connection()
+        self._prune_eval_runs(conn, max_runs=max_runs)
+        self._prune_model_benchmarks(
+            conn, max_runs_per_model=max_benchmark_runs_per_model
+        )
+        conn.commit()
+
+    @staticmethod
+    def _prune_eval_runs(
+        conn: sqlite3.Connection,
+        *,
+        max_runs: int = MAX_EVAL_RUNS,
+    ) -> None:
+        conn.execute(
+            "DELETE FROM eval_runs WHERE id NOT IN ("
+            "SELECT id FROM eval_runs ORDER BY started_at DESC, rowid DESC LIMIT ?"
+            ")",
+            (max(0, int(max_runs)),),
+        )
+
+    @staticmethod
+    def _prune_model_benchmarks(
+        conn: sqlite3.Connection,
+        *,
+        max_runs_per_model: int = MAX_BENCHMARK_RUNS_PER_MODEL,
+    ) -> None:
+        """Keep only the newest ``max_runs_per_model`` runs for every model."""
+        limit = max(0, int(max_runs_per_model))
+        model_rows = conn.execute(
+            "SELECT DISTINCT model_id FROM model_benchmarks"
+        ).fetchall()
+        for row in model_rows:
+            model_id = row["model_id"]
+            conn.execute(
+                "DELETE FROM model_benchmarks WHERE model_id = ? AND run_id NOT IN ("
+                "SELECT run_id FROM model_benchmarks WHERE model_id = ? "
+                "GROUP BY run_id ORDER BY MAX(run_at) DESC LIMIT ?"
+                ")",
+                (model_id, model_id, limit),
+            )
 
     def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = (

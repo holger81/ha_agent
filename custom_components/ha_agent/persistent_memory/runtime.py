@@ -94,18 +94,30 @@ def _forget(
     deleted = 0
     entries = store.list_user(identity.user.id) if use_user else store.list_system()
 
+    # Require ≥4-char whole tokens so short fragments cannot wipe broad memory.
+    tokens = [tok for tok in fragment.split() if len(tok) >= 4]
     targets = []
-    for entry in entries:
-        hay = f"{entry.key} {entry.notes} {entry.value}".lower()
-        if not fragment or any(tok in hay for tok in fragment.split() if len(tok) > 2):
-            targets.append(entry)
+    if not fragment:
+        targets = list(entries)
+    elif tokens:
+        import re
 
-    if not targets and fragment:
-        # Fallback: delete keys that look related
-        tokens = [tok for tok in fragment.replace(" ", "_").split("_") if tok]
         for entry in entries:
-            if any(tok in entry.key for tok in tokens):
+            hay = f"{entry.key} {entry.notes} {entry.value}".lower()
+            if any(
+                re.search(rf"(?<![a-z0-9_]){re.escape(tok)}(?![a-z0-9_])", hay)
+                for tok in tokens
+            ):
                 targets.append(entry)
+
+        if not targets:
+            key_tokens = [
+                tok for tok in fragment.replace(" ", "_").split("_") if len(tok) >= 4
+            ]
+            for entry in entries:
+                parts = set(entry.key.lower().replace(".", "_").split("_"))
+                if any(tok in parts for tok in key_tokens):
+                    targets.append(entry)
 
     for entry in targets:
         if entry.scope.value == "user" and entry.agent_user_id:

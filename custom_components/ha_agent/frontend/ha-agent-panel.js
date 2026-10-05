@@ -1755,7 +1755,7 @@ class HaAgentPanel extends HTMLElement {
       <h3>Discover models</h3>
       <p class="discover-status eval-status-line"><strong>${this._escape(state.status || "idle")}</strong> — ${this._escape(shortStatusMessage)}</p>
       ${progressBar}
-      ${manual.hf_url ? `<p class="activity-hint">Download URL: <a href="${this._escape(manual.hf_url)}" target="_blank" rel="noopener">${this._escape(manual.hf_url)}</a></p>` : ""}
+      ${manual.hf_url ? `<p class="activity-hint">Download URL: ${this._isSafeLinkUrl(manual.hf_url) ? `<a href="${this._escape(manual.hf_url)}" target="_blank" rel="noopener">${this._escape(manual.hf_url)}</a>` : this._escape(manual.hf_url)}</p>` : ""}
       ${manual.docker_hint ? `<p class="activity-hint">${this._escape(manual.docker_hint)}</p>` : ""}
       ${manual.llama_cli_hint ? `<p class="activity-hint">${this._escape(manual.llama_cli_hint)}</p>` : ""}
       ${state.error ? `<p class="banner">${this._escape(state.error)}</p>` : ""}
@@ -3790,11 +3790,11 @@ class HaAgentPanel extends HTMLElement {
         return `
       <div class="thread-row">
         <div class="thread ${t.conversation_id === this._conversationId ? "active" : ""}"
-             data-thread="${t.conversation_id}">
+             data-thread="${this._escape(t.conversation_id)}">
           <div class="thread-title">${t.pinned ? "📌 " : ""}${this._escape(t.title || t.conversation_id)}${sourceBadge}</div>
           ${snippet}
         </div>
-        <button class="thread-delete" data-delete-thread="${t.conversation_id}" title="Delete chat" ${this._streaming ? "disabled" : ""}>×</button>
+        <button class="thread-delete" data-delete-thread="${this._escape(t.conversation_id)}" title="Delete chat" ${this._streaming ? "disabled" : ""}>×</button>
       </div>`;
       })
       .join("");
@@ -4019,10 +4019,10 @@ class HaAgentPanel extends HTMLElement {
         <td>${s.enabled ? "Yes" : "No"}</td>
         <td>${s.use_count || 0}</td>
         <td class="actions">
-          <button data-skill-view="${s.id}">View</button>
-          <button data-skill-edit="${s.id}">Edit</button>
-          <button data-skill-toggle="${s.id}">${s.enabled ? "Disable" : "Enable"}</button>
-          <button data-skill-delete="${s.id}">Delete</button>
+          <button data-skill-view="${this._escape(s.id)}">View</button>
+          <button data-skill-edit="${this._escape(s.id)}">Edit</button>
+          <button data-skill-toggle="${this._escape(s.id)}">${s.enabled ? "Disable" : "Enable"}</button>
+          <button data-skill-delete="${this._escape(s.id)}">Delete</button>
         </td>
       </tr>`
       )
@@ -5532,7 +5532,16 @@ class HaAgentPanel extends HTMLElement {
     return String(text || "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  _isSafeLinkUrl(url) {
+    const value = String(url || "");
+    if (!/^https?:\/\/[^\s"'<>]+$/.test(value)) return false;
+    // The text has usually been escaped already; reject escaped quotes too.
+    return !/&quot;|&#39;/.test(value);
   }
 
   _shouldBoldSpan(inner) {
@@ -5547,7 +5556,10 @@ class HaAgentPanel extends HTMLElement {
     let html = this._escape(text);
     html = html.replace(
       /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+      (match, label, url) =>
+        this._isSafeLinkUrl(url)
+          ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`
+          : match
     );
     html = html.replace(/\*\*([^*]+)\*\*/g, (_, inner) =>
       this._shouldBoldSpan(inner) ? `<strong>${inner}</strong>` : inner

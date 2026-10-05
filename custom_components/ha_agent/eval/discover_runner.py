@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from homeassistant.core import HomeAssistant, callback
 
+from ..api.helpers import track_entry_task
 from ..config_helpers import get_llm_backend
 from ..const import DATA_KEY, LOGGER
 from ..llm_client import LlmClient
@@ -32,6 +34,7 @@ from .model_download import (
     download_hf_gguf,
     download_via_webhook,
     manual_download_hint,
+    safe_gguf_filename,
 )
 from .model_registry import ModelProposal, get_model_registry
 from .models import DiscoverRun, DiscoverRunState
@@ -182,6 +185,7 @@ async def _wait_for_trial_approval(state: DiscoverRunState, model_id: str) -> bo
 
 
 def _incumbent_baseline(store, incumbent_model: str) -> float | None:
+    """Blocking sqlite read; call via ``hass.async_add_executor_job``."""
     run = store.latest_run()
     if not run or run.get("status") != "completed":
         return None
@@ -193,6 +197,13 @@ def _incumbent_baseline(store, incumbent_model: str) -> float | None:
     if not scores:
         return None
     return sum(scores) / len(scores)
+
+
+def _skipped_model_ids(registry, model_ids: list[str]) -> set[str]:
+    """Blocking sqlite reads; call via ``hass.async_add_executor_job``."""
+    return {
+        model_id for model_id in model_ids if registry.should_skip_download(model_id)
+    }
 
 
 def _mean_task_score(task_scores: list) -> float:
@@ -211,6 +222,7 @@ _CANCELLABLE_PHASES = frozenset(
 
 
 async def _cleanup_rejected_model(
+    hass: HomeAssistant,
     session: aiohttp.ClientSession,
     backend,
     registry,
@@ -218,6 +230,7 @@ async def _cleanup_rejected_model(
     *,
     capabilities,
     local_path: str | None,
+    models_dir: str | None = None,
 ) -> None:
     """Unload and remove a rejected trial model from RAM and disk/cache."""
     model_id = proposal.model_id
@@ -227,10 +240,19 @@ async def _cleanup_rejected_model(
         return
 
     if local_path:
-        if delete_local_model_file(local_path):
-            registry.mark_deleted(
-                model_id,
-                notes="Deleted local file after eval did not beat incumbent.",
+        try:
+            deleted = await hass.async_add_executor_job(
+                lambda: delete_local_model_file(local_path, models_dir=models_dir)
+            )
+        except ValueError as err:
+            LOGGER.warning("Refusing to delete model file for %s: %s", model_id, err)
+            return
+        if deleted:
+            await hass.async_add_executor_job(
+                lambda: registry.mark_deleted(
+                    model_id,
+                    notes="Deleted local file after eval did not beat incumbent.",
+                )
             )
         return
 
@@ -241,9 +263,11 @@ async def _cleanup_rejected_model(
 
     result = await delete_model_from_router(session, backend, model_id)
     if result.get("ok"):
-        registry.mark_deleted(
-            model_id,
-            notes="Deleted from llama.cpp model cache after rejected trial.",
+        await hass.async_add_executor_job(
+            lambda: registry.mark_deleted(
+                model_id,
+                notes="Deleted from llama.cpp model cache after rejected trial.",
+            )
         )
         return
     if result.get("preset_model"):
@@ -260,6 +284,7 @@ async def _cleanup_rejected_model(
 
 
 async def _ensure_model_available(
+    hass: HomeAssistant,
     session: aiohttp.ClientSession,
     state: DiscoverRunState,
     backend,
@@ -276,6 +301,22 @@ async def _ensure_model_available(
         return True, proposal.local_path
 
     model_id = proposal.model_id
+    if safe_gguf_filename(proposal.hf_filename) is None:
+        LOGGER.warning(
+            "Rejecting proposal %s: unsafe hf_filename %r",
+            model_id,
+            proposal.hf_filename,
+        )
+        _set_progress(
+            state,
+            phase="downloading",
+            message=f"Rejected {model_id}: invalid GGUF filename.",
+            model_id=model_id,
+            current=index,
+            total=total,
+        )
+        return False, None
+
     caps = await probe_server(session, backend)
     if model_id in caps.models:
         proposal.download_mode = "existing"
@@ -331,13 +372,16 @@ async def _ensure_model_available(
             abort_on_cancel=True,
         )
         if result.get("ok"):
-            registry.record_download(
-                model_id,
-                source_url=proposal.source_url,
-                notes=(
-                    "Downloaded via llama.cpp router API "
-                    f"({result.get('via') or result.get('request_path') or 'server'})."
-                ),
+            router_notes = (
+                "Downloaded via llama.cpp router API "
+                f"({result.get('via') or result.get('request_path') or 'server'})."
+            )
+            await hass.async_add_executor_job(
+                lambda: registry.record_download(
+                    model_id,
+                    source_url=proposal.source_url,
+                    notes=router_notes,
+                )
             )
             proposal.download_mode = "server"
             return True, None
@@ -349,7 +393,10 @@ async def _ensure_model_available(
             )
 
     if models_dir:
-        dest = Path(models_dir) / proposal.hf_filename
+        safe_name = safe_gguf_filename(proposal.hf_filename)
+        if safe_name is None:  # pragma: no cover - guarded above
+            return False, None
+        dest = Path(models_dir) / safe_name
         proposal.local_path = str(dest)
         _set_progress(
             state,
@@ -381,20 +428,27 @@ async def _ensure_model_available(
                 download_mode="local",
             )
 
-        result = await download_hf_gguf(
-            session,
-            repo_id=proposal.hf_repo,
-            filename=proposal.hf_filename,
-            dest_path=dest,
-            cancel_check=lambda: state.cancel_requested,
-            on_progress=_download_progress,
-        )
+        try:
+            result = await download_hf_gguf(
+                session,
+                repo_id=proposal.hf_repo,
+                filename=safe_name,
+                dest_path=dest,
+                models_dir=models_dir,
+                cancel_check=lambda: state.cancel_requested,
+                on_progress=_download_progress,
+            )
+        except ValueError as err:
+            LOGGER.warning("Rejected download for %s: %s", model_id, err)
+            return False, None
         if not result.get("ok"):
             return False, None
-        registry.record_download(
-            model_id,
-            source_url=proposal.source_url,
-            notes=f"Downloaded to {dest}",
+        await hass.async_add_executor_job(
+            lambda: registry.record_download(
+                model_id,
+                source_url=proposal.source_url,
+                notes=f"Downloaded to {dest}",
+            )
         )
         proposal.download_mode = "local"
         return True, str(dest)
@@ -459,10 +513,12 @@ async def _ensure_model_available(
         on_progress=_wait_progress,
     )
     if wait.get("ok"):
-        registry.record_download(
-            model_id,
-            source_url=proposal.source_url,
-            notes="Model appeared on llama.cpp server.",
+        await hass.async_add_executor_job(
+            lambda: registry.record_download(
+                model_id,
+                source_url=proposal.source_url,
+                notes="Model appeared on llama.cpp server.",
+            )
         )
         proposal.download_mode = "poll" if not webhook_url else "webhook_poll"
         return True, None
@@ -512,7 +568,9 @@ async def run_discover_pipeline(
     store = get_eval_store(hass, entry_id)
     registry = get_model_registry(hass, entry_id)
     incumbent_model = chat_backend.model
-    incumbent_score = _incumbent_baseline(store, incumbent_model)
+    incumbent_score = await hass.async_add_executor_job(
+        _incumbent_baseline, store, incumbent_model
+    )
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -530,11 +588,9 @@ async def run_discover_pipeline(
                 phase="discovering",
                 message="Searching Hugging Face and ranking candidate models…",
             )
-            skip_ids = {
-                model_id
-                for model_id in capabilities.models
-                if registry.should_skip_download(model_id)
-            }
+            skip_ids = await hass.async_add_executor_job(
+                _skipped_model_ids, registry, list(capabilities.models)
+            )
             proposals = await propose_models_from_web(
                 session,
                 llm,
@@ -545,9 +601,14 @@ async def run_discover_pipeline(
             )
             _check_cancel(state)
 
+            proposal_skips = await hass.async_add_executor_job(
+                _skipped_model_ids,
+                registry,
+                [item.model_id for item in proposals],
+            )
             filtered: list[ModelProposal] = []
             for proposal in proposals:
-                if registry.should_skip_download(proposal.model_id):
+                if proposal.model_id in proposal_skips:
                     proposal.skip_download = True
                 filtered.append(proposal)
 
@@ -601,6 +662,7 @@ async def run_discover_pipeline(
             for index, proposal in enumerate(approved_proposals, start=1):
                 _check_cancel(state)
                 ready, local_path = await _ensure_model_available(
+                    hass,
                     session,
                     state,
                     chat_backend,
@@ -762,16 +824,20 @@ async def run_discover_pipeline(
                     incumbent_score=baseline,
                 )
 
-                registry.record_eval_result(
-                    proposal.model_id,
-                    eval_score=mean_score,
-                    eval_run_id=run.id,
-                    accepted=accepted,
-                    notes=(
-                        f"mean={mean_score:.3f} incumbent={baseline:.3f}"
-                        if incumbent_score is not None
-                        else f"mean={mean_score:.3f} (no incumbent baseline)"
-                    ),
+                eval_notes = (
+                    f"mean={mean_score:.3f} incumbent={baseline:.3f}"
+                    if incumbent_score is not None
+                    else f"mean={mean_score:.3f} (no incumbent baseline)"
+                )
+                await hass.async_add_executor_job(
+                    partial(
+                        registry.record_eval_result,
+                        proposal.model_id,
+                        eval_score=mean_score,
+                        eval_run_id=run.id,
+                        accepted=accepted,
+                        notes=eval_notes,
+                    )
                 )
                 run.trial_results.append(
                     {
@@ -801,12 +867,14 @@ async def run_discover_pipeline(
                     await unload_model(session, chat_backend, proposal.model_id)
                 else:
                     await _cleanup_rejected_model(
+                        hass,
                         session,
                         chat_backend,
                         registry,
                         proposal,
                         capabilities=capabilities,
                         local_path=local_path,
+                        models_dir=models_dir,
                     )
 
             run.status = "completed"
@@ -878,7 +946,9 @@ async def run_discover_retry(
     store = get_eval_store(hass, entry_id)
     registry = get_model_registry(hass, entry_id)
     incumbent_model = chat_backend.model
-    incumbent_score = _incumbent_baseline(store, incumbent_model)
+    incumbent_score = await hass.async_add_executor_job(
+        _incumbent_baseline, store, incumbent_model
+    )
     models_dir = (config.models_dir or "").strip() or None
     webhook_url = (config.download_webhook_url or "").strip() or None
 
@@ -908,7 +978,7 @@ async def run_discover_retry(
 
     try:
         async with aiohttp.ClientSession() as session:
-            registry.clear_for_retry(model_id)
+            await hass.async_add_executor_job(registry.clear_for_retry, model_id)
             capabilities = await probe_server(session, chat_backend)
             await unload_model(session, chat_backend, model_id)
             if router_supports_hf_download(capabilities):
@@ -923,6 +993,7 @@ async def run_discover_retry(
                 total=1,
             )
             ready, local_path = await _ensure_model_available(
+                hass,
                 session,
                 state,
                 chat_backend,
@@ -1000,16 +1071,19 @@ async def run_discover_retry(
             mean_score = _mean_task_score(task_scores)
             baseline = incumbent_score if incumbent_score is not None else 0.55
             accepted = mean_score >= baseline
-            registry.record_eval_result(
-                model_id,
-                eval_score=mean_score,
-                eval_run_id=run.id,
-                accepted=accepted,
-                notes=(
-                    f"retry mean={mean_score:.3f} incumbent={baseline:.3f}"
-                    if incumbent_score is not None
-                    else f"retry mean={mean_score:.3f}"
-                ),
+            await hass.async_add_executor_job(
+                partial(
+                    registry.record_eval_result,
+                    model_id,
+                    eval_score=mean_score,
+                    eval_run_id=run.id,
+                    accepted=accepted,
+                    notes=(
+                        f"retry mean={mean_score:.3f} incumbent={baseline:.3f}"
+                        if incumbent_score is not None
+                        else f"retry mean={mean_score:.3f}"
+                    ),
+                )
             )
             run.trial_results.append(
                 {
@@ -1039,12 +1113,14 @@ async def run_discover_retry(
                 await unload_model(session, chat_backend, model_id)
             else:
                 await _cleanup_rejected_model(
+                    hass,
                     session,
                     chat_backend,
                     registry,
                     proposal,
                     capabilities=capabilities,
                     local_path=local_path,
+                    models_dir=models_dir,
                 )
             run.status = "completed"
             _set_progress(
@@ -1082,6 +1158,16 @@ async def start_discover_retry_background(
     if _pipeline_busy(hass, entry_id):
         raise RuntimeError("An eval or discover pipeline is already running.")
 
+    # Validate the proposal (repo + safe GGUF filename) before scheduling so a
+    # bad payload surfaces to the caller instead of leaving a stuck placeholder.
+    proposal = _proposal_for_retry(
+        get_discover_state(hass, entry_id), model_id, proposal_data
+    )
+    if not proposal.hf_repo:
+        raise ValueError(
+            f"Cannot retry {model_id}: missing Hugging Face repo metadata."
+        )
+
     entry = hass.config_entries.async_get_entry(entry_id)
     config = get_discover_config(entry)
     placeholder = DiscoverRun(
@@ -1106,7 +1192,7 @@ async def start_discover_retry_background(
             config=config,
         )
 
-    hass.async_create_task(_run())
+    track_entry_task(hass, entry_id, _run(), name=f"ha_agent_discover_retry_{entry_id}")
     return placeholder
 
 
@@ -1147,7 +1233,7 @@ async def start_discover_background(
             download_webhook_override=download_webhook_url,
         )
 
-    hass.async_create_task(_run())
+    track_entry_task(hass, entry_id, _run(), name=f"ha_agent_discover_{entry_id}")
     return placeholder
 
 

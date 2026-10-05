@@ -18,18 +18,35 @@ from .naming import extract_self_intro_name, is_default_guest_name
 from .store import IdentityStore
 
 
+def _compatible_profile(
+    profile: VoiceProfile,
+    embedding: list[float],
+    *,
+    model: str | None,
+) -> bool:
+    """Skip profiles whose embedding dim or model disagrees with the sample."""
+    if profile.centroid is None:
+        return False
+    if len(profile.centroid) != len(embedding):
+        return False
+    sample_model = (model or "").strip()
+    profile_model = (profile.model or "").strip()
+    return not (sample_model and profile_model and sample_model != profile_model)
+
+
 def _pick_best_profile(
     profiles: list[VoiceProfile],
     embedding: list[float],
     *,
     tie_margin: float,
+    model: str | None = None,
 ) -> tuple[VoiceProfile | None, float]:
     """Return the best profile for an embedding, with recency tie-break."""
     scored: list[tuple[VoiceProfile, float]] = []
     for profile in profiles:
-        if profile.centroid is None:
+        if not _compatible_profile(profile, embedding, model=model):
             continue
-        score = cosine_similarity(embedding, profile.centroid)
+        score = cosine_similarity(embedding, profile.centroid or [])
         scored.append((profile, score))
 
     if not scored:
@@ -160,6 +177,7 @@ def resolve_speaker_embedding(
         profiles,
         embedding,
         tie_margin=config.guest_tie_margin,
+        model=speaker_match.model,
     )
 
     if best_profile is not None and best_score >= config.guest_create_threshold:

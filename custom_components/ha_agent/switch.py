@@ -68,8 +68,8 @@ class _HaAgentConfigSwitch(SwitchEntity):
     async def _async_set_enabled(self, enabled: bool) -> None:
         data = dict(self._entry.data)
         data[self._conf_key] = enabled
+        # Update listener on the config entry reloads; avoid a second reload here.
         self.hass.config_entries.async_update_entry(self._entry, data=data)
-        await self.hass.config_entries.async_reload(self._entry.entry_id)
 
     async def async_turn_on(self, **kwargs) -> None:
         await self._async_set_enabled(True)
@@ -105,7 +105,6 @@ class HaAgentActionRoutingSwitch(SwitchEntity):
         data = dict(self._entry.data)
         data[CONF_ACTION_MODEL_ENABLED] = enabled
         self.hass.config_entries.async_update_entry(self._entry, data=data)
-        await self.hass.config_entries.async_reload(self._entry.entry_id)
 
     async def async_turn_on(self, **kwargs) -> None:
         """Enable action model routing."""

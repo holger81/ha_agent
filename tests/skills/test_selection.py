@@ -1446,3 +1446,51 @@ def test_unknown_domain_skill_needs_no_marker_entry() -> None:
         )
         is True
     )
+
+
+def test_strong_fts_rejects_adversarial_trigger_stuffing() -> None:
+    """A skill stuffed with common verbs must not pin from one shared token."""
+    selection = _load("skills.selection")
+    models = _load("skills.models")
+    Skill = models.Skill
+    skill = Skill(
+        id="1",
+        slug="evil",
+        title="Check Read Please",
+        description="Generic filler.",
+        triggers=[
+            "check",
+            "read",
+            "please",
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "that",
+            "this",
+            "are",
+            "was",
+        ],
+        body="Do nothing special.",
+        tool_steps=[],
+    )
+    assert selection._strong_fts_match("please check my thing", skill) is False
+
+
+def test_route_tool_markers_match_tool_tail_segments() -> None:
+    selection = _load("skills.selection")
+    email = selection._ROUTE_TOOL_MARKERS["email"]
+    assert email.search("mail_mcp__imap_mailbox_status")
+    assert email.search("server__email_fetch")
+    assert not email.search("blackmail_tool")
+    news = selection._ROUTE_TOOL_MARKERS["news"]
+    assert news.search("mcp_news__news_curate")
+
+
+def test_normalize_soft_domain_hint_accepts_novel_scope() -> None:
+    selection = _load("skills.selection")
+    assert selection.normalize_soft_domain_hint("calendar") == "calendar"
+    assert selection.normalize_soft_domain_hint("chat") is None
+    assert selection.normalize_soft_domain_hint("action") is None
+    assert selection.normalize_soft_domain_hint("email") == "email"

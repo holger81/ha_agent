@@ -6,6 +6,7 @@ from typing import Any
 
 from .config_helpers import LlmBackend
 from .llm_client import ChatResult
+from .role_registry import host_label
 from .skills.models import TurnTrace
 
 
@@ -23,7 +24,7 @@ def record_llm_call(
     entry: dict[str, Any] = {
         "role": role,
         "model": backend.model,
-        "host": backend.base_url.split("//", 1)[-1].split("/", 1)[0],
+        "host": host_label(backend.base_url),
     }
     if result is not None:
         if result.latency_ms is not None:

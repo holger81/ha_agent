@@ -80,6 +80,7 @@ CONF_IDENTITY_GUEST_CREATE_THRESHOLD = "identity_guest_create_threshold"
 CONF_IDENTITY_GUEST_TIE_MARGIN = "identity_guest_tie_margin"
 CONF_IDENTITY_MIN_UTTERANCE_MS = "identity_min_utterance_ms"
 CONF_IDENTITY_AUTO_NAME_ENABLED = "identity_auto_name_enabled"
+CONF_IDENTITY_BRIDGE_SECRET = "identity_bridge_secret"
 
 DEFAULT_EVAL_DISCOVER_MAX_MODELS = 3
 

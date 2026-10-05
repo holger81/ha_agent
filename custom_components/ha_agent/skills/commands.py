@@ -69,17 +69,39 @@ async def _resolve_skill_by_query(
     hass: HomeAssistant,
     entry_id: str,
     query: str,
+    *,
+    require_exact_or_unambiguous: bool = False,
 ) -> Any:
-    """Resolve a skill from a user phrase via FTS."""
+    """Resolve a skill from a user phrase via exact slug/title or FTS.
+
+    When ``require_exact_or_unambiguous`` is True (destructive ops), require an
+    exact slug/title match, or a single unambiguous FTS hit. Ambiguous matches
+    return the sentinel string ``"ambiguous"``.
+    """
     store = get_skill_store(hass, entry_id)
     name_query = _extract_skill_query(query)
     if not name_query:
         return None
 
     def _search():
-        matches = store.search(name_query, limit=1, enabled_only=False)
+        needle = name_query.strip().lower()
+        total = store.count_skills()
+        skills = store.list_recent(limit=max(total, 1))
+        exact = [
+            skill
+            for skill in skills
+            if skill.slug.lower() == needle or skill.title.strip().lower() == needle
+        ]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return "ambiguous" if require_exact_or_unambiguous else exact[0]
+
+        matches = store.search(name_query, limit=5, enabled_only=False)
         if not matches:
             return None
+        if require_exact_or_unambiguous and len(matches) != 1:
+            return "ambiguous"
         return store.get_skill(matches[0].id)
 
     return await hass.async_add_executor_job(_search)
@@ -140,8 +162,7 @@ async def try_handle_manual_skill_save(
         manual_save=True,
     ):
         return (
-            "I couldn't save that — the previous turn has no successful tool "
-            "workflow."
+            "I couldn't save that — the previous turn has no successful tool workflow."
         )
 
     skill = await create_skill_from_trace(
@@ -155,8 +176,7 @@ async def try_handle_manual_skill_save(
     )
     if skill is None:
         return (
-            "I don't think that turn has a reusable workflow worth saving "
-            "as a skill."
+            "I don't think that turn has a reusable workflow worth saving as a skill."
         )
     return f"Saved skill: {skill.title}."
 
@@ -275,15 +295,33 @@ async def _cmd_delete_skill(
     entry_id: str,
     user_text: str,
 ) -> str:
-    skill = await _resolve_skill_by_query(hass, entry_id, user_text)
+    skill = await _resolve_skill_by_query(
+        hass,
+        entry_id,
+        user_text,
+        require_exact_or_unambiguous=True,
+    )
+    if skill == "ambiguous":
+        return (
+            "Several skills match that name. Delete by exact slug or full title "
+            "(for example: delete skill my-skill-slug)."
+        )
     if skill is None:
         return "I couldn't find that skill."
+    if skill.is_builtin:
+        return f"Built-in skill {skill.title} cannot be deleted."
     store = get_skill_store(hass, entry_id)
 
     def _delete():
         return store.delete_skill(skill.id)
 
     if await hass.async_add_executor_job(_delete):
+        from .files import delete_skill_file, skills_directory
+
+        def _unlink():
+            delete_skill_file(skills_directory(hass, entry_id), skill.slug)
+
+        await hass.async_add_executor_job(_unlink)
         return f"Deleted skill {skill.title}."
     return "I couldn't delete that skill."
 

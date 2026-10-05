@@ -28,6 +28,27 @@ def begin_chat_turn(
     )
 
 
+_MAX_TOOL_PAYLOAD_CHARS = 800
+
+
+def _cap_tool_payload(tool: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not tool:
+        return tool
+    capped = dict(tool)
+    for key in ("arguments", "result", "error", "output"):
+        value = capped.get(key)
+        if isinstance(value, str) and len(value) > _MAX_TOOL_PAYLOAD_CHARS:
+            capped[key] = value[:_MAX_TOOL_PAYLOAD_CHARS] + "…"
+        elif isinstance(value, dict):
+            text = str(value)
+            if len(text) > _MAX_TOOL_PAYLOAD_CHARS:
+                capped[key] = {
+                    "_truncated": True,
+                    "preview": text[:_MAX_TOOL_PAYLOAD_CHARS],
+                }
+    return capped
+
+
 @callback
 def publish_chat_delta(
     hass: HomeAssistant,
@@ -51,7 +72,7 @@ def publish_chat_delta(
         "thinking": thinking,
         "thinking_clear": thinking_clear,
         "content_clear": content_clear,
-        "tool": tool,
+        "tool": _cap_tool_payload(tool),
         "skill": skill,
         "meta": meta,
         "subagent": subagent,

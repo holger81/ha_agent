@@ -25,7 +25,7 @@ After WebSocket auth, subscribe to:
 |-------|------|
 | `ha_agent_chat_delta` | Streaming content, thinking, tools (console **and** Assist) |
 | `ha_agent_chat_done` | Turn finished (console includes `turn_meta`; Assist includes `error` if failed) |
-| `ha_agent_turn_recorded` | Full activity trace committed (best hook for post-turn analysis) |
+| `ha_agent_turn_recorded` | Compact turn **summary** committed (best hook for post-turn analysis; fetch full turn via `ha_agent/activity/get`) |
 
 Filter payloads by `entry_id` and `conversation_id`.
 

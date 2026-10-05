@@ -140,6 +140,15 @@ def _entry_id_schema(extra: dict | None = None) -> dict:
     return schema
 
 
+def _require_entry(hass: HomeAssistant, msg: dict) -> str:
+    """Validate ``entry_id`` against a loaded HA Agent config entry."""
+    entry_id = msg.get("entry_id")
+    if not entry_id:
+        raise HomeAssistantError("entry_id is required")
+    get_entry(hass, str(entry_id))
+    return str(entry_id)
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_agent/subscribe",
@@ -178,6 +187,7 @@ async def ws_subscribe(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_status(hass: HomeAssistant, connection, msg: dict) -> None:
     """Return runtime status for an entry."""
     require_admin(connection)
+    _require_entry(hass, msg)
     entry_id = msg["entry_id"]
     connection.send_message(
         websocket_api.result_message(
@@ -200,6 +210,7 @@ async def ws_status(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_chat_send(hass: HomeAssistant, connection, msg: dict) -> None:
     """Start a chat turn; stream deltas via events, ack immediately."""
     require_admin(connection)
+    _require_entry(hass, msg)
     entry_id = msg["entry_id"]
     conversation_id = msg["conversation_id"]
     chat_api.start_chat(
@@ -224,6 +235,7 @@ async def ws_chat_send(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_chat_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
     """Cancel an in-flight console chat turn."""
     require_admin(connection)
+    _require_entry(hass, msg)
     chat_api.cancel_chat_task(
         hass,
         msg["entry_id"],
@@ -243,6 +255,7 @@ async def ws_chat_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_chat_history_list(hass: HomeAssistant, connection, msg: dict) -> None:
     """Return stored conversation history."""
     require_admin(connection)
+    _require_entry(hass, msg)
     history = chat_api.list_history(
         hass,
         msg["entry_id"],
@@ -264,6 +277,7 @@ async def ws_chat_history_list(hass: HomeAssistant, connection, msg: dict) -> No
 async def ws_chat_turn_status(hass: HomeAssistant, connection, msg: dict) -> None:
     """Return whether a chat turn is in progress and the current history."""
     require_admin(connection)
+    _require_entry(hass, msg)
     payload = chat_api.turn_status(
         hass,
         msg["entry_id"],
@@ -276,12 +290,15 @@ async def ws_chat_turn_status(hass: HomeAssistant, connection, msg: dict) -> Non
     {
         vol.Required("type"): "ha_agent/chat/history/clear",
         vol.Required("conversation_id"): str,
+        vol.Optional("entry_id"): str,
     }
 )
 @websocket_api.async_response
 async def ws_chat_history_clear(hass: HomeAssistant, connection, msg: dict) -> None:
     """Clear conversation history."""
     require_admin(connection)
+    if msg.get("entry_id"):
+        _require_entry(hass, msg)
     chat_api.clear_history(hass, msg["conversation_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"success": True}))
 
@@ -299,6 +316,7 @@ async def ws_chat_history_clear(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_identity_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.list_users(
         hass,
         msg["entry_id"],
@@ -318,6 +336,7 @@ async def ws_identity_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_identity_update(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     user = await identity_api.update_user(
         hass,
         msg["entry_id"],
@@ -341,6 +360,7 @@ async def ws_identity_create_guest(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     user = await identity_api.create_guest(
         hass,
         msg["entry_id"],
@@ -364,6 +384,7 @@ async def ws_identity_set_override(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.set_override(
         hass,
         msg["entry_id"],
@@ -390,6 +411,7 @@ async def ws_identity_get_override(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.get_override(
         hass,
         msg["entry_id"],
@@ -414,6 +436,7 @@ async def ws_identity_promote_guest(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.promote_guest(
         hass,
         msg["entry_id"],
@@ -439,6 +462,7 @@ async def ws_identity_merge_guests(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.merge_guests(
         hass,
         msg["entry_id"],
@@ -462,6 +486,7 @@ async def ws_identity_enroll_start(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.start_voice_enrollment(
         hass,
         msg["entry_id"],
@@ -483,6 +508,7 @@ async def ws_identity_enroll_stop(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.stop_voice_enrollment(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -500,6 +526,7 @@ async def ws_identity_enroll_get(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.get_voice_enrollment(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -519,6 +546,7 @@ async def ws_identity_reassign_turn(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await identity_api.reassign_turn_identity(
         hass,
         msg["entry_id"],
@@ -543,6 +571,7 @@ async def ws_identity_reassign_turn(
 @websocket_api.async_response
 async def ws_memory_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await persistent_memory_api.list_memory(
         hass,
         msg["entry_id"],
@@ -562,6 +591,7 @@ async def ws_memory_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_memory_set(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     entry = await persistent_memory_api.set_memory(
         hass,
         msg["entry_id"],
@@ -582,6 +612,7 @@ async def ws_memory_set(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_memory_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     deleted = await persistent_memory_api.delete_memory(
         hass,
         msg["entry_id"],
@@ -612,6 +643,7 @@ async def ws_memory_delete(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.list_skills(
         hass,
         msg["entry_id"],
@@ -635,6 +667,7 @@ async def ws_skills_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_search(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skills = await skills_api.search_skills(
         hass,
         msg["entry_id"],
@@ -655,6 +688,7 @@ async def ws_skills_search(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_get(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skill = await skills_api.get_skill(hass, msg["entry_id"], msg["skill_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"skill": skill}))
 
@@ -670,6 +704,7 @@ async def ws_skills_get(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_set_enabled(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skill = await skills_api.set_skill_enabled(
         hass,
         msg["entry_id"],
@@ -689,6 +724,7 @@ async def ws_skills_set_enabled(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_skills_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     await skills_api.delete_skill(hass, msg["entry_id"], msg["skill_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"success": True}))
 
@@ -703,6 +739,7 @@ async def ws_skills_delete(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_create(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skill = await skills_api.create_skill(hass, msg["entry_id"], msg["skill"])
     connection.send_message(websocket_api.result_message(msg["id"], {"skill": skill}))
 
@@ -718,6 +755,7 @@ async def ws_skills_create(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_update(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skill = await skills_api.update_skill(
         hass,
         msg["entry_id"],
@@ -739,6 +777,7 @@ async def ws_skills_derive_tool_steps(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     steps = await skills_api.derive_skill_tool_steps(msg["body"])
     connection.send_message(
         websocket_api.result_message(msg["id"], {"tool_steps": steps})
@@ -755,6 +794,7 @@ async def ws_skills_derive_tool_steps(
 @websocket_api.async_response
 async def ws_skills_pending_get(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     draft = await skills_api.fetch_pending_draft(
         hass,
         msg["entry_id"],
@@ -773,6 +813,7 @@ async def ws_skills_pending_get(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_skills_pending_confirm(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skill = await skills_api.confirm_pending_draft(
         hass,
         msg["entry_id"],
@@ -791,6 +832,7 @@ async def ws_skills_pending_confirm(hass: HomeAssistant, connection, msg: dict) 
 @websocket_api.async_response
 async def ws_skills_pending_dismiss(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skills_api.dismiss_pending_draft(
         hass,
         msg["entry_id"],
@@ -808,6 +850,7 @@ async def ws_skills_pending_dismiss(hass: HomeAssistant, connection, msg: dict) 
 @websocket_api.async_response
 async def ws_skills_export(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skills = await skills_api.export_skills(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"skills": skills}))
 
@@ -822,6 +865,7 @@ async def ws_skills_export(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_import(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     count = await skills_api.import_skills(hass, msg["entry_id"], msg["skills"])
     connection.send_message(
         websocket_api.result_message(msg["id"], {"imported": count})
@@ -837,6 +881,7 @@ async def ws_skills_import(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_sync(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.sync_skill_files(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -850,6 +895,7 @@ async def ws_skills_sync(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_skills_directory(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     info = await skills_api.get_skills_directory(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], info))
 
@@ -859,12 +905,15 @@ async def ws_skills_directory(hass: HomeAssistant, connection, msg: dict) -> Non
         vol.Required("type"): "ha_agent/skills/revisions/list",
         vol.Required("entry_id"): str,
         vol.Required("skill_id"): str,
-        vol.Optional("limit", default=20): int,
+        vol.Optional("limit", default=20): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=100)
+        ),
     }
 )
 @websocket_api.async_response
 async def ws_skills_revisions_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     revisions = await skills_api.list_skill_revisions(
         hass,
         msg["entry_id"],
@@ -888,6 +937,7 @@ async def ws_skills_revisions_restore(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     skill = await skills_api.restore_skill_revision(
         hass,
         msg["entry_id"],
@@ -908,6 +958,7 @@ async def ws_skills_generalize_propose(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.propose_skill_generalize(
         hass,
         msg["entry_id"],
@@ -930,6 +981,7 @@ async def ws_skills_generalize_apply(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.apply_skill_generalize(
         hass,
         msg["entry_id"],
@@ -952,6 +1004,7 @@ async def ws_skills_simplify_propose(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.propose_skill_simplify(
         hass,
         msg["entry_id"],
@@ -968,10 +1021,9 @@ async def ws_skills_simplify_propose(
     }
 )
 @websocket_api.async_response
-async def ws_skills_simplify_apply(
-    hass: HomeAssistant, connection, msg: dict
-) -> None:
+async def ws_skills_simplify_apply(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.apply_skill_simplify(
         hass,
         msg["entry_id"],
@@ -987,10 +1039,9 @@ async def ws_skills_simplify_apply(
     }
 )
 @websocket_api.async_response
-async def ws_skills_simplify_undo(
-    hass: HomeAssistant, connection, msg: dict
-) -> None:
+async def ws_skills_simplify_undo(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.undo_skill_simplify(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -1002,10 +1053,9 @@ async def ws_skills_simplify_undo(
     }
 )
 @websocket_api.async_response
-async def ws_skills_simplify_status(
-    hass: HomeAssistant, connection, msg: dict
-) -> None:
+async def ws_skills_simplify_status(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await skills_api.get_skill_simplify_status(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -1019,6 +1069,7 @@ async def ws_skills_simplify_status(
 @websocket_api.async_response
 async def ws_route_keywords_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     routes = await route_keywords_api.list_route_keywords(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"routes": routes}))
 
@@ -1034,6 +1085,7 @@ async def ws_route_keywords_list(hass: HomeAssistant, connection, msg: dict) -> 
 @websocket_api.async_response
 async def ws_route_keywords_update(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     route = await route_keywords_api.update_route_keywords(
         hass,
         msg["entry_id"],
@@ -1056,6 +1108,7 @@ async def ws_route_keywords_set_enabled(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     route = await route_keywords_api.set_route_keywords_enabled(
         hass,
         msg["entry_id"],
@@ -1075,6 +1128,7 @@ async def ws_route_keywords_set_enabled(
 @websocket_api.async_response
 async def ws_route_keywords_reset(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     route = await route_keywords_api.reset_route_keywords(
         hass,
         msg["entry_id"],
@@ -1092,6 +1146,7 @@ async def ws_route_keywords_reset(hass: HomeAssistant, connection, msg: dict) ->
 @websocket_api.async_response
 async def ws_recovery_hints_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     hints = await recovery_hints_api.list_recovery_hints(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"hints": hints}))
 
@@ -1106,6 +1161,7 @@ async def ws_recovery_hints_list(hass: HomeAssistant, connection, msg: dict) -> 
 @websocket_api.async_response
 async def ws_recovery_hints_create(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     hint = await recovery_hints_api.create_recovery_hint(
         hass,
         msg["entry_id"],
@@ -1125,6 +1181,7 @@ async def ws_recovery_hints_create(hass: HomeAssistant, connection, msg: dict) -
 @websocket_api.async_response
 async def ws_recovery_hints_update(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     hint = await recovery_hints_api.update_recovery_hint(
         hass,
         msg["entry_id"],
@@ -1144,6 +1201,7 @@ async def ws_recovery_hints_update(hass: HomeAssistant, connection, msg: dict) -
 @websocket_api.async_response
 async def ws_recovery_hints_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     await recovery_hints_api.delete_recovery_hint(
         hass,
         msg["entry_id"],
@@ -1165,6 +1223,7 @@ async def ws_recovery_hints_set_enabled(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     hint = await recovery_hints_api.set_recovery_hint_enabled(
         hass,
         msg["entry_id"],
@@ -1184,6 +1243,7 @@ async def ws_recovery_hints_set_enabled(
 @websocket_api.async_response
 async def ws_recovery_hints_reset(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     hint = await recovery_hints_api.reset_recovery_hint(
         hass,
         msg["entry_id"],
@@ -1201,6 +1261,7 @@ async def ws_recovery_hints_reset(hass: HomeAssistant, connection, msg: dict) ->
 @websocket_api.async_response
 async def ws_config_get(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     config = config_api.get_config(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"config": config}))
 
@@ -1215,6 +1276,7 @@ async def ws_config_get(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_config_set(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     config = await config_api.set_config(hass, msg["entry_id"], msg["updates"])
     connection.send_message(websocket_api.result_message(msg["id"], {"config": config}))
 
@@ -1229,6 +1291,7 @@ async def ws_config_set(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_config_models(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     payload = await config_api.list_available_models(
         hass,
         msg["entry_id"],
@@ -1246,6 +1309,7 @@ async def ws_config_models(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_config_reload(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     config = await config_api.reload_integration(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"config": config}))
 
@@ -1259,6 +1323,7 @@ async def ws_config_reload(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_hacs_status(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     status = hacs_api.get_update_status(hass)
     connection.send_message(websocket_api.result_message(msg["id"], status))
 
@@ -1272,6 +1337,7 @@ async def ws_hacs_status(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_hacs_refresh(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     status = await hacs_api.refresh_repository(hass)
     connection.send_message(websocket_api.result_message(msg["id"], status))
 
@@ -1290,6 +1356,7 @@ async def ws_hacs_refresh(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_hacs_update(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     status = await hacs_api.install_update(
         hass,
         force_refresh=bool(msg.get("force_refresh", True)),
@@ -1316,6 +1383,7 @@ async def ws_hacs_update(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_activity_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     turns, total = list_turns(
         hass,
         msg["entry_id"],
@@ -1345,6 +1413,7 @@ async def ws_activity_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_activity_get(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     turn = get_turn(
         hass,
         msg["entry_id"],
@@ -1366,6 +1435,7 @@ async def ws_activity_get(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_diagnostics_observe(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     entry_id = msg["entry_id"]
     conversation_id = msg.get("conversation_id")
     live = live_snapshot(hass, entry_id, conversation_id=conversation_id)
@@ -1406,6 +1476,7 @@ async def ws_diagnostics_analyze_turn(
     msg: dict,
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     turn = get_turn(
         hass,
         msg["entry_id"],
@@ -1444,6 +1515,7 @@ async def ws_diagnostics_inject_turn(
 ) -> None:
     """Inject a console chat turn, wait for completion, return trace + analysis."""
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await diagnostics_api.inject_console_turn(
         hass,
         entry_id=msg["entry_id"],
@@ -1468,6 +1540,7 @@ async def ws_diagnostics_inject_turn(
 @websocket_api.async_response
 async def ws_threads_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     query = (msg.get("query") or "").strip()
     source = msg.get("source")
     if query:
@@ -1491,6 +1564,7 @@ async def ws_threads_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_threads_update(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     thread = upsert_thread(
         hass,
         msg["entry_id"],
@@ -1512,6 +1586,7 @@ async def ws_threads_update(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_threads_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     entry_id = msg["entry_id"]
     conversation_id = msg["conversation_id"]
     chat_api.cancel_chat_task(hass, entry_id, conversation_id)
@@ -1530,6 +1605,7 @@ async def ws_threads_delete(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_status(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.get_eval_status(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -1548,15 +1624,14 @@ async def ws_eval_status(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_model_scores(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     models = await eval_api.list_model_scores(
         hass,
         msg["entry_id"],
         sort_by=str(msg.get("sort_by") or "mean_score"),
         descending=bool(msg.get("descending", True)),
     )
-    connection.send_message(
-        websocket_api.result_message(msg["id"], {"models": models})
-    )
+    connection.send_message(websocket_api.result_message(msg["id"], {"models": models}))
 
 
 @websocket_api.websocket_command(
@@ -1568,6 +1643,7 @@ async def ws_eval_model_scores(hass: HomeAssistant, connection, msg: dict) -> No
 @websocket_api.async_response
 async def ws_eval_runs_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     runs = await eval_api.list_eval_runs(
         hass,
         msg["entry_id"],
@@ -1586,6 +1662,7 @@ async def ws_eval_runs_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_run_get(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     run = await eval_api.get_eval_run(hass, msg["entry_id"], msg["run_id"])
     connection.send_message(websocket_api.result_message(msg["id"], {"run": run}))
 
@@ -1606,6 +1683,7 @@ async def ws_eval_run_get(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_start(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     payload = {
         key: msg[key]
         for key in ("models", "tasks", "include_settings", "preload_models")
@@ -1624,6 +1702,7 @@ async def ws_eval_start(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.cancel_eval(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -1637,6 +1716,7 @@ async def ws_eval_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_probe(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     capabilities = await eval_api.probe_server_capabilities(hass, msg["entry_id"])
     connection.send_message(
         websocket_api.result_message(msg["id"], {"capabilities": capabilities})
@@ -1652,6 +1732,7 @@ async def ws_eval_probe(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_apply(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.apply_eval_recommendations(
         hass,
         msg["entry_id"],
@@ -1669,6 +1750,7 @@ async def ws_eval_apply(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_apply_settings(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.apply_server_settings(
         hass,
         msg["entry_id"],
@@ -1686,6 +1768,7 @@ async def ws_eval_apply_settings(hass: HomeAssistant, connection, msg: dict) -> 
 @websocket_api.async_response
 async def ws_eval_load_model(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.load_eval_model(
         hass,
         msg["entry_id"],
@@ -1703,6 +1786,7 @@ async def ws_eval_load_model(hass: HomeAssistant, connection, msg: dict) -> None
 @websocket_api.async_response
 async def ws_eval_unload_model(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.unload_eval_model(
         hass,
         msg["entry_id"],
@@ -1720,6 +1804,7 @@ async def ws_eval_unload_model(hass: HomeAssistant, connection, msg: dict) -> No
 @websocket_api.async_response
 async def ws_eval_delete_model(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.delete_eval_model(
         hass,
         msg["entry_id"],
@@ -1737,6 +1822,7 @@ async def ws_eval_delete_model(hass: HomeAssistant, connection, msg: dict) -> No
 @websocket_api.async_response
 async def ws_eval_preload_models(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.preload_eval_models(
         hass,
         msg["entry_id"],
@@ -1754,6 +1840,7 @@ async def ws_eval_preload_models(hass: HomeAssistant, connection, msg: dict) -> 
 @websocket_api.async_response
 async def ws_eval_discover(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.discover_models(hass, msg["entry_id"])
     connection.send_message(websocket_api.result_message(msg["id"], result))
 
@@ -1775,6 +1862,7 @@ async def ws_eval_discover(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_eval_discover_start(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     payload = {
         key: msg[key]
         for key in (
@@ -1801,6 +1889,7 @@ async def ws_eval_discover_approve_download(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.approve_discover_downloads(
         hass,
         msg["entry_id"],
@@ -1825,6 +1914,7 @@ async def ws_eval_discover_approve_trial(
     hass: HomeAssistant, connection, msg: dict
 ) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.approve_discover_trial_run(
         hass,
         msg["entry_id"],
@@ -1843,6 +1933,7 @@ async def ws_eval_discover_approve_trial(
 @websocket_api.async_response
 async def ws_eval_discover_retry(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.retry_discover_model(
         hass,
         msg["entry_id"],
@@ -1864,6 +1955,7 @@ async def ws_eval_discover_retry(hass: HomeAssistant, connection, msg: dict) -> 
 @websocket_api.async_response
 async def ws_eval_cases_list(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     tasks = msg.get("tasks")
     parsed_tasks = [str(item) for item in tasks] if isinstance(tasks, list) else None
     result = await eval_api.list_eval_cases_api(
@@ -1888,6 +1980,7 @@ async def ws_eval_cases_list(hass: HomeAssistant, connection, msg: dict) -> None
 @websocket_api.async_response
 async def ws_eval_cases_promote(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.promote_activity_turn(
         hass,
         msg["entry_id"],
@@ -1910,6 +2003,7 @@ async def ws_eval_cases_promote(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_eval_cases_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     require_admin(connection)
+    _require_entry(hass, msg)
     result = await eval_api.delete_eval_case(
         hass,
         msg["entry_id"],

@@ -21,6 +21,7 @@ async def save_skill_from_draft(
     *,
     update_existing: Skill | None = None,
     revision_reason: str = "Skill learning update",
+    slug: str | None = None,
 ) -> Skill:
     """Persist a distilled skill, optionally updating a duplicate."""
     store = get_skill_store(hass, entry_id)
@@ -54,6 +55,7 @@ async def save_skill_from_draft(
             route_scope=draft.route_scope,
             llm_model=draft.llm_model,
             llm_base_url=draft.llm_base_url,
+            slug=slug,
         )
 
     skill = await hass.async_add_executor_job(_save)

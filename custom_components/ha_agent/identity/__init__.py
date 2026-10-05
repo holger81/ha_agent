@@ -7,12 +7,17 @@ from .runtime import (
     get_identity_override,
     set_identity_override,
 )
-from .store import close_identity_store, get_identity_store
+from .store import (
+    async_setup_identity_store,
+    close_identity_store,
+    get_identity_store,
+)
 
 __all__ = [
     "AgentUser",
     "ResolvedIdentity",
     "UserKind",
+    "async_setup_identity_store",
     "clear_identity_override",
     "close_identity_store",
     "get_identity_override",

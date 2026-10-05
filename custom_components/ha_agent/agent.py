@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,7 @@ from urllib.parse import urlparse
 from homeassistant.core import HomeAssistant
 
 from .activity import record_turn
+from .api.helpers import track_entry_task
 from .api.serialize import resolved_identity_to_dict
 from .chat_events import publish_chat_delta
 from .compaction import compact_messages_if_needed
@@ -40,6 +42,7 @@ from .embedded_tools import (
 from .identity.models import SpeakerMatch
 from .identity.resolver import apply_identity_to_trace, resolve_agent_user
 from .llm_client import (
+    ChatResult,
     LlmClient,
     StreamChatSession,
     ToolCall,
@@ -266,14 +269,6 @@ def _agent_model_role(
     return "chat"
 
 
-def _stick_action_or_chat(route: TaskRoute) -> bool:
-    """Return True when the loop should switch to the chat backend.
-
-    HA_ACTION stays on the action backend for the full turn when enabled.
-    """
-    return route != TaskRoute.HA_ACTION
-
-
 def _tool_call_payload(call: ToolCall) -> tuple[str, dict[str, Any]]:
     """Return MCP tool name and argument object from a tool call."""
     args = parse_tool_arguments(call.arguments)
@@ -334,19 +329,60 @@ def thinking_from_tool_event(tool: dict[str, Any]) -> str:
     return ""
 
 
-def _record_tool_call(trace: TurnTrace, call: ToolCall, output: str) -> None:
+_TRACE_FIELD_MAX_CHARS = 2_000
+
+
+def _cap_trace_value(value: Any, *, max_chars: int = _TRACE_FIELD_MAX_CHARS) -> Any:
+    """Bound large strings before they land in turn traces."""
+    if isinstance(value, str) and len(value) > max_chars:
+        return value[: max_chars - 16] + "…[truncated]"
+    if isinstance(value, dict):
+        return {
+            key: _cap_trace_value(item, max_chars=max_chars)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_cap_trace_value(item, max_chars=max_chars) for item in value]
+    return value
+
+
+def _normalized_tool_payload(
+    call: ToolCall,
+    normalized_args: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    """Prefer normalized MCP arguments when recording a tool call."""
+    if isinstance(normalized_args, dict) and normalized_args:
+        if "toolName" in normalized_args and isinstance(
+            normalized_args.get("arguments"), dict
+        ):
+            return (
+                str(normalized_args.get("toolName") or call.name),
+                dict(normalized_args["arguments"]),
+            )
+        tool_name, _ = _tool_call_payload(call)
+        return tool_name, dict(normalized_args)
+    return _tool_call_payload(call)
+
+
+def _record_tool_call(
+    trace: TurnTrace,
+    call: ToolCall,
+    output: str,
+    *,
+    normalized_args: dict[str, Any] | None = None,
+) -> None:
     """Append a tool call to the turn trace."""
-    tool_name, arguments = _tool_call_payload(call)
+    tool_name, arguments = _normalized_tool_payload(call, normalized_args)
     error_kind, error_message, missing_fields = classify_tool_error(output)
     succeeded = error_kind is None
     trace.tool_calls.append(
         {
             "toolName": tool_name,
             "name": tool_name,
-            "arguments": arguments,
+            "arguments": _cap_trace_value(arguments),
             "succeeded": succeeded,
             "discovery": is_discovery_tool(tool_name),
-            "error": error_message or None,
+            "error": _cap_trace_value(error_message) if error_message else None,
             "error_kind": error_kind,
             "missing_fields": missing_fields,
         }
@@ -370,47 +406,49 @@ async def _yield_streamed_assistant_text(
     reasoning_buffer = ""
     reasoning_yielded_len = 0
 
-    async for chunk in llm.chat_stream(
+    stream = llm.chat_stream(
         messages,
         backend,
         tools=tools,
         session=session,
-    ):
-        if chunk.reasoning_content:
-            reasoning_buffer, _ = stream_text_delta(
-                reasoning_buffer,
-                chunk.reasoning_content,
-            )
-            if show_reasoning and len(reasoning_buffer) > reasoning_yielded_len:
-                text = reasoning_buffer[reasoning_yielded_len:]
-                reasoning_yielded_len = len(reasoning_buffer)
-                if text:
-                    yield AgentDelta(thinking=text), session
-            # Mid-stream: only hard-abort oversized reasoning. Soft repeat
-            # detection waits until the stream ends so think-then-tool models
-            # (e.g. news_curate after a short plan narration) are not cut off
-            # before tool_calls arrive.
-            content_so_far = safe_stream_display_text(raw_buffer)
-            reasoning_so_far = session.reasoning_content or reasoning_buffer
-            if (
-                not session.tool_calls
-                and not content_so_far.strip()
-                and reasoning_exceeds_hard_limit(reasoning_so_far)
-            ):
-                session.aborted_reasoning_loop = True
-                break
-        if not chunk.content:
-            continue
-        raw_buffer, delta_text = stream_text_delta(raw_buffer, chunk.content)
-        if not delta_text:
-            continue
-        # Rebuild display from the full buffer so embedded-tool stripping stays
-        # consistent, but only emit the newly appended visible suffix.
-        safe = safe_stream_display_text(raw_buffer)
-        if len(safe) > yielded_len:
-            text = safe[yielded_len:]
-            yielded_len = len(safe)
-            yield AgentDelta(content=text), session
+    )
+    async with contextlib.aclosing(stream) as chunks:
+        async for chunk in chunks:
+            if chunk.reasoning_content:
+                reasoning_buffer, _ = stream_text_delta(
+                    reasoning_buffer,
+                    chunk.reasoning_content,
+                )
+                if show_reasoning and len(reasoning_buffer) > reasoning_yielded_len:
+                    text = reasoning_buffer[reasoning_yielded_len:]
+                    reasoning_yielded_len = len(reasoning_buffer)
+                    if text:
+                        yield AgentDelta(thinking=text), session
+                # Mid-stream: only hard-abort oversized reasoning. Soft repeat
+                # detection waits until the stream ends so think-then-tool models
+                # (e.g. news_curate after a short plan narration) are not cut off
+                # before tool_calls arrive.
+                content_so_far = safe_stream_display_text(raw_buffer)
+                reasoning_so_far = session.reasoning_content or reasoning_buffer
+                if (
+                    not session.has_tool_call_fragments
+                    and not content_so_far.strip()
+                    and reasoning_exceeds_hard_limit(reasoning_so_far)
+                ):
+                    session.aborted_reasoning_loop = True
+                    break
+            if not chunk.content:
+                continue
+            raw_buffer, delta_text = stream_text_delta(raw_buffer, chunk.content)
+            if not delta_text:
+                continue
+            # Rebuild display from the full buffer so embedded-tool stripping stays
+            # consistent, but only emit the newly appended visible suffix.
+            safe = safe_stream_display_text(raw_buffer)
+            if len(safe) > yielded_len:
+                text = safe[yielded_len:]
+                yielded_len = len(safe)
+                yield AgentDelta(content=text), session
 
     session.content = raw_buffer
     if not session.aborted_reasoning_loop and is_reasoning_loop(
@@ -435,13 +473,13 @@ async def _run_tool_call(
     trace: TurnTrace | None = None,
 ) -> str:
     """Execute one tool call and track controlled homeassistant entities."""
-    output = await execute_tool(
+    output, normalized_args = await execute_tool(
         mcp_client,
         call,
         exposed_entities=exposed_entities,
     )
     if trace is not None:
-        _record_tool_call(trace, call, output)
+        _record_tool_call(trace, call, output, normalized_args=normalized_args)
     if not output.startswith("Tool error:") and (
         entity_id := ha_service_entity_id(
             call,
@@ -450,6 +488,33 @@ async def _run_tool_call(
     ):
         controlled_entity_ids.append(entity_id)
     return output
+
+
+def _finish_turn(
+    hass: HomeAssistant,
+    *,
+    conversation_id: str | None,
+    user_text: str,
+    assistant_text: str,
+    controlled_entity_ids: list[str],
+    agent_config: AgentConfig,
+    entry_id: str,
+    turn_meta: dict[str, Any],
+    trace: TurnTrace,
+) -> None:
+    """Persist history + turn record for stuck/fallback exits."""
+    if controlled_entity_ids:
+        turn_meta["controlled_entity_ids"] = list(controlled_entity_ids)
+    append_turn(
+        hass,
+        conversation_id,
+        user_text,
+        memory_assistant_text(assistant_text, controlled_entity_ids),
+        max_turns=agent_config.history_turns,
+        entry_id=entry_id,
+        turn_meta=turn_meta,
+    )
+    record_turn(hass, entry_id, trace)
 
 
 def _finalize_stuck_turn(trace: TurnTrace, loop_state: LoopState) -> str:
@@ -600,7 +665,7 @@ def _schedule_post_turn_skills(
         except Exception as err:
             LOGGER.warning("Post-turn skill hooks failed: %s", err)
 
-    hass.async_create_task(_run())
+    track_entry_task(hass, entry_id, _run(), name=f"ha_agent_post_turn_{entry_id}")
 
 
 def _handle_tool_result(
@@ -750,9 +815,7 @@ async def _process_tool_calls(
         if call.id in blocked_ids:
             continue
         tool_name, arguments = _tool_call_payload(call)
-        if block := redundant_override_tool_block(
-            loop_state, tool_name, arguments
-        ):
+        if block := redundant_override_tool_block(loop_state, tool_name, arguments):
             record_override_block_guidance(loop_state, tool_name, block)
             record_iteration_failure(loop_state, tool_name, arguments, block)
             record_plan_tool_result(
@@ -952,6 +1015,10 @@ async def _run_orchestrated_turn(
     trace: TurnTrace,
     hint_rules: list[Any] | None,
     matched_skills: list,
+    history: list[dict[str, Any]] | None = None,
+    identity_context: str = "",
+    memory_context: str = "",
+    extra_system_prompt: str = "",
 ) -> AsyncGenerator[AgentDelta, None]:
     """Execute a complex multi-subtask turn via worker subagents."""
     from .context import build_messages, build_system_message
@@ -959,6 +1026,7 @@ async def _run_orchestrated_turn(
     worker_results: list[WorkerResult] = []
     subtask_learned: list = []
     pending_subtasks = list(orch_plan.subtasks)
+    completed_ids: set[str] = set()
     replans = 0
     structured = agent_config.structured_output_enabled
     index = 0
@@ -972,7 +1040,7 @@ async def _run_orchestrated_turn(
                 llm,
                 registry.backend_for(ModelRole.ROUTER),
                 subtask.subgoal,
-                history=[],
+                history=history or [],
                 route=subtask.route,
                 domain_hint=None,
                 max_inject=1,
@@ -1001,6 +1069,11 @@ async def _run_orchestrated_turn(
             llm_tools=llm_tools,
             prior_results=worker_results,
             router_config=router_config,
+            history=history,
+            identity_context=identity_context,
+            memory_context=memory_context,
+            extra_system_prompt=extra_system_prompt,
+            trace=trace,
         ):
             if meta:
                 yield AgentDelta(subagent=meta)
@@ -1009,6 +1082,7 @@ async def _run_orchestrated_turn(
 
         if worker_result is not None:
             worker_results.append(worker_result)
+            completed_ids.add(subtask.id)
             trace.subtask_results.append(
                 {
                     "subgoal": worker_result.subgoal,
@@ -1017,14 +1091,22 @@ async def _run_orchestrated_turn(
                     "tool_errors": worker_result.tool_errors,
                 }
             )
-            if worker_result.tool_errors > 0 and replans < agent_config.max_replans:
+            had_success = any(
+                call.get("succeeded") for call in worker_result.tool_calls
+            )
+            needs_replan = worker_result.assistant_text.strip() == "No response." or (
+                worker_result.tool_errors > 0 and not had_success
+            )
+            if needs_replan and replans < agent_config.max_replans:
                 replans += 1
+                completed_ids.discard(subtask.id)
                 completed = [
                     {
                         "subgoal": item.subgoal,
                         "summary": item.assistant_text[:300],
                     }
                     for item in worker_results
+                    if item is not worker_result
                 ]
                 revised = await replan_after_failure(
                     llm,
@@ -1036,7 +1118,9 @@ async def _run_orchestrated_turn(
                     structured_output_enabled=structured,
                     trace=trace,
                 )
-                pending_subtasks = revised.subtasks + pending_subtasks[index + 1 :]
+                pending_subtasks = [
+                    item for item in revised.subtasks if item.id not in completed_ids
+                ]
                 index = 0
                 continue
         index += 1
@@ -1239,7 +1323,9 @@ async def _post_turn_skills(
                 except Exception as err:
                     LOGGER.warning("Skill evaluation failed: %s", err)
 
-            hass.async_create_task(_evaluate())
+            track_entry_task(
+                hass, entry_id, _evaluate(), name=f"ha_agent_eval_skill_{entry_id}"
+            )
 
         if (
             trace.skill_plan_override
@@ -1301,7 +1387,12 @@ async def _post_turn_skills(
                     from_version = (
                         update_target.version if update_target is not None else None
                     )
-                    hass.async_create_task(_save_override())
+                    track_entry_task(
+                        hass,
+                        entry_id,
+                        _save_override(),
+                        name=f"ha_agent_save_override_{entry_id}",
+                    )
                     if action == "update" and from_version is not None:
                         suffix = (
                             f" Updating skill: {draft.title} "
@@ -1350,15 +1441,25 @@ async def _post_turn_skills(
             and bindings_diverge_from_defaults(primary_learned, trace.slot_bindings)
             and skills_config.learning_enabled
         ):
-            # Stable personal defaults (mailbox, digest scope) go to user memory
-            # instead of forking another skill variant.
-            memory_keys = {
+            # Stable personal defaults go to user memory instead of forking
+            # another skill variant. Keep aliases for known slots; otherwise
+            # derive ``{route_scope}.{slot}`` generically.
+            _MEMORY_KEY_ALIASES = {
                 "mailbox": ("email.default_mailbox", "email"),
                 "digest_scope": ("news.digest_scope", "news"),
             }
+            scope = (primary_learned.route_scope or "").strip().lower() or "user"
+            memory_keys: dict[str, tuple[str, str]] = {}
+            for slot_name, raw_value in (trace.slot_bindings or {}).items():
+                if not str(raw_value).strip():
+                    continue
+                if slot_name in _MEMORY_KEY_ALIASES:
+                    memory_keys[slot_name] = _MEMORY_KEY_ALIASES[slot_name]
+                else:
+                    memory_keys[slot_name] = (f"{scope}.{slot_name}", scope)
             remembered: list[str] = []
             agent_user_id = getattr(trace, "agent_user_id", None)
-            if agent_user_id:
+            if agent_user_id and memory_keys:
                 from .persistent_memory import get_persistent_memory_store
 
                 store = get_persistent_memory_store(hass, entry_id)
@@ -1411,7 +1512,12 @@ async def _post_turn_skills(
                         except Exception as err:
                             LOGGER.warning("Skill fork save failed: %s", err)
 
-                    hass.async_create_task(_save_fork())
+                    track_entry_task(
+                        hass,
+                        entry_id,
+                        _save_fork(),
+                        name=f"ha_agent_save_fork_{entry_id}",
+                    )
                     return (
                         f" Saving skill variant: {prepared_fork.title}.",
                         meta_patch,
@@ -1520,7 +1626,9 @@ async def _post_turn_skills(
             except Exception as err:
                 LOGGER.warning("Skill creation failed: %s", err)
 
-        hass.async_create_task(_save())
+        track_entry_task(
+            hass, entry_id, _save(), name=f"ha_agent_save_skill_{entry_id}"
+        )
         return f" Saving skill: {prepared.title}.", meta_patch
 
     queue_pending_save(
@@ -2026,6 +2134,10 @@ async def run_agent(
             trace=trace,
             hint_rules=hint_rules,
             matched_skills=matched_skills,
+            history=history,
+            identity_context=identity_context,
+            memory_context=memory_context,
+            extra_system_prompt=extra_system_prompt,
         ):
             yield handled
         return
@@ -2242,6 +2354,16 @@ async def run_agent(
                     yield delta
 
             raw_buffer = session.content
+            record_llm_call(
+                trace,
+                role=model_role,
+                backend=active_backend,
+                result=ChatResult(
+                    content=session.content or None,
+                    reasoning_content=session.reasoning_content or None,
+                    tool_calls=list(session.tool_calls),
+                ),
+            )
             stream_reasoning_action = _reasoning_loop_action(
                 loop_state,
                 iteration=iteration,
@@ -2262,7 +2384,6 @@ async def run_agent(
                 )
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_preserve_stream(loop_state)
-                use_chat_backend = _stick_action_or_chat(route)
                 continue
             if stream_reasoning_action == "stuck":
                 _attach_plan_progress(turn_meta, loop_state, trace)
@@ -2270,16 +2391,17 @@ async def run_agent(
                     content=_finalize_stuck_turn(trace, loop_state),
                     meta=dict(turn_meta),
                 )
-                append_turn(
+                _finish_turn(
                     hass,
-                    conversation_id,
-                    user_text,
-                    loop_state.stuck_message,
-                    max_turns=agent_config.history_turns,
+                    conversation_id=conversation_id,
+                    user_text=user_text,
+                    assistant_text=loop_state.stuck_message,
+                    controlled_entity_ids=controlled_entity_ids,
+                    agent_config=agent_config,
                     entry_id=entry_id,
                     turn_meta=turn_meta,
+                    trace=trace,
                 )
-                record_turn(hass, entry_id, trace)
                 return
 
             if session.tool_calls:
@@ -2310,20 +2432,20 @@ async def run_agent(
                         content=_finalize_stuck_turn(trace, loop_state),
                         meta=dict(turn_meta),
                     )
-                    append_turn(
+                    _finish_turn(
                         hass,
-                        conversation_id,
-                        user_text,
-                        loop_state.stuck_message,
-                        max_turns=agent_config.history_turns,
+                        conversation_id=conversation_id,
+                        user_text=user_text,
+                        assistant_text=loop_state.stuck_message,
+                        controlled_entity_ids=controlled_entity_ids,
+                        agent_config=agent_config,
                         entry_id=entry_id,
                         turn_meta=turn_meta,
+                        trace=trace,
                     )
-                    record_turn(hass, entry_id, trace)
                     return
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             embedded_ran = False
@@ -2349,22 +2471,22 @@ async def run_agent(
                         content=_finalize_stuck_turn(trace, loop_state),
                         meta=dict(turn_meta),
                     )
-                    append_turn(
+                    _finish_turn(
                         hass,
-                        conversation_id,
-                        user_text,
-                        loop_state.stuck_message,
-                        max_turns=agent_config.history_turns,
+                        conversation_id=conversation_id,
+                        user_text=user_text,
+                        assistant_text=loop_state.stuck_message,
+                        controlled_entity_ids=controlled_entity_ids,
+                        agent_config=agent_config,
                         entry_id=entry_id,
                         turn_meta=turn_meta,
+                        trace=trace,
                     )
-                    record_turn(hass, entry_id, trace)
                     return
                 embedded_ran = True
             if embedded_ran:
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             assistant_text = strip_embedded_tool_markup(raw_buffer)
@@ -2402,20 +2524,20 @@ async def run_agent(
                         content=_finalize_stuck_turn(trace, loop_state),
                         meta=dict(turn_meta),
                     )
-                    append_turn(
+                    _finish_turn(
                         hass,
-                        conversation_id,
-                        user_text,
-                        loop_state.stuck_message,
-                        max_turns=agent_config.history_turns,
+                        conversation_id=conversation_id,
+                        user_text=user_text,
+                        assistant_text=loop_state.stuck_message,
+                        controlled_entity_ids=controlled_entity_ids,
+                        agent_config=agent_config,
                         entry_id=entry_id,
                         turn_meta=turn_meta,
+                        trace=trace,
                     )
-                    record_turn(hass, entry_id, trace)
                     return
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             embedded_ran = False
@@ -2441,22 +2563,22 @@ async def run_agent(
                         content=_finalize_stuck_turn(trace, loop_state),
                         meta=dict(turn_meta),
                     )
-                    append_turn(
+                    _finish_turn(
                         hass,
-                        conversation_id,
-                        user_text,
-                        loop_state.stuck_message,
-                        max_turns=agent_config.history_turns,
+                        conversation_id=conversation_id,
+                        user_text=user_text,
+                        assistant_text=loop_state.stuck_message,
+                        controlled_entity_ids=controlled_entity_ids,
+                        agent_config=agent_config,
                         entry_id=entry_id,
                         turn_meta=turn_meta,
+                        trace=trace,
                     )
-                    record_turn(hass, entry_id, trace)
                     return
                 embedded_ran = True
             if embedded_ran:
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_after_tools(loop_state)
-                use_chat_backend = _stick_action_or_chat(route)
                 continue
 
             assistant_text = (result.content or "").strip()
@@ -2483,7 +2605,6 @@ async def run_agent(
                 )
                 _prepare_next_loop_iteration(loop_state)
                 mark_iteration_preserve_stream(loop_state)
-                use_chat_backend = _stick_action_or_chat(route)
                 continue
             if buffered_reasoning_action == "stuck":
                 _attach_plan_progress(turn_meta, loop_state, trace)
@@ -2491,16 +2612,17 @@ async def run_agent(
                     content=_finalize_stuck_turn(trace, loop_state),
                     meta=dict(turn_meta),
                 )
-                append_turn(
+                _finish_turn(
                     hass,
-                    conversation_id,
-                    user_text,
-                    loop_state.stuck_message,
-                    max_turns=agent_config.history_turns,
+                    conversation_id=conversation_id,
+                    user_text=user_text,
+                    assistant_text=loop_state.stuck_message,
+                    controlled_entity_ids=controlled_entity_ids,
+                    agent_config=agent_config,
                     entry_id=entry_id,
                     turn_meta=turn_meta,
+                    trace=trace,
                 )
-                record_turn(hass, entry_id, trace)
                 return
 
         if assistant_text and should_retry_after_failed_tools(
@@ -2525,7 +2647,6 @@ async def run_agent(
             )
             _prepare_next_loop_iteration(loop_state)
             mark_iteration_preserve_stream(loop_state)
-            use_chat_backend = _stick_action_or_chat(route)
             continue
 
         if assistant_text and should_retry_missing_control(
@@ -2546,7 +2667,6 @@ async def run_agent(
             )
             _prepare_next_loop_iteration(loop_state)
             mark_iteration_preserve_stream(loop_state)
-            use_chat_backend = _stick_action_or_chat(route)
             continue
 
         if assistant_text and should_retry_missing_reading(
@@ -2567,7 +2687,6 @@ async def run_agent(
             )
             _prepare_next_loop_iteration(loop_state)
             mark_iteration_preserve_stream(loop_state)
-            use_chat_backend = _stick_action_or_chat(route)
             continue
 
         if assistant_text and should_retry_missing_status(
@@ -2587,7 +2706,6 @@ async def run_agent(
             )
             _prepare_next_loop_iteration(loop_state)
             mark_iteration_preserve_stream(loop_state)
-            use_chat_backend = _stick_action_or_chat(route)
             continue
 
         if assistant_text and should_retry_control_confirmation(
@@ -2609,7 +2727,6 @@ async def run_agent(
             )
             _prepare_next_loop_iteration(loop_state)
             mark_iteration_preserve_stream(loop_state)
-            use_chat_backend = _stick_action_or_chat(route)
             continue
 
         confirmed_reply = (
@@ -2683,7 +2800,6 @@ async def run_agent(
             )
             _prepare_next_loop_iteration(loop_state)
             mark_iteration_preserve_stream(loop_state)
-            use_chat_backend = _stick_action_or_chat(route)
             continue
 
         if not assistant_text:
@@ -2701,6 +2817,7 @@ async def run_agent(
         should_verify = (
             primary_learned is not None or trace.tool_errors > 0 or failed_ha_verify
         )
+        v_early = None
         if (
             should_verify
             and skill_results_ready_to_answer(loop_state)
@@ -2735,11 +2852,7 @@ async def run_agent(
                     )
                     for call in trace.tool_calls
                 )
-                if (
-                    grounded_reading
-                    or loop_state.skill_plan_override
-                    or tool_grounded
-                ):
+                if grounded_reading or loop_state.skill_plan_override or tool_grounded:
                     pass
                 else:
                     # Always replace the draft answer; do not preserve content.
@@ -2752,7 +2865,9 @@ async def run_agent(
                         }
                     )
                     _prepare_next_loop_iteration(loop_state)
-                    use_chat_backend = _stick_action_or_chat(route)
+                    mark_iteration_preserve_stream(
+                        loop_state, draft_answer=assistant_text
+                    )
                     continue
 
         trace.assistant_text = assistant_text
@@ -2804,17 +2919,21 @@ async def run_agent(
         )
 
         if should_verify:
-            v_result = await verify_turn(
-                llm,
-                role_registry.backend_for(ModelRole.VERIFIER),
-                user_text=user_text,
-                assistant_text=assistant_text,
-                tool_calls=trace.tool_calls,
-                tool_errors=trace.tool_errors,
-                skill=primary_learned,
-                slot_bindings=slot_bindings,
-                structured_output_enabled=structured,
-                trace=trace,
+            v_result = (
+                v_early
+                if v_early is not None
+                else await verify_turn(
+                    llm,
+                    role_registry.backend_for(ModelRole.VERIFIER),
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    tool_calls=trace.tool_calls,
+                    tool_errors=trace.tool_errors,
+                    skill=primary_learned,
+                    slot_bindings=slot_bindings,
+                    structured_output_enabled=structured,
+                    trace=trace,
+                )
             )
         else:
             from .verifier import VerifierResult
@@ -2864,13 +2983,14 @@ async def run_agent(
     )
     _attach_plan_progress(turn_meta, loop_state, trace)
     yield AgentDelta(content=fallback, meta=dict(turn_meta))
-    append_turn(
+    _finish_turn(
         hass,
-        conversation_id,
-        user_text,
-        fallback,
-        max_turns=agent_config.history_turns,
+        conversation_id=conversation_id,
+        user_text=user_text,
+        assistant_text=fallback,
+        controlled_entity_ids=controlled_entity_ids,
+        agent_config=agent_config,
         entry_id=entry_id,
         turn_meta=turn_meta,
+        trace=trace,
     )
-    record_turn(hass, entry_id, trace)

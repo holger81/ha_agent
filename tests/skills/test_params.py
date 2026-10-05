@@ -113,6 +113,42 @@ def test_bind_tool_steps_fills_entity_and_service_slots() -> None:
     }
 
 
+def test_bind_tool_steps_preserves_quotes_in_nested_args() -> None:
+    """Nested string leaves bind without json.dumps/loads quote breakage."""
+    bind_tool_steps = mods["params"].bind_tool_steps
+    steps = bind_tool_steps(
+        [
+            {
+                "toolName": "demo__echo",
+                "arguments": {
+                    "query": 'Say {{phrase}} and "keep quotes"',
+                    "nested": {"note": "User said: {{phrase}}"},
+                    "tags": ["{{phrase}}", "static"],
+                },
+            }
+        ],
+        {"phrase": 'hello "world"'},
+    )
+    assert steps[0]["arguments"]["query"] == 'Say hello "world" and "keep quotes"'
+    assert steps[0]["arguments"]["nested"]["note"] == 'User said: hello "world"'
+    assert steps[0]["arguments"]["tags"] == ['hello "world"', "static"]
+
+
+def test_bind_tool_steps_does_not_inject_via_json_breakout() -> None:
+    bind_tool_steps = mods["params"].bind_tool_steps
+    steps = bind_tool_steps(
+        [
+            {
+                "toolName": "demo__echo",
+                "arguments": {"payload": {"text": "{{x}}"}},
+            }
+        ],
+        {"x": '"}, "evil": true, "y": "'},
+    )
+    assert steps[0]["arguments"]["payload"]["text"] == '"}, "evil": true, "y": "'
+    assert "evil" not in steps[0]["arguments"]["payload"]
+
+
 def test_bind_tool_steps_omits_empty_optional_slots() -> None:
     """Empty bound strings are dropped so MCP defaults apply."""
     bind_tool_steps = mods["params"].bind_tool_steps

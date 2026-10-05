@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import functools
 import sqlite3
+import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from ..const import DATA_KEY
+from ..skills.store import validate_entry_id
 from .embeddings import (
     merge_centroids,
     pack_embedding,
@@ -20,6 +25,18 @@ from .embeddings import (
 from .models import AgentUser, UserKind, VoiceProfile
 
 IDENTITY_STORE_KEY = "identity_stores"
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _locked(method: _F) -> _F:
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
 _REGISTERED_SEED_NAMES = ("Member 1", "Member 2", "Member 3", "Member 4")
 _ASSIST_GUEST_NAME = "Voice (unidentified)"
 _UNSET = object()
@@ -96,12 +113,22 @@ class IdentityStore:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     @staticmethod
     def db_path_for_entry(hass: HomeAssistant, entry_id: str) -> Path:
         """Return the SQLite path for one config entry."""
-        return Path(hass.config.path(".storage")) / f"ha_agent_identity_{entry_id}.db"
+        try:
+            safe_id = validate_entry_id(entry_id)
+        except ValueError:
+            # Unit tests use short synthetic entry ids; still block path traversal.
+            cleaned = str(entry_id or "").strip()
+            if not cleaned or any(part in cleaned for part in ("..", "/", "\\")):
+                raise
+            safe_id = cleaned
+        return Path(hass.config.path(".storage")) / f"ha_agent_identity_{safe_id}.db"
 
+    @_locked
     def connect(self) -> None:
         """Open the database and ensure schema."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,6 +138,7 @@ class IdentityStore:
         self._conn.commit()
         self.ensure_seeded()
 
+    @_locked
     def close(self) -> None:
         """Close the database connection."""
         if self._conn is not None:
@@ -356,18 +384,20 @@ class IdentityStore:
         self._db().commit()
 
     def next_voice_guest_name(self) -> str:
-        """Return the next display name for a voice-clustered guest."""
+        """Return the next unused display name for a voice-clustered guest."""
         rows = (
             self._db()
             .execute(
-                "SELECT COUNT(*) FROM agent_users "
-                "WHERE kind = ? AND display_name != ? AND merged_into IS NULL",
-                (UserKind.GUEST.value, _ASSIST_GUEST_NAME),
+                "SELECT display_name FROM agent_users WHERE kind = ?",
+                (UserKind.GUEST.value,),
             )
-            .fetchone()
+            .fetchall()
         )
-        count = int(rows[0]) if rows else 0
-        return f"Guest {count + 1}"
+        existing = {str(row["display_name"]) for row in rows}
+        index = 1
+        while f"Guest {index}" in existing:
+            index += 1
+        return f"Guest {index}"
 
     def list_voice_profiles(self) -> list[VoiceProfile]:
         """Return voice profiles excluding the Assist fallback guest."""
@@ -572,51 +602,64 @@ class IdentityStore:
         *,
         display_name: str | None = None,
     ) -> AgentUser:
-        """Attach a guest voice profile to a registered member."""
-        self._validate_promotable_guest(guest_id)
-        registered = self.get_user(registered_id)
-        if (
-            registered is None
-            or registered.merged_into
-            or registered.kind != UserKind.REGISTERED
-        ):
-            msg = "Registered user not found"
-            raise ValueError(msg)
+        """Attach a guest voice profile to a registered member in one transaction."""
+        with self._lock:
+            self._validate_promotable_guest(guest_id)
+            registered = self.get_user(registered_id)
+            if (
+                registered is None
+                or registered.merged_into
+                or registered.kind != UserKind.REGISTERED
+            ):
+                msg = "Registered user not found"
+                raise ValueError(msg)
 
-        guest_profile = self.get_voice_profile_for_user(guest_id)
-        reg_profile = self.get_voice_profile_for_user(registered_id)
-        if guest_profile is not None:
-            if reg_profile is not None:
-                self._merge_voice_profiles_into(reg_profile, guest_profile)
-                self._db().execute(
-                    "DELETE FROM voice_profiles WHERE id = ?",
-                    (guest_profile.id,),
+            conn = self._db()
+            try:
+                guest_profile = self.get_voice_profile_for_user(guest_id)
+                reg_profile = self.get_voice_profile_for_user(registered_id)
+                if guest_profile is not None:
+                    if reg_profile is not None:
+                        self._merge_voice_profiles_into(reg_profile, guest_profile)
+                        conn.execute(
+                            "DELETE FROM voice_profiles WHERE id = ?",
+                            (guest_profile.id,),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE voice_profiles SET agent_user_id = ?, "
+                            "updated_at = ? WHERE id = ?",
+                            (registered_id, time.time(), guest_profile.id),
+                        )
+
+                now = time.time()
+                if display_name:
+                    conn.execute(
+                        "UPDATE agent_users SET display_name = ?, updated_at = ? "
+                        "WHERE id = ?",
+                        (display_name.strip(), now, registered_id),
+                    )
+
+                conn.execute(
+                    "UPDATE agent_users SET merged_into = ?, updated_at = ?, "
+                    "notes = ? WHERE id = ?",
+                    (
+                        registered_id,
+                        now,
+                        f"Promoted into {registered.display_name}",
+                        guest_id,
+                    ),
                 )
-            else:
-                self._db().execute(
-                    "UPDATE voice_profiles SET agent_user_id = ?, updated_at = ? "
-                    "WHERE id = ?",
-                    (registered_id, time.time(), guest_profile.id),
-                )
-
-        if display_name:
-            self.update_user(registered_id, display_name=display_name.strip())
-
-        now = time.time()
-        self._db().execute(
-            "UPDATE agent_users SET merged_into = ?, updated_at = ?, notes = ? "
-            "WHERE id = ?",
-            (
-                registered_id,
-                now,
-                f"Promoted into {registered.display_name}",
-                guest_id,
-            ),
-        )
-        self._db().commit()
-        updated = self.get_user(registered_id)
-        assert updated is not None
-        return updated
+                conn.commit()
+            except sqlite3.IntegrityError as err:
+                conn.rollback()
+                raise HomeAssistantError(str(err)) from err
+            except Exception:
+                conn.rollback()
+                raise
+            updated = self.get_user(registered_id)
+            assert updated is not None
+            return updated
 
     def merge_guests(
         self,
@@ -686,7 +729,11 @@ class IdentityStore:
 
 
 def get_identity_store(hass: HomeAssistant, entry_id: str) -> IdentityStore:
-    """Return the identity store for a config entry."""
+    """Return the identity store for a config entry.
+
+    Prefer ``async_setup_identity_store`` during entry setup so SQLite opens on
+    the executor. Lazy-connect remains for unit tests and late callers.
+    """
     domain_data = hass.data.setdefault(DATA_KEY, {})
     stores: dict[str, IdentityStore] = domain_data.setdefault(IDENTITY_STORE_KEY, {})
     if entry_id not in stores:
@@ -694,6 +741,20 @@ def get_identity_store(hass: HomeAssistant, entry_id: str) -> IdentityStore:
         store.connect()
         stores[entry_id] = store
     return stores[entry_id]
+
+
+async def async_setup_identity_store(
+    hass: HomeAssistant, entry_id: str
+) -> IdentityStore:
+    """Open the identity store in the executor and register it."""
+    domain_data = hass.data.setdefault(DATA_KEY, {})
+    stores: dict[str, IdentityStore] = domain_data.setdefault(IDENTITY_STORE_KEY, {})
+    if entry_id in stores:
+        return stores[entry_id]
+    store = IdentityStore(IdentityStore.db_path_for_entry(hass, entry_id))
+    await hass.async_add_executor_job(store.connect)
+    stores[entry_id] = store
+    return store
 
 
 def close_identity_store(hass: HomeAssistant, entry_id: str) -> None:

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from homeassistant.core import HomeAssistant, callback
 
@@ -15,11 +18,16 @@ from .memory import (
     _memory_store,
     async_save_memory,
     clear_conversation,
+    memory_ids_for_entry,
 )
 from .skills.runtime import pop_pending_draft
 
+_T = TypeVar("_T")
+
 THREADS_KEY = "conversation_threads"
+THREADS_PENDING_SAVES_KEY = "conversation_threads_pending_saves"
 CONSOLE_CONVERSATION_PREFIX = "console-"
+_SAVE_DEBOUNCE_SECONDS = 0.05
 
 
 def conversation_source(conversation_id: str) -> str:
@@ -80,6 +88,12 @@ def _threads_path(hass: HomeAssistant, entry_id: str) -> Path:
 def _threads_store(hass: HomeAssistant) -> dict[str, dict[str, dict[str, Any]]]:
     domain_data = hass.data.setdefault(DATA_KEY, {})
     return domain_data.setdefault(THREADS_KEY, {})
+
+
+@callback
+def _pending_thread_saves(hass: HomeAssistant) -> dict[str, asyncio.Task[Any]]:
+    domain_data = hass.data.setdefault(DATA_KEY, {})
+    return domain_data.setdefault(THREADS_PENDING_SAVES_KEY, {})
 
 
 @callback
@@ -151,7 +165,7 @@ def list_threads(
     """Return thread list with conversation_id included."""
     threads_map = get_threads(hass, entry_id)
     memory = _memory_store(hass)
-    conversation_ids = set(threads_map) | set(memory)
+    conversation_ids = set(threads_map) | memory_ids_for_entry(hass, entry_id)
     result = [
         _thread_item(
             conversation_id,
@@ -202,7 +216,7 @@ def search_threads(
 
     threads_map = get_threads(hass, entry_id)
     memory = _memory_store(hass)
-    conversation_ids = set(threads_map) | set(memory)
+    conversation_ids = set(threads_map) | memory_ids_for_entry(hass, entry_id)
 
     results: list[dict[str, Any]] = []
     for conversation_id in conversation_ids:
@@ -253,7 +267,7 @@ async def async_delete_thread(
     """Delete thread metadata, conversation history, and pending drafts."""
     had_thread = delete_thread_metadata(hass, entry_id, conversation_id)
     had_memory = conversation_id in _memory_store(hass)
-    clear_conversation(hass, conversation_id)
+    clear_conversation(hass, conversation_id, entry_id=entry_id)
     pop_pending_draft(hass, conversation_id)
 
     if not had_thread and not had_memory:
@@ -265,25 +279,100 @@ async def async_delete_thread(
     return True
 
 
-async def async_load_threads(hass: HomeAssistant, entry_id: str) -> None:
-    """Load thread metadata from disk."""
-    path = _threads_path(hass, entry_id)
+def _read_threads_text(path: Path) -> str | None:
     if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8")
+
+
+def _write_threads_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+async def _async_executor_job(
+    hass: HomeAssistant,
+    func: Callable[..., _T],
+    /,
+    *args: Any,
+) -> _T:
+    """Run ``func`` via ``hass.async_add_executor_job``.
+
+    Falls back to an inline call when the hass stub returns a non-awaitable
+    (common in unit tests that use ``MagicMock`` without configuring the
+    executor).
+    """
+    result = hass.async_add_executor_job(func, *args)
+    if inspect.isawaitable(result):
+        return await result
+    return func(*args)
+
+
+def _cancel_pending_thread_save(hass: HomeAssistant, entry_id: str) -> None:
+    pending = _pending_thread_saves(hass)
+    existing = pending.pop(entry_id, None)
+    if existing is not None and not existing.done():
+        existing.cancel()
+
+
+@callback
+def schedule_save_threads(hass: HomeAssistant, entry_id: str) -> None:
+    """Debounce disk persistence: one pending save task per entry."""
+    pending = _pending_thread_saves(hass)
+    existing = pending.get(entry_id)
+    if existing is not None and not existing.done():
+        existing.cancel()
+
+    async def _debounced() -> None:
+        try:
+            await asyncio.sleep(_SAVE_DEBOUNCE_SECONDS)
+            await async_save_threads(hass, entry_id, _from_debounce=True)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if pending.get(entry_id) is asyncio.current_task():
+                pending.pop(entry_id, None)
+
+    pending[entry_id] = hass.async_create_task(_debounced())
+
+
+async def async_load_threads(hass: HomeAssistant, entry_id: str) -> None:
+    """Load thread metadata from disk (executor I/O)."""
+    path = _threads_path(hass, entry_id)
+    try:
+        text = await _async_executor_job(hass, _read_threads_text, path)
+    except OSError as err:
+        LOGGER.warning("Failed to load HA Agent threads for %s: %s", entry_id, err)
+        return
+    if text is None:
         return
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as err:
+        data = json.loads(text)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as err:
         LOGGER.warning("Failed to load HA Agent threads for %s: %s", entry_id, err)
         return
     if isinstance(data, dict):
         _threads_store(hass)[entry_id] = data
 
 
-async def async_save_threads(hass: HomeAssistant, entry_id: str) -> None:
-    """Persist thread metadata to disk."""
+async def async_save_threads(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    _from_debounce: bool = False,
+) -> None:
+    """Persist thread metadata to disk (executor I/O)."""
+    if not _from_debounce:
+        _cancel_pending_thread_save(hass, entry_id)
+
     threads = _threads_store(hass).get(entry_id, {})
     path = _threads_path(hass, entry_id)
     try:
-        path.write_text(json.dumps(threads, indent=2), encoding="utf-8")
+        text = json.dumps(threads, indent=2, default=str)
+    except (TypeError, ValueError) as err:
+        LOGGER.warning("Failed to serialize HA Agent threads for %s: %s", entry_id, err)
+        return
+    try:
+        await _async_executor_job(hass, _write_threads_text, path, text)
     except OSError as err:
         LOGGER.warning("Failed to save HA Agent threads for %s: %s", entry_id, err)

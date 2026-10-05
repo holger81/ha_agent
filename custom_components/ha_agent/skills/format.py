@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 
-from .models import Skill
+from .models import MAX_SKILL_BODY_CHARS, Skill
 from .params import bind_slot_value, bind_tool_steps, default_slots_for_skill
+
+_CONTEXT_BODY_CHARS = min(1200, MAX_SKILL_BODY_CHARS)
 
 _ROUTE_SKILL_PRIORITY = frozenset({"email", "news", "action"})
 
@@ -65,6 +67,8 @@ def format_skills_for_context(
             lines.append(f"  Bound slots: {json.dumps(bindings, ensure_ascii=True)}")
         body_preview = bind_slot_value(skill.body.strip(), bindings)
         if body_preview:
+            if len(body_preview) > _CONTEXT_BODY_CHARS:
+                body_preview = body_preview[:_CONTEXT_BODY_CHARS].rstrip() + "…"
             lines.append(f"  Workflow:\n{body_preview}")
         if skill.tool_steps:
             step_names = [

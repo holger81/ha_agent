@@ -10,9 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-COMPONENT = (
-    Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
-)
+COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
 def _load_commands():
@@ -84,9 +82,7 @@ async def test_list_skills_empty() -> None:
     hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *a, **k: fn(*a, **k))
 
     with patch.object(commands, "get_skill_store", return_value=store):
-        reply = await commands.try_handle_skill_command(
-            hass, "entry", "list my skills"
-        )
+        reply = await commands.try_handle_skill_command(hass, "entry", "list my skills")
     assert reply is not None
     assert "no saved skills" in reply.lower()
 
@@ -97,6 +93,58 @@ def test_is_skill_admin_query() -> None:
     assert commands.is_skill_admin_query("list my skills")
     assert commands.is_skill_admin_query("save this as a skill")
     assert not commands.is_skill_admin_query("turn on the lights")
+
+
+@pytest.mark.asyncio
+async def test_delete_skill_requires_unambiguous_match() -> None:
+    hass = MagicMock()
+    store = MagicMock()
+    skill_a = MagicMock(
+        id="1",
+        slug="alpha-skill",
+        title="Alpha Skill",
+        is_builtin=False,
+    )
+    skill_b = MagicMock(
+        id="2",
+        slug="alpha-extra",
+        title="Alpha Extra",
+        is_builtin=False,
+    )
+    store.count_skills.return_value = 2
+    store.list_recent.return_value = [skill_a, skill_b]
+    store.search.return_value = [MagicMock(id="1"), MagicMock(id="2")]
+    hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *a, **k: fn(*a, **k))
+
+    with patch.object(commands, "get_skill_store", return_value=store):
+        reply = await commands.try_handle_skill_command(
+            hass, "entry", 'delete skill "Alpha"'
+        )
+    assert reply is not None
+    assert "several skills" in reply.lower() or "exact" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_builtin_skill_is_blocked() -> None:
+    hass = MagicMock()
+    store = MagicMock()
+    builtin = MagicMock(
+        id="1",
+        slug="news-briefing",
+        title="News Briefing",
+        is_builtin=True,
+    )
+    store.count_skills.return_value = 1
+    store.list_recent.return_value = [builtin]
+    hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *a, **k: fn(*a, **k))
+
+    with patch.object(commands, "get_skill_store", return_value=store):
+        reply = await commands.try_handle_skill_command(
+            hass, "entry", "delete skill news-briefing"
+        )
+    assert reply is not None
+    assert "built-in" in reply.lower()
+    store.delete_skill.assert_not_called()
 
 
 @pytest.mark.asyncio

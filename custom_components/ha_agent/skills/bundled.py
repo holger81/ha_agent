@@ -31,6 +31,33 @@ _PRIMARY_BUNDLED: tuple[tuple[str, str], ...] = (
     ("news-briefing", "news"),
 )
 
+
+def builtin_bundled_slugs() -> tuple[str, ...]:
+    """Slugs seeded from packaged markdown that are treated as builtins."""
+    return tuple(slug for slug, _scope in _PRIMARY_BUNDLED)
+
+
+def _bundled_file_for_scope(route_scope: str | None) -> str | None:
+    """Return the packaged markdown that owns a route scope, if any."""
+    scope = (route_scope or "").strip().lower()
+    if not scope:
+        return None
+    for slug, primary_scope in _PRIMARY_BUNDLED:
+        if primary_scope == scope:
+            return BUNDLED_SKILL_FILES.get(slug)
+    return None
+
+
+def _scope_for_bundled_file(filename: str) -> str | None:
+    for slug, primary_scope in _PRIMARY_BUNDLED:
+        if BUNDLED_SKILL_FILES.get(slug) == filename:
+            return primary_scope
+    return None
+
+
+_EMAIL_BUNDLED_FILE = BUNDLED_SKILL_FILES["check-and-read-unread-emails"]
+_NEWS_BUNDLED_FILE = BUNDLED_SKILL_FILES["news-briefing"]
+
 _STATUS_BUNDLED_FILE = "look-up-sensor-or-entity-status.md"
 _STATUS_SLUG = re.compile(
     r"look[-_]?up[-_]?sensor|entity[-_]?status|sensor[-_]?status",
@@ -77,10 +104,11 @@ def email_skill_needs_refresh(skill: Skill) -> bool:
         return False
     route = (skill.route_scope or "").lower()
     slug = skill.slug.lower()
-    if route != "email" and slug not in BUNDLED_SKILL_FILES:
+    email_scope = _scope_for_bundled_file(_EMAIL_BUNDLED_FILE)
+    if route != email_scope and slug not in BUNDLED_SKILL_FILES:
         return False
     if BUNDLED_SKILL_FILES.get(slug) in {
-        "news-briefing.md",
+        _NEWS_BUNDLED_FILE,
         _STATUS_BUNDLED_FILE,
     }:
         return False
@@ -114,7 +142,9 @@ def email_skill_needs_refresh(skill: Skill) -> bool:
         for step in skill.tool_steps
     }
     return (
-        route == "email" and slug in BUNDLED_SKILL_FILES and not expected <= step_names
+        route == email_scope
+        and slug in BUNDLED_SKILL_FILES
+        and not expected <= step_names
     )
 
 
@@ -124,9 +154,8 @@ def news_skill_needs_refresh(skill: Skill) -> bool:
         return False
     slug = skill.slug.lower()
     route = (skill.route_scope or "").lower()
-    if slug != "news-briefing" and route != "news":
-        return False
-    if slug not in BUNDLED_SKILL_FILES and route != "news":
+    news_scope = _scope_for_bundled_file(_NEWS_BUNDLED_FILE)
+    if BUNDLED_SKILL_FILES.get(slug) != _NEWS_BUNDLED_FILE and route != news_scope:
         return False
 
     blob = f"{skill.body}\n{json.dumps(skill.tool_steps, ensure_ascii=True)}".lower()
@@ -222,7 +251,7 @@ def _insert_bundled_primary(store, directory: Path, primary: str) -> bool:
     if path is None:
         return False
 
-    draft, slug_override, _explicit = draft_from_markdown(
+    draft, slug_override, explicit = draft_from_markdown(
         path.read_text(encoding="utf-8"),
         filename_slug=primary,
     )
@@ -239,14 +268,15 @@ def _insert_bundled_primary(store, directory: Path, primary: str) -> bool:
         llm_model=draft.llm_model,
         llm_base_url=draft.llm_base_url,
         slug=slug_override or primary,
+        is_builtin=True,
     )
     from .body import normalize_skill
 
-    normalize_skill(skill)
+    normalize_skill(skill, explicit_tool_steps=explicit)
     store.update_skill(skill)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{skill.slug}.md").write_text(
-        skill_to_markdown(skill), encoding="utf-8"
+        skill_to_markdown(skill, include_tool_steps=True), encoding="utf-8"
     )
     return True
 
@@ -298,7 +328,9 @@ def apply_legacy_route_models_to_bundled(
         store.update_skill(skill)
         write_path = directory / f"{skill.slug}.md"
         directory.mkdir(parents=True, exist_ok=True)
-        write_path.write_text(skill_to_markdown(skill), encoding="utf-8")
+        write_path.write_text(
+            skill_to_markdown(skill, include_tool_steps=True), encoding="utf-8"
+        )
         updated += 1
     return updated
 

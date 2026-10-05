@@ -12,14 +12,22 @@ from .compaction import compact_messages_if_needed
 from .config_helpers import AgentConfig, RouterConfig
 from .context import build_messages, build_system_message, build_tool_context
 from .llm_client import LlmClient
+from .llm_telemetry import record_llm_call
 from .loop_policy import (
+    INTERNAL_GUIDANCE_ROLE,
     LoopState,
+    build_empty_response_nudge,
     cache_mcp_tools_from_schemas,
     initialize_loop_plan,
     inject_loop_context,
+    mark_iteration_after_tools,
+    mark_iteration_outcome,
+    mark_iteration_preserve_stream,
     plan_preferred_tool_names,
     prefetch_planned_tool_mcp_meta,
+    reconcile_plan_after_tools,
     reset_iteration_flags,
+    should_retry_empty_response,
     skill_plan_locks_catalog,
 )
 from .mcp_session import FALLBACK_MCP_TOOLS, mcp_tools_to_openai_schemas
@@ -65,6 +73,11 @@ async def run_worker(
     llm_tools: list[dict[str, Any]] | None = None,
     prior_results: list[WorkerResult] | None = None,
     router_config: RouterConfig | None = None,
+    history: list[dict[str, Any]] | None = None,
+    identity_context: str = "",
+    memory_context: str = "",
+    extra_system_prompt: str = "",
+    trace: TurnTrace | None = None,
 ) -> AsyncGenerator[tuple[dict[str, Any] | None, WorkerResult | None], None]:
     """Run a bounded worker loop for one subtask; yields (subagent_meta, result)."""
     from .agent import _model_chip, _process_tool_calls
@@ -116,6 +129,7 @@ async def run_worker(
             if primary_skill and (primary_skill.route_scope or "").strip()
             else None
         ),
+        history=history,
     )
     if prior_results:
         prior_lines = [
@@ -128,10 +142,13 @@ async def run_worker(
         agent_config.tool_instructions,
         mcp_session_prompt=mcp_session_prompt,
         tool_context=tool_context,
+        identity_context=identity_context,
+        memory_context=memory_context,
+        extra_system_prompt=extra_system_prompt,
     )
     messages = build_messages(
         system_message=system_message,
-        history=[],
+        history=history or [],
         user_text=subgoal,
     )
 
@@ -175,12 +192,17 @@ async def run_worker(
             ).strip()
         ]
 
-    trace = TurnTrace(user_text=subgoal, history_len=0, route=route_value)
+    worker_trace = trace or TurnTrace(
+        user_text=subgoal,
+        history_len=0,
+        route=route_value,
+    )
     max_iter = min(agent_config.max_iterations, _MAX_WORKER_ITERATIONS)
     assistant_text = ""
+    model_role = "worker_action" if route_value == "action" else "worker_chat"
 
     for iteration in range(max_iter):
-        trace.iterations = iteration + 1
+        worker_trace.iterations = iteration + 1
         reset_iteration_flags(loop_state)
         inject_loop_context(messages, loop_state)
         if agent_config.turn_token_budget > 0:
@@ -201,6 +223,12 @@ async def run_worker(
         )
 
         result = await llm.chat(messages, backend, tools=loop_tools)
+        record_llm_call(
+            worker_trace,
+            role=model_role,
+            backend=backend,
+            result=result,
+        )
         if result.tool_calls:
             messages.append(result.assistant_message)
             async for delta in _process_tool_calls(
@@ -212,7 +240,7 @@ async def run_worker(
                 exposed_entities=exposed_entities,
                 controlled_entity_ids=[],
                 loop_state=loop_state,
-                trace=trace,
+                trace=worker_trace,
                 hint_rules=None,
                 reasoning=result.reasoning_content or "",
             ):
@@ -221,19 +249,34 @@ async def run_worker(
                         {"phase": "tool", "subgoal": subgoal, **delta.tool},
                         None,
                     )
+            mark_iteration_outcome(loop_state)
+            reconcile_plan_after_tools(loop_state)
+            if loop_state.stuck:
+                break
+            mark_iteration_after_tools(loop_state)
             continue
 
         assistant_text = (result.content or "").strip()
         if assistant_text:
             break
+        if should_retry_empty_response(loop_state, iteration, max_iter):
+            messages.append(
+                {
+                    "role": INTERNAL_GUIDANCE_ROLE,
+                    "content": build_empty_response_nudge(loop_state),
+                }
+            )
+            mark_iteration_preserve_stream(loop_state)
+            continue
 
     worker_result = WorkerResult(
         subgoal=subgoal,
         route=route_value,
-        assistant_text=assistant_text or "No response.",
-        tool_calls=trace.tool_calls,
-        tool_errors=trace.tool_errors,
-        iterations=trace.iterations,
+        assistant_text=assistant_text
+        or (loop_state.stuck_message if loop_state.stuck else "No response."),
+        tool_calls=worker_trace.tool_calls,
+        tool_errors=worker_trace.tool_errors,
+        iterations=worker_trace.iterations,
         skill_title=primary_skill.title if primary_skill else None,
         slot_bindings=slot_bindings,
     )
@@ -242,7 +285,7 @@ async def run_worker(
             "phase": "done",
             "subgoal": subgoal,
             "route": route_value,
-            "summary": assistant_text[:200],
+            "summary": worker_result.assistant_text[:200],
         },
         worker_result,
     )

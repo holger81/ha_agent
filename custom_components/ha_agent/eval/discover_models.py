@@ -17,6 +17,7 @@ from ..llm_server import (
     model_suitable_for_voice_agent,
 )
 from .host_context import build_host_context
+from .model_download import safe_gguf_filename
 from .model_registry import ModelProposal
 
 _HF_MODELS_API = "https://huggingface.co/api/models"
@@ -190,8 +191,10 @@ def proposal_from_model_id(
             hf_filename = stem if stem.lower().endswith(".gguf") else f"{stem}.gguf"
     elif not hf_repo:
         hf_repo = model_id
-    if not hf_filename and hf_repo:
-        hf_filename = ""
+    if hf_filename and safe_gguf_filename(hf_filename) is None:
+        raise ValueError(
+            f"Unsafe GGUF filename {hf_filename!r} for model {model_id!r}."
+        )
     return ModelProposal(
         model_id=model_id,
         source_url=str(source.get("source_url") or f"https://huggingface.co/{hf_repo}"),
@@ -212,7 +215,11 @@ async def enrich_hf_candidates(
         repo_id = str(item.get("repo_id") or "")
         if not repo_id or not hf_repo_suitable_for_voice_agent(repo_id):
             continue
-        files = await list_gguf_files(session, repo_id)
+        files = [
+            name
+            for name in await list_gguf_files(session, repo_id)
+            if safe_gguf_filename(name) is not None
+        ]
         filename = _pick_quant_file(files)
         if not filename:
             continue
@@ -239,11 +246,13 @@ def _fallback_proposals(
     for item in candidates:
         model_id = str(item.get("router_model_id") or "")
         hf_repo = str(item.get("hf_repo") or "")
+        hf_filename = safe_gguf_filename(item.get("hf_filename"))
         if (
             not model_id
             or model_id in existing_models
             or model_id in skip_ids
             or not hf_repo_suitable_for_voice_agent(hf_repo)
+            or hf_filename is None
         ):
             continue
         proposals.append(
@@ -252,8 +261,8 @@ def _fallback_proposals(
                 source_url=str(item.get("source_url") or ""),
                 reason="Popular GGUF model from Hugging Face search.",
                 expected_benefit="May improve eval scores for chat or action tasks.",
-                hf_repo=str(item.get("hf_repo") or ""),
-                hf_filename=str(item.get("hf_filename") or ""),
+                hf_repo=hf_repo,
+                hf_filename=hf_filename,
             )
         )
         if len(proposals) >= max_models:
@@ -343,13 +352,17 @@ async def propose_models_from_web(
             continue
         model_id = str(item.get("model_id") or "").strip()
         hf_repo = str(item.get("hf_repo") or "").strip()
-        hf_filename = str(item.get("hf_filename") or "").strip()
+        hf_filename = safe_gguf_filename(str(item.get("hf_filename") or "").strip())
         if (
             not model_id
             or not hf_repo
             or not hf_filename
             or not hf_repo_suitable_for_voice_agent(hf_repo)
         ):
+            LOGGER.debug(
+                "Skipping discovery proposal with invalid repo/filename: %r",
+                item.get("model_id"),
+            )
             continue
         if model_id in existing_models or model_id in skip_ids:
             continue

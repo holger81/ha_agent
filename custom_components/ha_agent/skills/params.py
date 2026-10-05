@@ -52,6 +52,17 @@ def bind_slot_value(text: str, bindings: dict[str, str]) -> str:
     return _SLOT_PATTERN.sub(repl, text)
 
 
+def _bind_value(value: Any, bindings: dict[str, str]) -> Any:
+    """Recursively bind ``{{slot}}`` placeholders in string leaves."""
+    if isinstance(value, str):
+        return bind_slot_value(value, bindings)
+    if isinstance(value, dict):
+        return {key: _bind_value(item, bindings) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_bind_value(item, bindings) for item in value]
+    return value
+
+
 def bind_tool_steps(
     steps: list[dict[str, Any]],
     bindings: dict[str, str],
@@ -60,21 +71,17 @@ def bind_tool_steps(
 
     Empty string argument values (e.g. unbound optional slots) are omitted so
     the model follows the MCP tool's defaults instead of sending blank fields.
+
+    Nested dict/list values are walked leaf-by-leaf — never via
+    ``json.loads(bind_slot_value(json.dumps(...)))``, which breaks on quotes.
     """
     if not bindings:
         return [_scrub_empty_step_args(dict(step)) for step in steps]
     bound: list[dict[str, Any]] = []
     for step in steps:
-        new_step: dict[str, Any] = {}
-        for key, value in step.items():
-            if isinstance(value, str):
-                new_step[key] = bind_slot_value(value, bindings)
-            elif isinstance(value, dict):
-                new_step[key] = json.loads(
-                    bind_slot_value(json.dumps(value, ensure_ascii=True), bindings)
-                )
-            else:
-                new_step[key] = value
+        new_step = _bind_value(dict(step), bindings)
+        if not isinstance(new_step, dict):
+            continue
         bound.append(_scrub_empty_step_args(new_step))
     return bound
 

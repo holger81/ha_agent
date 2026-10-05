@@ -56,7 +56,9 @@ async def async_register_panel(hass: HomeAssistant) -> None:
     except Exception as err:
         LOGGER.debug("HA Agent static path may already be registered: %s", err)
 
-    module_url = f"{PANEL_STATIC_URL}/ha-agent-panel.js?v={_integration_version()}"
+    # manifest read + JS stat are blocking file I/O: keep them off the loop.
+    version = await hass.async_add_executor_job(_integration_version)
+    module_url = f"{PANEL_STATIC_URL}/ha-agent-panel.js?v={version}"
 
     try:
         await panel_custom.async_register_panel(

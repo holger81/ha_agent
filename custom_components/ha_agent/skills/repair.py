@@ -179,8 +179,16 @@ def _merge_successful_retry_args(
             if not isinstance(existing, dict):
                 existing = {}
             merged = {**existing}
+            # Only fill keys the skill template already declares (slotted / present).
+            slotted_keys = set(existing) | {
+                key
+                for key, value in existing.items()
+                if isinstance(value, str) and "{{" in value
+            }
             for key, value in retry_args.items():
                 if key in _VOLATILE_REPAIR_KEYS:
+                    continue
+                if key not in slotted_keys:
                     continue
                 if key not in merged or merged[key] in ("", "{{" + key + "}}"):
                     if isinstance(value, str) and re.fullmatch(

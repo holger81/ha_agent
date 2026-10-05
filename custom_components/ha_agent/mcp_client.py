@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -12,15 +13,53 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .config_helpers import McpConfig
 from .const import LOGGER, MCP_SESSION_TOOLS_TTL_SECONDS, MCP_TOOLS_LIST_MAX_PAGES
-from .mcp_errors import friendly_mcp_http_error, friendly_mcp_json_error
+from .mcp_errors import (
+    MCP_SESSION_EXPIRED_RETRY_MESSAGE,
+    friendly_mcp_http_error,
+    friendly_mcp_json_error,
+    is_mcp_session_expired_status,
+)
 from .mcp_session import (
     FALLBACK_MCP_TOOLS,
     format_mcp_session_prompt,
     mcp_tools_to_openai_schemas,
 )
+from .sse import iter_sse_data_lines
 from .tools import classify_tool_output
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
+
+# JSON-RPC methods that are safe to replay after the session was re-created.
+# ``tools/call`` is deliberately excluded: we cannot tell whether the server
+# executed it before dropping the session, so the caller must retry.
+MCP_IDEMPOTENT_METHODS: frozenset[str] = frozenset(
+    {
+        "initialize",
+        "ping",
+        "tools/list",
+        "prompts/list",
+        "resources/list",
+        "resources/templates/list",
+    }
+)
+
+
+class McpSessionExpired(Exception):
+    """Internal: the server rejected our Mcp-Session-Id (session terminated)."""
+
+    def __init__(
+        self,
+        method: str,
+        status: int,
+        body: str,
+        *,
+        session_id: str | None,
+    ) -> None:
+        super().__init__(f"MCP session expired during {method} (HTTP {status})")
+        self.method = method
+        self.status = status
+        self.body = body
+        self.session_id = session_id
 
 
 class McpProxyClient:
@@ -41,6 +80,7 @@ class McpProxyClient:
         self._instructions = ""
         self._session_tools: list[dict[str, Any]] = []
         self._session_tools_cached_at = 0.0
+        self._init_lock = asyncio.Lock()
 
     @property
     def url(self) -> str:
@@ -88,28 +128,66 @@ class McpProxyClient:
             raise HomeAssistantError(f"Cannot reach MCP Proxy: {err}") from err
 
     async def initialize(self) -> dict[str, Any]:
-        """Initialize the MCP session and load protocol instructions."""
+        """Initialize the MCP session and load protocol instructions.
+
+        Serialized with a lock so concurrent turns share one handshake and a
+        session re-initialization never races a second ``initialize``.
+        """
         if self._initialized:
             return self._init_result
 
-        result = await self._rpc(
-            "initialize",
-            {
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "ha_agent", "version": "0.1.0"},
-            },
+        async with self._init_lock:
+            if self._initialized:
+                return self._init_result
+
+            # A stale session id must not be sent with a fresh initialize.
+            self._session_id = None
+            result = await self._rpc(
+                "initialize",
+                {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "ha_agent", "version": "0.1.0"},
+                },
+                reinit=False,
+            )
+            if not isinstance(result, dict):
+                raise HomeAssistantError("MCP initialize returned empty result")
+
+            self._init_result = result
+            self._instructions = str(result.get("instructions") or "").strip()
+
+            await self._rpc(
+                "notifications/initialized",
+                None,
+                notification=True,
+                reinit=False,
+            )
+            self._initialized = True
+            await self._load_session_tools(force_refresh=True, reinit=False)
+            return self._init_result
+
+    def _reset_session(self) -> None:
+        """Forget the server session so the next call re-runs initialize."""
+        self._session_id = None
+        self._initialized = False
+        self._init_result = {}
+        self._instructions = ""
+        self._session_tools = []
+        self._session_tools_cached_at = 0.0
+
+    async def _recover_expired_session(self, err: McpSessionExpired) -> None:
+        """Drop the dead session and run a fresh initialize handshake."""
+        LOGGER.info(
+            "MCP session expired during %s (HTTP %s); re-initializing",
+            err.method,
+            err.status,
         )
-        if not isinstance(result, dict):
-            raise HomeAssistantError("MCP initialize returned empty result")
-
-        self._init_result = result
-        self._instructions = str(result.get("instructions") or "").strip()
-
-        await self._rpc("notifications/initialized", None, notification=True)
-        self._initialized = True
-        await self._load_session_tools(force_refresh=True)
-        return self._init_result
+        # Only tear down if nobody re-initialized in the meantime; otherwise
+        # a concurrent recovery would wipe the fresh session.
+        if self._session_id == err.session_id:
+            self._reset_session()
+        await self.initialize()
 
     async def ensure_session(self) -> None:
         """Ensure MCP initialize and tools/list have completed."""
@@ -131,7 +209,12 @@ class McpProxyClient:
         tools = self._session_tools or FALLBACK_MCP_TOOLS
         return mcp_tools_to_openai_schemas(tools)
 
-    async def _load_session_tools(self, *, force_refresh: bool = False) -> None:
+    async def _load_session_tools(
+        self,
+        *,
+        force_refresh: bool = False,
+        reinit: bool = True,
+    ) -> None:
         """Fetch session-level tools via MCP tools/list."""
         now = time.monotonic()
         if (
@@ -151,7 +234,7 @@ class McpProxyClient:
             if cursor:
                 params["cursor"] = cursor
 
-            result = await self._rpc("tools/list", params or None)
+            result = await self._rpc("tools/list", params or None, reinit=reinit)
             if not isinstance(result, dict):
                 break
 
@@ -201,17 +284,58 @@ class McpProxyClient:
         params: dict[str, Any] | None,
         *,
         notification: bool = False,
+        reinit: bool = True,
     ) -> Any:
-        """Send a JSON-RPC request to the MCP endpoint."""
+        """Send a JSON-RPC request to the MCP endpoint.
+
+        When the server reports that our session is gone (404, or 400 while a
+        session id was sent) the session is re-initialized. Idempotent methods
+        are then replayed once; ``tools/call`` is not replayed because the
+        server may already have executed it — a clear error asks the caller to
+        retry instead.
+        """
+        try:
+            return await self._rpc_once(method, params, notification=notification)
+        except McpSessionExpired as err:
+            if not reinit:
+                raise HomeAssistantError(
+                    friendly_mcp_http_error(
+                        method=method,
+                        status=err.status,
+                        body=err.body,
+                        session_expired=True,
+                    )
+                ) from err
+            await self._recover_expired_session(err)
+            if method in MCP_IDEMPOTENT_METHODS:
+                return await self._rpc(
+                    method,
+                    params,
+                    notification=notification,
+                    reinit=False,
+                )
+            raise HomeAssistantError(MCP_SESSION_EXPIRED_RETRY_MESSAGE) from err
+
+    async def _rpc_once(
+        self,
+        method: str,
+        params: dict[str, Any] | None,
+        *,
+        notification: bool,
+    ) -> Any:
+        """Send one JSON-RPC request and parse its JSON or SSE response."""
         body: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": method,
         }
+        request_id: int | None = None
         if not notification:
-            body["id"] = self._next_id()
+            request_id = self._next_id()
+            body["id"] = request_id
         if params is not None:
             body["params"] = params
 
+        sent_session_id = self._session_id
         timeout = aiohttp.ClientTimeout(total=self._config.timeout)
         try:
             async with self._session.post(
@@ -225,8 +349,17 @@ class McpProxyClient:
                     self._session_id = session_header
 
                 content_type = response.headers.get("Content-Type", "")
-                raw = await response.text()
                 if response.status >= 400:
+                    raw = await response.text()
+                    if is_mcp_session_expired_status(
+                        response.status, had_session=sent_session_id is not None
+                    ):
+                        raise McpSessionExpired(
+                            method,
+                            response.status,
+                            raw,
+                            session_id=sent_session_id,
+                        )
                     raise HomeAssistantError(
                         friendly_mcp_http_error(
                             method=method,
@@ -236,8 +369,11 @@ class McpProxyClient:
                     )
 
                 if "text/event-stream" in content_type:
-                    return self._parse_sse_json(raw)
+                    # Stream until our reply arrives; the server may keep the
+                    # SSE connection open long after that.
+                    return await self._read_sse_result(response, request_id)
 
+                raw = await response.text()
                 if not raw.strip():
                     return None
 
@@ -251,32 +387,72 @@ class McpProxyClient:
         except json.JSONDecodeError as err:
             raise HomeAssistantError(f"MCP {method} returned invalid JSON") from err
 
-        if error := data.get("error"):
-            message = error.get("message") or str(error)
-            raise HomeAssistantError(friendly_mcp_json_error(message))
+        return self._result_from_json(method, data, request_id)
 
-        return data.get("result")
+    def _result_from_json(self, method: str, data: Any, request_id: int | None) -> Any:
+        """Extract ``result`` from a JSON-RPC response or batch for our id."""
+        message: dict[str, Any] | None = None
+        if isinstance(data, dict):
+            message = data
+        elif isinstance(data, list):
+            # Batch: prefer the entry addressed to us, else the first dict.
+            for item in data:
+                if isinstance(item, dict) and _rpc_id_matches(item, request_id):
+                    message = item
+                    break
+            else:
+                message = next((item for item in data if isinstance(item, dict)), None)
+        if message is None:
+            if data is None or data == []:
+                return None
+            raise HomeAssistantError(f"MCP {method} returned unexpected JSON")
+        if "error" in message and message["error"] is not None:
+            raise HomeAssistantError(
+                friendly_mcp_json_error(_rpc_error_message(message["error"]))
+            )
+        return message.get("result")
 
-    def _parse_sse_json(self, raw: str) -> Any:
-        """Extract the last JSON result from an SSE response."""
-        last_result: Any = None
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if not payload or payload == "[DONE]":
+    async def _read_sse_result(
+        self,
+        response: aiohttp.ClientResponse,
+        request_id: int | None,
+    ) -> Any:
+        """Return the JSON-RPC result for ``request_id`` from an SSE body.
+
+        Reads incrementally and returns at the first message whose ``id``
+        matches ours; other messages (server notifications or requests) are
+        skipped. Messages without an id are kept as a fallback for servers
+        that omit it.
+        """
+        fallback: dict[str, Any] | None = None
+        async for payload in iter_sse_data_lines(response):
+            text = payload.strip()
+            if not text or text == "[DONE]":
                 continue
             try:
-                data = json.loads(payload)
+                data = json.loads(text)
             except json.JSONDecodeError:
                 continue
-            if "result" in data:
-                last_result = data["result"]
-            elif "error" in data:
-                message = data["error"].get("message") or str(data["error"])
-                raise HomeAssistantError(friendly_mcp_json_error(message))
-        return last_result
+            messages = data if isinstance(data, list) else [data]
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                if "result" not in message and "error" not in message:
+                    continue
+                if _rpc_id_matches(message, request_id):
+                    return self._raise_or_result(message)
+                if "id" not in message or message.get("id") is None:
+                    fallback = message
+        if fallback is not None:
+            return self._raise_or_result(fallback)
+        return None
+
+    @staticmethod
+    def _raise_or_result(message: dict[str, Any]) -> Any:
+        error = message.get("error")
+        if error is not None:
+            raise HomeAssistantError(friendly_mcp_json_error(_rpc_error_message(error)))
+        return message.get("result")
 
     def _extract_tool_result(self, result: Any) -> str:
         """Normalize MCP tool results to a string for the LLM."""
@@ -317,6 +493,26 @@ class McpProxyClient:
                 elif data := block.get("data"):
                     parts.append(str(data))
         return "\n".join(parts)
+
+
+def _rpc_id_matches(message: dict[str, Any], request_id: int | None) -> bool:
+    """Compare a JSON-RPC response id with ours (tolerating stringified ids)."""
+    if request_id is None:
+        return False
+    message_id = message.get("id")
+    if message_id is None:
+        return False
+    return message_id == request_id or str(message_id) == str(request_id)
+
+
+def _rpc_error_message(error: Any) -> str:
+    """Extract a message from a JSON-RPC ``error`` member of any shape."""
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return message
+        return json.dumps(error, ensure_ascii=False)
+    return str(error)
 
 
 def derive_health_url_from_mcp(mcp_url: str) -> str:

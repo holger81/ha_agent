@@ -22,6 +22,7 @@ from .runtime import (
 )
 from .store import (
     PersistentMemoryStore,
+    async_setup_persistent_memory_store,
     close_persistent_memory_store,
     get_persistent_memory_store,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "apply_memory_defaults_to_slots",
     "async_handle_memory_intent",
     "async_load_memory_context",
+    "async_setup_persistent_memory_store",
     "close_persistent_memory_store",
     "detect_memory_intent",
     "entity_ids_from_history",

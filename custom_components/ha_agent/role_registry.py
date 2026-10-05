@@ -5,9 +5,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from .config_helpers import LlmBackend, RouterConfig
+
+
+def host_label(base_url: str) -> str:
+    """Return ``host[:port]`` for a backend URL without leaking userinfo.
+
+    ``urlparse`` drops any ``user:password@`` prefix; a naive ``split("//")``
+    would surface credentials in UI chips and telemetry traces.
+    """
+    try:
+        parsed = urlparse(base_url.strip())
+    except ValueError:
+        return ""
+    host = parsed.hostname or ""
+    if not host:
+        return ""
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return f"{host}:{port}" if port else host
 
 
 class ModelRole(StrEnum):
@@ -76,10 +99,9 @@ class RoleRegistry:
     def chip_for(self, role: ModelRole) -> dict[str, str]:
         """Return model/host chip metadata for UI."""
         backend = self.backend_for(role)
-        host = backend.base_url.split("//", 1)[-1].split("/", 1)[0]
         return {
             "model": backend.model,
-            "host": host,
+            "host": host_label(backend.base_url),
             "role": role.value,
             "label": friendly_role_label(role),
         }

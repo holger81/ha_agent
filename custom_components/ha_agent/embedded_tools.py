@@ -22,9 +22,12 @@ _COMPACT_CALL = re.compile(
 _GEMMA_STRING_QUOTE = re.compile(r'<\|"\|>')
 # Small models often emit: [searchToolsForDomain domain="smart-home", query="..."]
 # or [home_assistant__ha_call_service service="turn_off", entity_id="light.x"]
+# ``server__tool_name``: alnum runs joined by single underscores, with ``__``
+# between server and tool. Written so no character can be consumed by more
+# than one branch (no catastrophic backtracking on ``a_______…`` inputs).
 _BRACKET_TOOL_NAMES = (
     r"searchToolsForDomain|searchTool|callTool|"
-    r"[a-z][a-z0-9_]*(?:__[a-z0-9_]+)+"
+    r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*(?:__[a-z0-9]+(?:_[a-z0-9]+)*)+"
 )
 _BRACKET_TOOL_CALL = re.compile(
     rf"\[(?P<name>{_BRACKET_TOOL_NAMES})(?P<body>[^\]]*)\]",

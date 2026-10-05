@@ -9,6 +9,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -68,6 +69,8 @@ async def async_setup_entry(
     )
     try:
         await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        raise
     except Exception as err:
         LOGGER.warning("HA Agent health check failed during setup: %s", err)
 
@@ -96,6 +99,7 @@ class _HaAgentDiagnosticSensor(SensorEntity):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self._entry = entry
+        self._attr_config_entry = entry
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
         }

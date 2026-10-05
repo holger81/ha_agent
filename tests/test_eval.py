@@ -487,6 +487,79 @@ def test_eval_store_persists_runs_and_download_history() -> None:
         store.close()
 
 
+def test_eval_store_prunes_runs_and_per_model_benchmarks() -> None:
+    """Retention keeps the newest 50 runs and newest 50 benchmark runs per model."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = eval_store.EvalStore(Path(tmp) / "eval.db")
+        store.connect()
+        run_ids: list[str] = []
+        for index in range(eval_store.MAX_EVAL_RUNS + 7):
+            run = store.create_run("entry-1")
+            # Monotonic timestamps so ordering is deterministic.
+            run.started_at = float(index)
+            store._connection().execute(
+                "UPDATE eval_runs SET started_at = ? WHERE id = ?",
+                (run.started_at, run.id),
+            )
+            run.status = "completed"
+            run.case_scores = [
+                eval_models.EvalCaseScore(
+                    case_id="chat_1",
+                    task="chat",
+                    model="alpha",
+                    score=0.5,
+                    passed=True,
+                ),
+                eval_models.EvalCaseScore(
+                    case_id="chat_1",
+                    task="chat",
+                    model="beta",
+                    score=0.9,
+                    passed=True,
+                ),
+            ]
+            store.finish_run(run)
+            store._connection().execute(
+                "UPDATE model_benchmarks SET run_at = ? WHERE run_id = ?",
+                (run.started_at, run.id),
+            )
+            store._connection().commit()
+            run_ids.append(run.id)
+
+        store.prune_history()
+
+        runs = store.list_runs(limit=1000)
+        assert len(runs) == eval_store.MAX_EVAL_RUNS
+        kept_ids = {item["id"] for item in runs}
+        assert run_ids[-1] in kept_ids
+        assert set(run_ids[:7]).isdisjoint(kept_ids)
+
+        for model_id in ("alpha", "beta"):
+            history = store.model_benchmark_history(model_id)
+            bench_runs = {item["run_id"] for item in history}
+            assert len(bench_runs) == eval_store.MAX_BENCHMARK_RUNS_PER_MODEL
+            assert run_ids[-1] in bench_runs
+            assert set(run_ids[:7]).isdisjoint(bench_runs)
+
+        # Pruning is per-model: a brand-new model is untouched by others' history.
+        run = store.create_run("entry-1")
+        run.status = "completed"
+        run.case_scores = [
+            eval_models.EvalCaseScore(
+                case_id="chat_1",
+                task="chat",
+                model="gamma",
+                score=1.0,
+                passed=True,
+            )
+        ]
+        store.finish_run(run)
+        assert len(store.model_benchmark_history("gamma")) == 1
+        ranked = store.list_model_scores()
+        assert ranked[0]["model_id"] == "gamma"
+        store.close()
+
+
 def test_list_model_scores_ranks_all_previously_evaluated_models() -> None:
     """Leaderboard keeps every model's latest scores, not only the last suite."""
     with tempfile.TemporaryDirectory() as tmp:

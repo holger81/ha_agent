@@ -481,3 +481,44 @@ def test_build_messages_skips_duplicate_user() -> None:
     )
     user_messages = [msg for msg in messages if msg["role"] == "user"]
     assert user_messages == [{"role": "user", "content": "what are todays news"}]
+
+
+def test_build_messages_projects_history_fields() -> None:
+    """History is projected to role/content (+ tool/reasoning fields only)."""
+    messages = context.build_messages(
+        system_message="system",
+        history=[
+            {
+                "role": "assistant",
+                "content": "done",
+                "tool_calls": [{"id": "c1"}],
+                "reasoning_content": "plan",
+                "turn_meta": {"route": "action", "secret": True},
+                "extra_noise": 123,
+            }
+        ],
+        user_text="next",
+    )
+    history_msg = messages[1]
+    assert history_msg == {
+        "role": "assistant",
+        "content": "done",
+        "tool_calls": [{"id": "c1"}],
+        "reasoning_content": "plan",
+    }
+
+
+def test_route_keyword_match_skips_pure_state_questions() -> None:
+    """State questions without a device-command clause are not action."""
+    assert context.route_keyword_match("is the kitchen light on?", "action") is None
+    assert context.route_keyword_match("are the garage doors closed", "action") is None
+    assert (
+        context.route_keyword_match("turn off the kitchen light", "action") is not None
+    )
+    assert (
+        context.route_keyword_match(
+            "check if the window is open and close it",
+            "action",
+        )
+        is not None
+    )

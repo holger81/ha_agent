@@ -74,11 +74,10 @@ async def inject_console_turn(
         unsub_done()
         unsub_recorded()
 
-    turn = None
-    if recorded_data and recorded_data.get("turn"):
-        turn = recorded_data["turn"]
-    if turn is None:
-        turn = get_turn(hass, entry_id, conversation_id=conv_id, latest=True)
+    # Full turn lives in the activity buffer; the bus event is a compact summary.
+    turn = get_turn(hass, entry_id, conversation_id=conv_id, latest=True)
+    if turn is None and recorded_data:
+        turn = recorded_data.get("turn") or recorded_data.get("summary")
 
     analysis = (
         analyze_turn_dict(turn)

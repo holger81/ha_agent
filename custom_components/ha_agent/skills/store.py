@@ -2,21 +2,62 @@
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from ..const import DATA_KEY, LOGGER
-from .models import Skill, SkillIndexRow, SkillRevision, SkillSlot
+from .models import (
+    Skill,
+    SkillIndexRow,
+    SkillRevision,
+    SkillSlot,
+    validate_skill_fields,
+)
 
 SKILLS_STORE_KEY = "skill_stores"
 _IMPROVEMENT_COOLDOWN_SECONDS = 3600
+MAX_REVISIONS_PER_SKILL = 20
+
+# Home Assistant config entry ids are ULID-style (26 chars) or legacy 32-char
+# hex; anything else must never reach a filesystem path.
+_ENTRY_ID = re.compile(r"^[0-9a-z]{26,32}$")
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def validate_entry_id(entry_id: str) -> str:
+    """Return ``entry_id`` when it is a well-formed HA config entry id.
+
+    Raises ``ValueError`` otherwise so path builders can never be steered with
+    ``..`` or separators.
+    """
+    value = str(entry_id or "")
+    if not _ENTRY_ID.match(value):
+        raise ValueError(f"Invalid config entry id: {entry_id!r}")
+    return value
+
+
+def locked(method: _F) -> _F:
+    """Serialize a store method on the instance ``_lock`` (re-entrant)."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def revision_snapshot_summary(snapshot_json: str) -> dict[str, Any]:
@@ -127,6 +168,20 @@ def _parse_slots(raw: str | None) -> list[SkillSlot]:
     return slots
 
 
+def _slots_json(skill: Skill) -> str:
+    return json.dumps(
+        [
+            {
+                "name": s.name,
+                "description": s.description,
+                "source": s.source,
+                "default": s.default,
+            }
+            for s in skill.slots
+        ]
+    )
+
+
 def _row_to_skill(row: sqlite3.Row) -> Skill:
     keys = row.keys()
     return Skill(
@@ -162,13 +217,16 @@ class SkillStore:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     @staticmethod
     def db_path_for_entry(hass: HomeAssistant, entry_id: str) -> Path:
         """Return the on-disk path for an entry's skill database."""
+        safe_id = validate_entry_id(entry_id)
         storage = Path(hass.config.path(".storage"))
-        return storage / f"ha_agent_skills_{entry_id}.db"
+        return storage / f"ha_agent_skills_{safe_id}.db"
 
+    @locked
     def connect(self) -> None:
         """Open the database and ensure schema exists."""
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -185,7 +243,19 @@ class SkillStore:
         for column, ddl in _ADDED_COLUMNS.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE skills ADD COLUMN {column} {ddl}")
+        # One-time: rows seeded from packaged markdown before is_builtin existed.
+        from .bundled import builtin_bundled_slugs
 
+        slugs = list(builtin_bundled_slugs())
+        if slugs:
+            placeholders = ",".join("?" for _ in slugs)
+            conn.execute(
+                f"UPDATE skills SET is_builtin = 1 "
+                f"WHERE is_builtin = 0 AND slug IN ({placeholders})",
+                slugs,
+            )
+
+    @locked
     def close(self) -> None:
         """Close the database connection."""
         if self._conn is not None:
@@ -194,9 +264,20 @@ class SkillStore:
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
-            self.connect()
-        assert self._conn is not None
+            raise RuntimeError("Skill store is not connected")
         return self._conn
+
+    def _in_transaction(self, work: Callable[[sqlite3.Connection], Any]) -> Any:
+        """Run ``work`` under the lock, committing on success, rolling back on error."""
+        with self._lock:
+            conn = self._connection()
+            try:
+                result = work(conn)
+            except Exception:
+                conn.rollback()
+                raise
+            conn.commit()
+            return result
 
     def _sync_fts(self, skill: Skill) -> None:
         conn = self._connection()
@@ -249,122 +330,135 @@ class SkillStore:
         """Insert a new skill and index it in FTS."""
         now = time.time()
         base_slug = _slugify(slug or title)
-        skill = Skill(
-            id=skill_id or str(uuid.uuid4()),
-            slug=self._unique_slug(base_slug),
-            title=title.strip(),
-            description=description.strip()[:1024],
-            triggers=triggers,
-            body=body.strip(),
-            tool_steps=tool_steps,
-            enabled=enabled,
-            created_at=now,
-            slots=slots or [],
-            preconditions=preconditions,
-            parent_id=parent_id,
-            route_scope=route_scope,
-            llm_model=(llm_model.strip() if llm_model and llm_model.strip() else None),
-            llm_base_url=(
-                llm_base_url.strip().rstrip("/")
-                if llm_base_url and llm_base_url.strip()
-                else None
-            ),
-            score=score,
-            is_builtin=is_builtin,
-        )
-        conn = self._connection()
-        conn.execute(
-            "INSERT INTO skills "
-            "(id, slug, title, description, triggers_json, body, tool_steps_json, "
-            "enabled, created_at, version, slots_json, preconditions, parent_id, "
-            "route_scope, llm_model, llm_base_url, score, is_builtin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                skill.id,
-                skill.slug,
-                skill.title,
-                skill.description,
-                json.dumps(skill.triggers),
-                skill.body,
-                json.dumps(skill.tool_steps),
-                int(skill.enabled),
-                skill.created_at,
-                skill.version,
-                json.dumps(
-                    [
-                        {
-                            "name": s.name,
-                            "description": s.description,
-                            "source": s.source,
-                            "default": s.default,
-                        }
-                        for s in skill.slots
-                    ]
+        with self._lock:
+            skill = Skill(
+                id=skill_id or str(uuid.uuid4()),
+                slug=self._unique_slug(base_slug),
+                title=title,
+                description=description,
+                triggers=triggers,
+                body=body,
+                tool_steps=tool_steps,
+                enabled=enabled,
+                created_at=now,
+                slots=slots or [],
+                preconditions=preconditions,
+                parent_id=parent_id,
+                route_scope=route_scope,
+                llm_model=(
+                    llm_model.strip() if llm_model and llm_model.strip() else None
                 ),
-                skill.preconditions,
-                skill.parent_id,
-                skill.route_scope,
-                skill.llm_model,
-                skill.llm_base_url,
-                skill.score,
-                int(skill.is_builtin),
-            ),
-        )
-        self._sync_fts(skill)
-        conn.commit()
+                llm_base_url=(
+                    llm_base_url.strip().rstrip("/")
+                    if llm_base_url and llm_base_url.strip()
+                    else None
+                ),
+                score=score,
+                is_builtin=is_builtin,
+            )
+            validate_skill_fields(skill)
+
+            def _insert(conn: sqlite3.Connection) -> None:
+                conn.execute(
+                    "INSERT INTO skills "
+                    "(id, slug, title, description, triggers_json, body, "
+                    "tool_steps_json, enabled, created_at, version, slots_json, "
+                    "preconditions, parent_id, route_scope, llm_model, "
+                    "llm_base_url, score, is_builtin) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        skill.id,
+                        skill.slug,
+                        skill.title,
+                        skill.description,
+                        json.dumps(skill.triggers),
+                        skill.body,
+                        json.dumps(skill.tool_steps),
+                        int(skill.enabled),
+                        skill.created_at,
+                        skill.version,
+                        _slots_json(skill),
+                        skill.preconditions,
+                        skill.parent_id,
+                        skill.route_scope,
+                        skill.llm_model,
+                        skill.llm_base_url,
+                        skill.score,
+                        int(skill.is_builtin),
+                    ),
+                )
+                self._sync_fts(skill)
+
+            self._in_transaction(_insert)
         return skill
 
     def update_skill(self, skill: Skill) -> Skill:
         """Update an existing skill and refresh FTS."""
-        conn = self._connection()
-        conn.execute(
-            "UPDATE skills SET "
-            "slug = ?, title = ?, description = ?, triggers_json = ?, body = ?, "
-            "tool_steps_json = ?, enabled = ?, last_used_at = ?, use_count = ?, "
-            "success_count = ?, last_improved_at = ?, last_evaluation_at = ?, "
-            "version = ?, slots_json = ?, preconditions = ?, parent_id = ?, "
-            "route_scope = ?, llm_model = ?, llm_base_url = ?, score = ?, "
-            "is_builtin = ? "
-            "WHERE id = ?",
-            (
-                skill.slug,
-                skill.title,
-                skill.description,
-                json.dumps(skill.triggers),
-                skill.body,
-                json.dumps(skill.tool_steps),
-                int(skill.enabled),
-                skill.last_used_at,
-                skill.use_count,
-                skill.success_count,
-                skill.last_improved_at,
-                skill.last_evaluation_at,
-                skill.version,
-                json.dumps(
-                    [
-                        {
-                            "name": s.name,
-                            "description": s.description,
-                            "source": s.source,
-                            "default": s.default,
-                        }
-                        for s in skill.slots
-                    ]
+        validate_skill_fields(skill)
+
+        def _update(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE skills SET "
+                "slug = ?, title = ?, description = ?, triggers_json = ?, body = ?, "
+                "tool_steps_json = ?, enabled = ?, last_used_at = ?, use_count = ?, "
+                "success_count = ?, last_improved_at = ?, last_evaluation_at = ?, "
+                "version = ?, slots_json = ?, preconditions = ?, parent_id = ?, "
+                "route_scope = ?, llm_model = ?, llm_base_url = ?, score = ?, "
+                "is_builtin = ? "
+                "WHERE id = ?",
+                (
+                    skill.slug,
+                    skill.title,
+                    skill.description,
+                    json.dumps(skill.triggers),
+                    skill.body,
+                    json.dumps(skill.tool_steps),
+                    int(skill.enabled),
+                    skill.last_used_at,
+                    skill.use_count,
+                    skill.success_count,
+                    skill.last_improved_at,
+                    skill.last_evaluation_at,
+                    skill.version,
+                    _slots_json(skill),
+                    skill.preconditions,
+                    skill.parent_id,
+                    skill.route_scope,
+                    skill.llm_model,
+                    skill.llm_base_url,
+                    skill.score,
+                    int(skill.is_builtin),
+                    skill.id,
                 ),
-                skill.preconditions,
-                skill.parent_id,
-                skill.route_scope,
-                skill.llm_model,
-                skill.llm_base_url,
-                skill.score,
-                int(skill.is_builtin),
-                skill.id,
-            ),
-        )
-        self._sync_fts(skill)
-        conn.commit()
+            )
+            self._sync_fts(skill)
+
+        self._in_transaction(_update)
         return skill
 
+    def save_revision_and_update(
+        self,
+        before: Skill,
+        after: Skill,
+        *,
+        reason: str,
+    ) -> tuple[str, Skill]:
+        """Snapshot ``before`` and persist ``after`` in one transaction.
+
+        Either both writes land or neither does, so a failed update can never
+        leave an orphan "before" revision.
+        """
+        with self._lock:
+            conn = self._connection()
+            try:
+                revision_id = self._insert_revision(conn, before, reason=reason)
+                self.update_skill(after)
+            except Exception:
+                conn.rollback()
+                raise
+            return revision_id, after
+
+    @locked
     def get_skill(self, skill_id: str) -> Skill | None:
         """Return a skill by id."""
         row = (
@@ -377,6 +471,7 @@ class SkillStore:
         )
         return _row_to_skill(row) if row else None
 
+    @locked
     def get_skill_by_slug(self, slug: str) -> Skill | None:
         """Return a skill by slug."""
         row = (
@@ -391,12 +486,15 @@ class SkillStore:
 
     def delete_skill(self, skill_id: str) -> bool:
         """Delete a skill and its FTS row."""
-        conn = self._connection()
-        conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill_id,))
-        cursor = conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
-        conn.commit()
-        return cursor.rowcount > 0
 
+        def _delete(conn: sqlite3.Connection) -> bool:
+            conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill_id,))
+            cursor = conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+            return cursor.rowcount > 0
+
+        return bool(self._in_transaction(_delete))
+
+    @locked
     def set_enabled(self, skill_id: str, enabled: bool) -> Skill | None:
         """Enable or disable a skill."""
         skill = self.get_skill(skill_id)
@@ -405,6 +503,7 @@ class SkillStore:
         skill.enabled = enabled
         return self.update_skill(skill)
 
+    @locked
     def count_skills(self, *, enabled_only: bool = False) -> int:
         """Return total skill count."""
         if enabled_only:
@@ -425,6 +524,7 @@ class SkillStore:
             )
         return int(row["c"]) if row else 0
 
+    @locked
     def list_recent(self, *, limit: int = 10) -> list[Skill]:
         """Return recently used skills."""
         rows = (
@@ -438,6 +538,7 @@ class SkillStore:
         )
         return [_row_to_skill(row) for row in rows]
 
+    @locked
     def list_enabled(self, *, limit: int = 50) -> list[Skill]:
         """Return enabled skills ordered by recent use."""
         rows = (
@@ -451,6 +552,7 @@ class SkillStore:
         )
         return [_row_to_skill(row) for row in rows]
 
+    @locked
     def search(
         self,
         query: str,
@@ -499,6 +601,7 @@ class SkillStore:
         scored.sort(key=lambda item: item[0])
         return [item[1] for item in scored[:limit]]
 
+    @locked
     def load_skills_by_ids(self, skill_ids: list[str]) -> list[Skill]:
         """Load full skill records for the given ids."""
         if not skill_ids:
@@ -521,24 +624,37 @@ class SkillStore:
         *,
         succeeded: bool,
     ) -> Skill | None:
-        """Increment usage counters for a skill."""
-        skill = self.get_skill(skill_id)
-        if skill is None:
-            return None
-        skill.use_count += 1
-        if succeeded:
-            skill.success_count += 1
-        skill.last_used_at = time.time()
-        return self.update_skill(skill)
+        """Increment usage counters for a skill (atomic ``UPDATE … + 1``)."""
+
+        def _bump(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute(
+                "UPDATE skills SET use_count = use_count + 1, "
+                "success_count = success_count + ?, last_used_at = ? WHERE id = ?",
+                (1 if succeeded else 0, time.time(), skill_id),
+            )
+            return cursor.rowcount
+
+        with self._lock:
+            if self._in_transaction(_bump) == 0:
+                return None
+            return self.get_skill(skill_id)
 
     def adjust_score(self, skill_id: str, delta: float) -> Skill | None:
-        """Raise or lower a skill's ranking score."""
-        skill = self.get_skill(skill_id)
-        if skill is None:
-            return None
-        skill.score = max(0.1, min(5.0, skill.score + delta))
-        return self.update_skill(skill)
+        """Raise or lower a skill's ranking score (clamped, atomic)."""
 
+        def _adjust(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute(
+                "UPDATE skills SET score = MAX(0.1, MIN(5.0, score + ?)) WHERE id = ?",
+                (float(delta), skill_id),
+            )
+            return cursor.rowcount
+
+        with self._lock:
+            if self._in_transaction(_adjust) == 0:
+                return None
+            return self.get_skill(skill_id)
+
+    @locked
     def can_improve(self, skill_id: str, *, bypass_cooldown: bool = False) -> bool:
         """Return True when the hourly improvement cooldown has elapsed."""
         if bypass_cooldown:
@@ -581,10 +697,15 @@ class SkillStore:
             ensure_ascii=True,
         )
 
-    def save_revision(self, skill: Skill, *, reason: str) -> str:
-        """Persist a snapshot before modifying a skill."""
+    def _insert_revision(
+        self,
+        conn: sqlite3.Connection,
+        skill: Skill,
+        *,
+        reason: str,
+    ) -> str:
+        """Insert a revision row and prune old ones (no commit)."""
         revision_id = str(uuid.uuid4())
-        conn = self._connection()
         conn.execute(
             "INSERT INTO skill_revisions "
             "(id, skill_id, version, snapshot_json, reason, created_at) "
@@ -598,9 +719,23 @@ class SkillStore:
                 time.time(),
             ),
         )
-        conn.commit()
+        conn.execute(
+            "DELETE FROM skill_revisions WHERE skill_id = ? AND id NOT IN ("
+            "SELECT id FROM skill_revisions WHERE skill_id = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+            (skill.id, skill.id, MAX_REVISIONS_PER_SKILL),
+        )
         return revision_id
 
+    def save_revision(self, skill: Skill, *, reason: str) -> str:
+        """Persist a snapshot before modifying a skill (keeps the newest 20)."""
+        return str(
+            self._in_transaction(
+                lambda conn: self._insert_revision(conn, skill, reason=reason)
+            )
+        )
+
+    @locked
     def list_revisions(self, skill_id: str, *, limit: int = 20) -> list[SkillRevision]:
         """Return revision history for one skill, newest first."""
         rows = (
@@ -624,8 +759,13 @@ class SkillStore:
             for row in rows
         ]
 
+    @locked
     def restore_revision(self, revision_id: str) -> Skill | None:
-        """Restore a skill from a revision snapshot."""
+        """Restore a skill from a revision snapshot.
+
+        Fields absent from an older snapshot keep their current values so a
+        restore never silently drops triggers, slots, scope, or model pins.
+        """
         row = (
             self._connection()
             .execute(
@@ -645,25 +785,39 @@ class SkillStore:
         skill = self.get_skill(str(data.get("id") or row["skill_id"]))
         if skill is None:
             return None
-        self.save_revision(skill, reason=f"Before restore to v{row['version']}")
-        skill.title = str(data.get("title", skill.title))
-        skill.description = str(data.get("description", skill.description))
-        skill.triggers = list(data.get("triggers") or skill.triggers)
-        skill.body = str(data.get("body", skill.body))
-        skill.tool_steps = list(data.get("tool_steps") or skill.tool_steps)
-        skill.slots = _parse_slots(json.dumps(data.get("slots", [])))
-        skill.preconditions = str(data.get("preconditions", skill.preconditions))
-        skill.parent_id = data.get("parent_id")
-        skill.route_scope = data.get("route_scope")
-        skill.llm_model = data.get("llm_model")
-        skill.llm_base_url = data.get("llm_base_url")
-        skill.score = float(data.get("score", skill.score))
+        before = _row_to_skill_copy(skill)
+        if "title" in data:
+            skill.title = str(data["title"])
+        if "description" in data:
+            skill.description = str(data["description"])
+        if isinstance(data.get("triggers"), list):
+            skill.triggers = list(data["triggers"])
+        if "body" in data:
+            skill.body = str(data["body"])
+        if isinstance(data.get("tool_steps"), list):
+            skill.tool_steps = list(data["tool_steps"])
+        if isinstance(data.get("slots"), list):
+            skill.slots = _parse_slots(json.dumps(data["slots"]))
+        if "preconditions" in data:
+            skill.preconditions = str(data["preconditions"] or "")
+        for key in ("parent_id", "route_scope", "llm_model", "llm_base_url"):
+            if key in data:
+                setattr(skill, key, data[key])
+        if "score" in data:
+            with contextlib.suppress(TypeError, ValueError):
+                skill.score = float(data["score"])
         if "enabled" in data:
             skill.enabled = bool(data.get("enabled"))
         skill.version += 1
         skill.last_improved_at = time.time()
-        return self.update_skill(skill)
+        _revision_id, restored = self.save_revision_and_update(
+            before,
+            skill,
+            reason=f"Before restore to v{row['version']}",
+        )
+        return restored
 
+    @locked
     def find_duplicate(
         self,
         triggers: list[str],
@@ -686,7 +840,9 @@ class SkillStore:
         draft_tools = _non_discovery_tool_names(tool_steps)
         for match in matches:
             skill = self.get_skill(match.id)
-            if skill is None:
+            if skill is None or skill.is_builtin:
+                # Builtins are never overwritten by learned drafts; the caller
+                # inserts a sibling skill instead.
                 continue
             if (
                 route_scope
@@ -704,6 +860,35 @@ class SkillStore:
                 continue
             return skill
         return None
+
+
+def _row_to_skill_copy(skill: Skill) -> Skill:
+    """Return a detached copy of a skill (for before/after revision pairs)."""
+    return Skill(
+        id=skill.id,
+        slug=skill.slug,
+        title=skill.title,
+        description=skill.description,
+        triggers=list(skill.triggers),
+        body=skill.body,
+        tool_steps=[dict(step) for step in skill.tool_steps if isinstance(step, dict)],
+        enabled=skill.enabled,
+        created_at=skill.created_at,
+        last_used_at=skill.last_used_at,
+        use_count=skill.use_count,
+        success_count=skill.success_count,
+        last_improved_at=skill.last_improved_at,
+        last_evaluation_at=skill.last_evaluation_at,
+        version=skill.version,
+        slots=list(skill.slots),
+        preconditions=skill.preconditions,
+        parent_id=skill.parent_id,
+        route_scope=skill.route_scope,
+        llm_model=skill.llm_model,
+        llm_base_url=skill.llm_base_url,
+        score=skill.score,
+        is_builtin=skill.is_builtin,
+    )
 
 
 def _trigger_token_overlap(left: list[str], right: list[str]) -> float:
@@ -814,14 +999,31 @@ _STOP_WORDS = frozenset(
 
 
 def get_skill_store(hass: HomeAssistant, entry_id: str) -> SkillStore:
-    """Return the skill store for a config entry."""
+    """Return the skill store for a loaded config entry.
+
+    Stores are opened once during ``async_setup_entry`` via
+    :func:`async_setup_skill_store`; this accessor never reconnects lazily on
+    the event loop and raises when the entry is not loaded.
+    """
+    stores: dict[str, SkillStore] = hass.data.get(DATA_KEY, {}).get(
+        SKILLS_STORE_KEY, {}
+    )
+    store = stores.get(entry_id)
+    if store is None:
+        raise HomeAssistantError(f"HA Agent entry not loaded: {entry_id}")
+    return store
+
+
+async def async_setup_skill_store(hass: HomeAssistant, entry_id: str) -> SkillStore:
+    """Open (in the executor) and register the skill store for an entry."""
     domain_data = hass.data.setdefault(DATA_KEY, {})
     stores: dict[str, SkillStore] = domain_data.setdefault(SKILLS_STORE_KEY, {})
-    if entry_id not in stores:
-        store = SkillStore(SkillStore.db_path_for_entry(hass, entry_id))
-        store.connect()
-        stores[entry_id] = store
-    return stores[entry_id]
+    if entry_id in stores:
+        return stores[entry_id]
+    store = SkillStore(SkillStore.db_path_for_entry(hass, entry_id))
+    await hass.async_add_executor_job(store.connect)
+    stores[entry_id] = store
+    return store
 
 
 def close_skill_store(hass: HomeAssistant, entry_id: str) -> None:

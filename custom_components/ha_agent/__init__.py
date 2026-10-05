@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
+from .api.helpers import cancel_entry_tasks
 from .const import (
     CONF_ACTION_LLM_BASE_URL,
     CONF_ACTION_LLM_MAX_TOKENS,
@@ -44,6 +45,7 @@ from .const import (
     CONF_TOOL_INSTRUCTIONS,
     CONF_TURN_TOKEN_BUDGET,
     CONFIG_ENTRY_VERSION,
+    DATA_KEY,
     DEFAULT_ACTION_LLM_MAX_TOKENS,
     DEFAULT_ACTION_LLM_TEMPERATURE,
     DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -59,18 +61,18 @@ from .const import (
     LEGACY_TOOL_INSTRUCTION_MARKERS,
 )
 from .eval.store import close_eval_store, get_eval_store
-from .identity.store import close_identity_store, get_identity_store
+from .identity.store import async_setup_identity_store, close_identity_store
 from .memory import async_load_memory
 from .panel import async_register_panel
 from .persistent_memory import (
+    async_setup_persistent_memory_store,
     close_persistent_memory_store,
-    get_persistent_memory_store,
 )
 from .recovery_hints import close_recovery_hint_store, get_recovery_hint_store
 from .route_keywords import close_route_keyword_store, get_route_keyword_store
 from .skills.commands import async_setup_services
 from .skills.files import async_sync_skill_files
-from .skills.store import close_skill_store, get_skill_store
+from .skills.store import async_setup_skill_store, close_skill_store
 from .thinking import normalize_thinking_level
 from .threads import async_load_threads
 from .websocket_api import async_register_handlers
@@ -205,13 +207,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name=entry.title,
         model=entry.data.get(CONF_LLM_MODEL),
     )
-    get_skill_store(hass, entry.entry_id)
-    get_identity_store(hass, entry.entry_id)
-    get_persistent_memory_store(hass, entry.entry_id)
+    # Open SQLite-backed stores in the executor before platforms start.
+    await async_setup_skill_store(hass, entry.entry_id)
+    await async_setup_identity_store(hass, entry.entry_id)
+    await async_setup_persistent_memory_store(hass, entry.entry_id)
     await async_sync_skill_files(hass, entry.entry_id)
-    get_route_keyword_store(hass, entry.entry_id)
-    get_recovery_hint_store(hass, entry.entry_id)
-    get_eval_store(hass, entry.entry_id)
+    await hass.async_add_executor_job(get_route_keyword_store, hass, entry.entry_id)
+    await hass.async_add_executor_job(get_recovery_hint_store, hass, entry.entry_id)
+    await hass.async_add_executor_job(get_eval_store, hass, entry.entry_id)
     await async_setup_services(hass)
     await async_load_memory(hass, entry.entry_id)
     await async_load_threads(hass, entry.entry_id)
@@ -223,13 +226,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    cancel_entry_tasks(hass, entry.entry_id)
     close_skill_store(hass, entry.entry_id)
     close_identity_store(hass, entry.entry_id)
     close_persistent_memory_store(hass, entry.entry_id)
     close_route_keyword_store(hass, entry.entry_id)
     close_recovery_hint_store(hass, entry.entry_id)
     close_eval_store(hass, entry.entry_id)
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        domain_data = hass.data.get(DATA_KEY)
+        if isinstance(domain_data, dict):
+            # Drop per-entry runtime bags; keep global flags like services_registered.
+            for _key, value in list(domain_data.items()):
+                if isinstance(value, dict) and entry.entry_id in value:
+                    value.pop(entry.entry_id, None)
+    return unloaded
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

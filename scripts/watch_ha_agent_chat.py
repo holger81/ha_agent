@@ -84,12 +84,13 @@ async def watch() -> int:
                                 f"route={edata.get('turn_meta', {}).get('route')}"
                             )
                         elif etype == "ha_agent_turn_recorded":
-                            turn = edata.get("turn", {})
+                            # Event carries compact summary; full turn is in activity.
+                            summary = edata.get("summary") or edata.get("turn") or {}
                             _log(
                                 f"RECORDED conv={edata.get('conversation_id')} "
-                                f"user={turn.get('user_text', '')[:60]!r} "
-                                f"errors={turn.get('tool_errors')} "
-                                f"outcome={turn.get('outcome')}"
+                                f"user={summary.get('user_text', '')[:60]!r} "
+                                f"errors={summary.get('tool_errors')} "
+                                f"outcome={summary.get('outcome')}"
                             )
                             ts = edata.get("timestamp")
                             if ts is not None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 from homeassistant.core import HomeAssistant
 
 from .models import EVAL_TASKS, EvalCase
@@ -378,10 +380,26 @@ def list_eval_cases_for_entry(
     *,
     tasks: list[str] | None = None,
 ) -> list[EvalCase]:
-    """Return built-in and entry-specific promoted eval cases."""
+    """Return built-in and entry-specific promoted eval cases.
+
+    Blocking (sqlite read); prefer :func:`async_list_eval_cases_for_entry`
+    from the event loop.
+    """
     store = get_eval_store(hass, entry_id)
     custom_cases = store.list_custom_cases()
     return list_eval_cases(tasks=tasks, custom_cases=custom_cases)
+
+
+async def async_list_eval_cases_for_entry(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    tasks: list[str] | None = None,
+) -> list[EvalCase]:
+    """Executor-backed variant of :func:`list_eval_cases_for_entry`."""
+    return await hass.async_add_executor_job(
+        partial(list_eval_cases_for_entry, hass, entry_id, tasks=tasks)
+    )
 
 
 def cases_for_task(task: str) -> list[EvalCase]:

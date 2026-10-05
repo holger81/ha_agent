@@ -14,12 +14,22 @@ LIVE_KEY = "diagnostics_live"
 MAX_DELTAS_PER_TURN = 200
 
 
+_MAX_ENTRIES = 32
+_MAX_SESSIONS_PER_ENTRY = 16
+
+
 @callback
 def _live_store(
     hass: HomeAssistant,
 ) -> dict[str, dict[tuple[str, str], dict[str, Any]]]:
     domain_data = hass.data.setdefault(DATA_KEY, {})
-    return domain_data.setdefault(LIVE_KEY, {})
+    store: dict[str, dict[tuple[str, str], dict[str, Any]]] = domain_data.setdefault(
+        LIVE_KEY, {}
+    )
+    # Bound top-level entry map growth (stale entries after unload).
+    while len(store) > _MAX_ENTRIES:
+        store.pop(next(iter(store)), None)
+    return store
 
 
 @callback
@@ -34,6 +44,8 @@ def begin_live_turn(
     """Mark a conversation turn as active for live observation."""
     store = _live_store(hass)
     per_entry = store.setdefault(entry_id, {})
+    while len(per_entry) >= _MAX_SESSIONS_PER_ENTRY:
+        per_entry.pop(next(iter(per_entry)), None)
     per_entry[(entry_id, conversation_id)] = {
         "entry_id": entry_id,
         "conversation_id": conversation_id,

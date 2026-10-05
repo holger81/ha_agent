@@ -106,7 +106,10 @@ async def test_inject_console_turn_waits_for_events() -> None:
         "conversation_id": "inject-abc",
     }
 
-    with patch.object(diag, "start_chat") as start_chat_mock:
+    with (
+        patch.object(diag, "start_chat") as start_chat_mock,
+        patch.object(diag, "get_turn", return_value=turn_payload),
+    ):
         task = asyncio.create_task(
             diag.inject_console_turn(
                 hass,
@@ -132,7 +135,13 @@ async def test_inject_console_turn_waits_for_events() -> None:
                     "entry_id": "entry-1",
                     "conversation_id": "inject-abc",
                     "timestamp": 1.0,
-                    "turn": turn_payload,
+                    "summary": {
+                        "user_text": "turn on lights",
+                        "assistant_text": "Done.",
+                        "tool_errors": 0,
+                        "outcome": "success",
+                        "conversation_id": "inject-abc",
+                    },
                 }
             )
         )

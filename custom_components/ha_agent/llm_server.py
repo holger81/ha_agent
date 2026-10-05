@@ -15,6 +15,11 @@ import aiohttp
 
 from .config_helpers import LlmBackend
 from .const import LOGGER
+from .sse import iter_sse_events
+
+# Catalog polling: force a disk reload (``/models?reload=1``) every Nth poll so
+# a finished download that the router has not yet indexed still shows up.
+_CATALOG_RELOAD_EVERY_POLLS = 5
 
 
 def server_root_from_base_url(base_url: str) -> str:
@@ -133,11 +138,11 @@ def normalize_download_progress(data: dict[str, Any]) -> dict[str, Any]:
             ("n_done", "n_total"),
             ("downloaded", "total"),
         ):
-            done = layer.get(done_key)
-            total = layer.get(total_key)
+            done = _optional_int(layer.get(done_key))
+            total = _optional_int(layer.get(total_key))
             if done is not None and total:
-                bytes_done = int(done)
-                bytes_total = int(total)
+                bytes_done = done
+                bytes_total = total
         raw_percent = layer.get("percent")
         if raw_percent is None:
             raw_percent = layer.get("progress")
@@ -402,7 +407,12 @@ class LlmServerProbe:
         timeout: aiohttp.ClientTimeout,
         caps: ServerCapabilities,
     ) -> None:
-        """Detect router HF download support via GET /models/sse."""
+        """Detect router HF download support via GET /models/sse.
+
+        Only a 200 (stream opened) or 405 (endpoint exists, GET refused)
+        proves the download API; connection failures leave it False.
+        """
+        caps.models_download_via_api = False
         if caps.router_role != "router":
             return
         url = f"{root}/models/sse"
@@ -412,13 +422,12 @@ class LlmServerProbe:
                 headers={**headers, "Accept": "text/event-stream"},
                 timeout=aiohttp.ClientTimeout(total=5, sock_connect=5),
             ) as response:
-                if response.status == 200:
+                if response.status in {200, 405}:
                     caps.models_download_via_api = True
                     if "/models/sse" not in caps.endpoints_available:
                         caps.endpoints_available.append("/models/sse")
-        except (TimeoutError, aiohttp.ClientError):
-            # Router builds without SSE may still accept POST /models.
-            caps.models_download_via_api = True
+        except (TimeoutError, aiohttp.ClientError) as err:
+            LOGGER.debug("llama.cpp /models/sse probe unavailable: %s", err)
 
     async def _try_endpoint(
         self,
@@ -451,10 +460,12 @@ class LlmServerProbe:
             return
         if not isinstance(data, dict):
             return
+        error = data.get("error")
+        error_message = (
+            error.get("message") if isinstance(error, dict) else error
+        ) or None
         caps.health = ServerHealth(
-            status=str(
-                data.get("status") or data.get("error", {}).get("message") or "unknown"
-            ),
+            status=str(data.get("status") or error_message or "unknown"),
             slots_idle=_optional_int(data.get("slots_idle")),
             slots_processing=_optional_int(data.get("slots_processing")),
             raw=data,
@@ -513,9 +524,10 @@ class LlmServerProbe:
         for item in data:
             if not isinstance(item, dict):
                 continue
+            slot_id = _optional_int(item.get("id"))
             slots.append(
                 ServerSlot(
-                    id=int(item.get("id", len(slots))),
+                    id=len(slots) if slot_id is None else slot_id,
                     n_ctx=_optional_int(item.get("n_ctx")),
                     is_processing=bool(item.get("is_processing")),
                     raw=item,
@@ -1067,52 +1079,53 @@ async def _consume_models_sse(
     headers["Accept"] = "text/event-stream"
     url = f"{root}/models/sse"
     sse_timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=90)
+    remaining = timeout - (time.monotonic() - started)
+    if remaining <= 0:
+        return None
+
+    class _Cancelled(Exception):
+        """Raised from the chunk reader when cancel_check fires."""
+
+    async def _chunks(response: aiohttp.ClientResponse):
+        async for chunk in response.content.iter_any():
+            if cancel_check and cancel_check():
+                raise _Cancelled
+            yield chunk
+
     try:
-        async with session.get(url, headers=headers, timeout=sse_timeout) as response:
+        async with (
+            asyncio.timeout(remaining),
+            session.get(url, headers=headers, timeout=sse_timeout) as response,
+        ):
             if response.status != 200:
                 return None
-            current_event = ""
-            buffer = ""
-            async for chunk in response.content.iter_any():
-                if cancel_check and cancel_check():
-                    return {"ok": False, "cancelled": True, "model": model_id}
+            async for event in iter_sse_events(_chunks(response)):
                 elapsed = time.monotonic() - started
-                if elapsed > timeout:
-                    return None
-                buffer += chunk.decode("utf-8", errors="ignore")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    stripped = line.strip()
-                    if stripped.startswith("event:"):
-                        current_event = stripped[6:].strip()
-                        continue
-                    if not stripped.startswith("data:"):
-                        if not stripped:
-                            current_event = ""
-                        continue
-                    data = _parse_sse_event_block(current_event, stripped)
-                    if data is None:
-                        continue
-                    outcome = _sse_model_event_outcome(
-                        current_event,
-                        data,
-                        model_id=model_id,
-                        wait_kind=wait_kind,
-                    )
-                    if outcome is None:
-                        continue
-                    if outcome.get("progress"):
-                        if on_progress:
-                            on_progress(
-                                {
-                                    **outcome,
-                                    "wait_seconds": int(elapsed),
-                                }
-                            )
-                        continue
-                    if outcome.get("ok"):
-                        outcome["wait_seconds"] = int(elapsed)
-                    return outcome
+                data = _parse_sse_event_block(event.event, event.data)
+                if data is None:
+                    continue
+                outcome = _sse_model_event_outcome(
+                    event.event,
+                    data,
+                    model_id=model_id,
+                    wait_kind=wait_kind,
+                )
+                if outcome is None:
+                    continue
+                if outcome.get("progress"):
+                    if on_progress:
+                        on_progress(
+                            {
+                                **outcome,
+                                "wait_seconds": int(elapsed),
+                            }
+                        )
+                    continue
+                if outcome.get("ok"):
+                    outcome["wait_seconds"] = int(elapsed)
+                return outcome
+    except _Cancelled:
+        return {"ok": False, "cancelled": True, "model": model_id}
     except (TimeoutError, aiohttp.ClientError) as err:
         LOGGER.debug("models/sse stream ended: %s", err)
     return None
@@ -1132,6 +1145,7 @@ async def _wait_for_router_model(
     abort_on_cancel: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
+    reload_next = False
     if use_sse:
         outcome = await _consume_models_sse(
             session,
@@ -1147,8 +1161,12 @@ async def _wait_for_router_model(
             if outcome.get("cancelled") and abort_on_cancel:
                 await unload_model(session, backend, model_id)
             return outcome
+        # The SSE stream ended without a verdict (e.g. closed right after a
+        # download_finished event we did not see): make the first catalog
+        # poll a disk reload so a just-finished download is picked up.
+        reload_next = wait_kind == "download"
 
-    reload_next = False
+    polls = 0
     while True:
         if cancel_check and cancel_check():
             if abort_on_cancel:
@@ -1161,13 +1179,14 @@ async def _wait_for_router_model(
                 "model": model_id,
                 "error": f"Timed out after {int(timeout)}s waiting for {wait_kind}.",
             }
+        polls += 1
         entry = await _get_catalog_model(
             session,
             backend,
             model_id,
             reload=reload_next,
         )
-        reload_next = False
+        reload_next = polls % _CATALOG_RELOAD_EVERY_POLLS == 0
         if entry is not None:
             if entry.failed:
                 return {

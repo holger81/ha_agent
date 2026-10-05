@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -114,6 +115,72 @@ def get_config(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
     return config_snapshot(hass, entry)
 
 
+_SET_CONFIG_SCHEMA = vol.Schema(
+    {
+        vol.Optional("llm_model"): str,
+        vol.Optional("thinking_level"): str,
+        vol.Optional("action_model_enabled"): bool,
+        vol.Optional("action_llm_model"): str,
+        vol.Optional("action_llm_base_url"): str,
+        vol.Optional("classifier_model_enabled"): bool,
+        vol.Optional("classifier_llm_model"): str,
+        vol.Optional("classifier_llm_base_url"): str,
+        vol.Optional("planner_model_enabled"): bool,
+        vol.Optional("planner_llm_model"): str,
+        vol.Optional("planner_llm_base_url"): str,
+        vol.Optional("verifier_model_enabled"): bool,
+        vol.Optional("verifier_llm_model"): str,
+        vol.Optional("verifier_llm_base_url"): str,
+        vol.Optional("observer_model_enabled"): bool,
+        vol.Optional("observer_llm_model"): str,
+        vol.Optional("observer_llm_base_url"): str,
+        vol.Optional("email_model_enabled"): bool,
+        vol.Optional("email_llm_model"): str,
+        vol.Optional("email_llm_base_url"): str,
+        vol.Optional("news_model_enabled"): bool,
+        vol.Optional("news_llm_model"): str,
+        vol.Optional("news_llm_base_url"): str,
+        vol.Optional("max_iterations"): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=64)
+        ),
+        vol.Optional("history_turns"): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=100)
+        ),
+        vol.Optional("enable_streaming"): bool,
+        vol.Optional("show_reasoning_in_chat"): bool,
+        vol.Optional("skills_learning_enabled"): bool,
+        vol.Optional("skills_auto_save"): bool,
+        vol.Optional("skills_use_enabled"): bool,
+        vol.Optional("skills_max_inject"): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=20)
+        ),
+        vol.Optional("memory_persist"): bool,
+        vol.Optional("eval_models_dir"): str,
+        vol.Optional("eval_download_webhook_url"): str,
+        vol.Optional("eval_discover_require_download_approval"): bool,
+        vol.Optional("eval_discover_require_trial_approval"): bool,
+        vol.Optional("eval_discover_max_models"): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=50)
+        ),
+        vol.Optional("identity_voice_enabled"): bool,
+        vol.Optional("identity_guest_match_threshold"): vol.All(
+            vol.Coerce(float), vol.Range(min=0.0, max=1.0)
+        ),
+        vol.Optional("identity_guest_create_threshold"): vol.All(
+            vol.Coerce(float), vol.Range(min=0.0, max=1.0)
+        ),
+        vol.Optional("identity_guest_tie_margin"): vol.All(
+            vol.Coerce(float), vol.Range(min=0.0, max=1.0)
+        ),
+        vol.Optional("identity_min_utterance_ms"): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=60_000)
+        ),
+        vol.Optional("identity_auto_name_enabled"): bool,
+    },
+    extra=vol.PREVENT_EXTRA,
+)
+
+
 async def set_config(
     hass: HomeAssistant,
     entry_id: str,
@@ -121,9 +188,13 @@ async def set_config(
 ) -> dict[str, Any]:
     """Update config entry data fields from the console."""
     entry = get_entry(hass, entry_id)
+    try:
+        cleaned = _SET_CONFIG_SCHEMA(dict(updates or {}))
+    except vol.Invalid as err:
+        raise HomeAssistantError(f"Invalid config update: {err}") from err
     data = dict(entry.data)
     changed = False
-    for key, value in updates.items():
+    for key, value in cleaned.items():
         conf_key = _CONFIG_KEYS.get(key)
         if conf_key is None:
             continue
@@ -132,13 +203,12 @@ async def set_config(
     if not changed:
         raise HomeAssistantError("No valid config keys in update")
     hass.config_entries.async_update_entry(entry, data=data)
-    if updates.get("memory_persist") is True:
+    if cleaned.get("memory_persist") is True:
         await async_load_memory(hass, entry_id)
-    elif updates.get("memory_persist") is False:
+    elif cleaned.get("memory_persist") is False:
         await async_save_memory(hass, entry_id)
-    await hass.config_entries.async_reload(entry_id)
-    reloaded = get_entry(hass, entry_id)
-    return config_snapshot(hass, reloaded)
+    # Config entry update listener performs reload; return snapshot of new data.
+    return config_snapshot(hass, get_entry(hass, entry_id))
 
 
 async def reload_integration(

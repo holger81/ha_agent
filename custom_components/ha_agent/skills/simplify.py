@@ -206,9 +206,7 @@ def _parse_draft(data: dict[str, Any], *, fallback: Skill) -> SkillDraft | None:
             body=body,
             tool_steps=tool_steps,
             slots=slots,
-            preconditions=str(
-                data.get("preconditions", fallback.preconditions) or ""
-            ),
+            preconditions=str(data.get("preconditions", fallback.preconditions) or ""),
             parent_id=None,
             route_scope=route_scope,
             llm_model=fallback.llm_model,
@@ -369,11 +367,9 @@ async def propose_skill_simplification(
     model_label: str = "",
 ) -> dict[str, Any]:
     """Ask the model for simplify/combine proposals and stash them for preview."""
-    candidates = [
-        skill
-        for skill in skills
-        if not skill.is_builtin and skill.enabled
-    ][:_MAX_CATALOG]
+    candidates = [skill for skill in skills if not skill.is_builtin and skill.enabled][
+        :_MAX_CATALOG
+    ]
     if not candidates:
         state = get_simplify_state(hass, entry_id)
         state.proposals = []

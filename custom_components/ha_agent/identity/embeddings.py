@@ -57,6 +57,9 @@ def update_centroid(
     """Return a running-average centroid after one new sample."""
     if current is None or sample_count <= 0:
         return list(new_sample)
+    if len(current) != len(new_sample):
+        # Dim mismatch — replace rather than corrupt the centroid.
+        return list(new_sample)
     total = sample_count + 1
     return [
         ((current[index] * sample_count) + new_sample[index]) / total

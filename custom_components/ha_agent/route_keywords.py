@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,11 +117,17 @@ def _row_to_route_keywords(row: sqlite3.Row) -> RouteKeywords:
 
 
 class RouteKeywordStore:
-    """Per-config-entry editable action keyword database."""
+    """Per-config-entry editable action keyword database.
+
+    The SQLite connection is opened lazily on first use (normally inside an
+    executor job) and shared across threads, so every public method holds an
+    ``RLock`` around its connection use.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     @staticmethod
     def db_path_for_entry(hass: HomeAssistant, entry_id: str) -> Path:
@@ -130,18 +137,23 @@ class RouteKeywordStore:
 
     def connect(self) -> None:
         """Open the database, ensure schema, and seed missing defaults."""
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._seed_defaults()
-        self._purge_obsolete_routes()
-        self._conn.commit()
+        with self._lock:
+            if self._conn is not None:
+                return
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            self._conn = conn
+            conn.executescript(_SCHEMA)
+            self._seed_defaults()
+            self._purge_obsolete_routes()
+            conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -183,13 +195,14 @@ class RouteKeywordStore:
 
     def list_route_keywords(self) -> list[RouteKeywords]:
         """Return built-in route keyword rows in canonical order."""
-        rows = (
-            self._connection()
-            .execute(
-                "SELECT * FROM route_keywords",
+        with self._lock:
+            rows = (
+                self._connection()
+                .execute(
+                    "SELECT * FROM route_keywords",
+                )
+                .fetchall()
             )
-            .fetchall()
-        )
         by_route = {row["route"]: _row_to_route_keywords(row) for row in rows}
         return [by_route[route] for route in ROUTE_KEYWORD_ROUTES if route in by_route]
 
@@ -197,14 +210,15 @@ class RouteKeywordStore:
         """Return one route's keyword row."""
         if route not in ROUTE_KEYWORD_ROUTES:
             return None
-        row = (
-            self._connection()
-            .execute(
-                "SELECT * FROM route_keywords WHERE route = ?",
-                (route,),
+        with self._lock:
+            row = (
+                self._connection()
+                .execute(
+                    "SELECT * FROM route_keywords WHERE route = ?",
+                    (route,),
+                )
+                .fetchone()
             )
-            .fetchone()
-        )
         return _row_to_route_keywords(row) if row else None
 
     def update_route_keywords(
@@ -215,26 +229,27 @@ class RouteKeywordStore:
         enabled: bool | None = None,
     ) -> RouteKeywords | None:
         """Update an existing route's editable fields."""
-        current = self.get_route_keywords(route)
-        if current is None:
-            return None
-        if keywords is not None:
-            current.keywords = _normalize_keywords(keywords)
-        if enabled is not None:
-            current.enabled = enabled
-        current.updated_at = time.time()
-        conn = self._connection()
-        conn.execute(
-            "UPDATE route_keywords SET keywords = ?, enabled = ?, "
-            "updated_at = ? WHERE route = ?",
-            (
-                json.dumps(current.keywords),
-                int(current.enabled),
-                current.updated_at,
-                current.route,
-            ),
-        )
-        conn.commit()
+        with self._lock:
+            current = self.get_route_keywords(route)
+            if current is None:
+                return None
+            if keywords is not None:
+                current.keywords = _normalize_keywords(keywords)
+            if enabled is not None:
+                current.enabled = enabled
+            current.updated_at = time.time()
+            conn = self._connection()
+            conn.execute(
+                "UPDATE route_keywords SET keywords = ?, enabled = ?, "
+                "updated_at = ? WHERE route = ?",
+                (
+                    json.dumps(current.keywords),
+                    int(current.enabled),
+                    current.updated_at,
+                    current.route,
+                ),
+            )
+            conn.commit()
         current.is_default = _is_default(current.route, current.keywords)
         return current
 
@@ -265,10 +280,11 @@ class RouteKeywordStore:
     def active_keyword_map(self) -> dict[str, list[str]]:
         """Return active keyword overrides for all customized routes."""
         result: dict[str, list[str]] = {}
-        for route in ROUTE_KEYWORD_ROUTES:
-            keywords = self.active_keywords(route)
-            if keywords:
-                result[route] = keywords
+        with self._lock:
+            for route in ROUTE_KEYWORD_ROUTES:
+                keywords = self.active_keywords(route)
+                if keywords:
+                    result[route] = keywords
         return result
 
 
@@ -293,15 +309,19 @@ def get_route_keyword_store(
     hass: HomeAssistant,
     entry_id: str,
 ) -> RouteKeywordStore:
-    """Return the route keyword store for a config entry."""
+    """Return the route keyword store for a config entry.
+
+    Safe to call from the event loop: the SQLite connection is opened lazily
+    by the first store method, which callers run via ``async_add_executor_job``.
+    """
     domain_data = hass.data.setdefault(DATA_KEY, {})
     stores: dict[str, RouteKeywordStore] = domain_data.setdefault(
         ROUTE_KEYWORDS_STORE_KEY, {}
     )
     if entry_id not in stores:
-        store = RouteKeywordStore(RouteKeywordStore.db_path_for_entry(hass, entry_id))
-        store.connect()
-        stores[entry_id] = store
+        stores[entry_id] = RouteKeywordStore(
+            RouteKeywordStore.db_path_for_entry(hass, entry_id)
+        )
     return stores[entry_id]
 
 

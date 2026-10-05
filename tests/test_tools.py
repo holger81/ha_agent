@@ -381,9 +381,104 @@ async def test_execute_tool_blocks_deprecated_ha_search_entities() -> None:
     )
     mcp = types.SimpleNamespace(call_tool=AsyncMock())
 
-    output = await tools.execute_tool(mcp, call)
+    output, normalized = await tools.execute_tool(mcp, call)
 
     assert output.startswith("Tool error:")
     assert "Unknown or unavailable" in output
     assert "searchToolsForDomain" in output
+    assert isinstance(normalized, dict)
+    mcp.call_tool.assert_not_called()
+
+
+def test_classify_tool_output_ignores_unexpected_token_in_long_body() -> None:
+    """Failure markers buried in long successful payloads stay success."""
+    body = "Article body… " + ("x" * 700) + " unexpected token in quote " + ("y" * 100)
+    output = tools.classify_tool_output(body)
+    assert not output.startswith("Tool error:")
+
+
+def test_classify_tool_output_marks_short_unexpected_token() -> None:
+    """Short outputs containing failure markers are still Tool errors."""
+    output = tools.classify_tool_output("unexpected token at position 12")
+    assert output.startswith("Tool error:")
+
+
+def test_compact_tool_output_truncates_tool_errors() -> None:
+    """Tool error text is capped before it re-enters the LLM context."""
+    output = tools.compact_tool_output(
+        "callTool",
+        "Tool error: " + ("e" * 5_000),
+    )
+    assert output.startswith("Tool error:")
+    assert "[truncated" in output
+    assert len(output) < 3_000
+
+
+def test_resolve_entity_id_reports_ambiguity() -> None:
+    """Multiple exact name matches become an AmbiguousEntityError."""
+    exposed = [
+        {"entity_id": "light.kitchen_a", "name": "Kitchen Light"},
+        {"entity_id": "light.kitchen_b", "name": "Kitchen Light"},
+    ]
+    with pytest.raises(tools.AmbiguousEntityError) as err:
+        tools._resolve_entity_id("Kitchen Light", exposed)
+    assert "light.kitchen_a" in str(err.value)
+    assert "light.kitchen_b" in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_returns_normalized_arguments() -> None:
+    """Callers receive the normalized arguments that were sent to MCP."""
+    call = llm_client.ToolCall(
+        id="call_norm",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "domain": "email",
+                    "service": "turn_on",
+                    "entity_id": "light.kitchen",
+                },
+            }
+        ),
+    )
+    mcp = types.SimpleNamespace(
+        call_tool=AsyncMock(return_value={"ok": True}),
+    )
+
+    output, normalized = await tools.execute_tool(mcp, call)
+
+    assert not output.startswith("Tool error:")
+    assert normalized["toolName"] == "home_assistant__ha_call_service"
+    assert normalized["arguments"]["domain"] == "light"
+    mcp.call_tool.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_ambiguity_is_tool_error() -> None:
+    """Ambiguous entity resolution fails locally with a Tool error."""
+    call = llm_client.ToolCall(
+        id="call_ambig",
+        name="callTool",
+        arguments=json.dumps(
+            {
+                "toolName": "home_assistant__ha_call_service",
+                "arguments": {
+                    "service": "turn_off",
+                    "entity_id": "Lamp",
+                },
+            }
+        ),
+    )
+    exposed = [
+        {"entity_id": "light.lamp_a", "name": "Lamp"},
+        {"entity_id": "light.lamp_b", "name": "Lamp"},
+    ]
+    mcp = types.SimpleNamespace(call_tool=AsyncMock())
+
+    output, _normalized = await tools.execute_tool(mcp, call, exposed_entities=exposed)
+
+    assert output.startswith("Tool error:")
+    assert "Ambiguous entity" in output
     mcp.call_tool.assert_not_called()

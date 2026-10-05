@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aiohttp
@@ -17,7 +19,7 @@ from ..eval.case_promote import (
     turn_dict_to_trace,
 )
 from ..eval.case_serde import eval_case_to_dict
-from ..eval.cases import list_eval_cases_for_entry
+from ..eval.cases import async_list_eval_cases_for_entry
 from ..eval.discover_config import get_discover_config
 from ..eval.discover_models import propose_models_from_web as discover_propose_models
 from ..eval.discover_runner import (
@@ -50,6 +52,25 @@ from ..llm_server import (
     unload_model,
 )
 from .config import set_config
+from .helpers import get_entry
+
+
+@asynccontextmanager
+async def _client_session(hass: HomeAssistant) -> AsyncIterator[aiohttp.ClientSession]:
+    """Yield HA's shared aiohttp session, falling back to a short-lived one.
+
+    The shared session must not be closed by callers, so this manager only
+    closes sessions it created itself.
+    """
+    try:
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+    except ImportError:  # pragma: no cover - HA stubs in unit tests
+        async_get_clientsession = None
+    if async_get_clientsession is not None:
+        yield async_get_clientsession(hass)
+        return
+    async with aiohttp.ClientSession() as session:
+        yield session
 
 
 async def get_eval_status(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
@@ -261,8 +282,8 @@ async def apply_server_settings(
         raise HomeAssistantError("Eval run has no valid server settings to apply.")
 
     preset_ini = recommendation.get("preset_ini") or recommendations_to_preset(items)
-    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
-    async with aiohttp.ClientSession() as session:
+    backend = get_llm_backend(get_entry(hass, entry_id))
+    async with _client_session(hass) as session:
         before = await probe_server(session, backend)
         mode = server_apply_mode(before)
         if mode == "preset":
@@ -313,8 +334,8 @@ async def load_eval_model(
     model_id: str,
 ) -> dict[str, Any]:
     """Load one model on the llama.cpp router via HTTP."""
-    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
-    async with aiohttp.ClientSession() as session:
+    backend = get_llm_backend(get_entry(hass, entry_id))
+    async with _client_session(hass) as session:
         try:
             result = await load_model(session, backend, model_id)
         except Exception as err:
@@ -339,8 +360,8 @@ async def unload_eval_model(
     model_id: str,
 ) -> dict[str, Any]:
     """Unload one model from the llama.cpp router via HTTP."""
-    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
-    async with aiohttp.ClientSession() as session:
+    backend = get_llm_backend(get_entry(hass, entry_id))
+    async with _client_session(hass) as session:
         result = await unload_model(session, backend, model_id)
         caps = await probe_server(session, backend)
     return {"result": result, "capabilities": caps.to_dict()}
@@ -352,9 +373,9 @@ async def delete_eval_model(
     model_id: str,
 ) -> dict[str, Any]:
     """Unload and delete a cached model from the llama.cpp router."""
-    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
+    backend = get_llm_backend(get_entry(hass, entry_id))
     registry = get_model_registry(hass, entry_id)
-    async with aiohttp.ClientSession() as session:
+    async with _client_session(hass) as session:
         caps = await probe_server(session, backend)
         unload_result = await unload_model(session, backend, model_id)
         delete_result: dict[str, Any] = {
@@ -366,9 +387,11 @@ async def delete_eval_model(
             delete_result = await delete_model_from_router(session, backend, model_id)
         caps_after = await probe_server(session, backend)
     if delete_result.get("ok"):
-        registry.mark_deleted(
-            model_id,
-            notes="Deleted from llama.cpp cache via eval API.",
+        await hass.async_add_executor_job(
+            lambda: registry.mark_deleted(
+                model_id,
+                notes="Deleted from llama.cpp cache via eval API.",
+            )
         )
     return {
         "unload": unload_result,
@@ -385,8 +408,8 @@ async def preload_eval_models(
     """Load multiple eval candidate models before benchmarking."""
     if not model_ids:
         raise HomeAssistantError("No models specified to preload.")
-    backend = get_llm_backend(hass.config_entries.async_get_entry(entry_id))
-    async with aiohttp.ClientSession() as session:
+    backend = get_llm_backend(get_entry(hass, entry_id))
+    async with _client_session(hass) as session:
         try:
             before = await probe_server(session, backend)
         except Exception as err:
@@ -455,34 +478,43 @@ async def discover_models(
     entry_id: str,
 ) -> dict[str, Any]:
     """Search the web and return model proposals without starting the pipeline."""
-    entry = hass.config_entries.async_get_entry(entry_id)
+    entry = get_entry(hass, entry_id)
     config = get_discover_config(entry)
     backend = get_llm_backend(entry)
     registry = get_model_registry(hass, entry_id)
-    async with aiohttp.ClientSession() as session:
+
+    def _skipped(model_ids: list[str]) -> set[str]:
+        return {
+            model_id
+            for model_id in model_ids
+            if registry.should_skip_download(model_id)
+        }
+
+    async with _client_session(hass) as session:
         from ..llm_client import LlmClient
-        from ..llm_server import probe_server
 
         capabilities = await probe_server(session, backend)
         llm = LlmClient(session)
+        skip_ids = await hass.async_add_executor_job(
+            _skipped, list(capabilities.models)
+        )
         proposals = await discover_propose_models(
             session,
             llm,
             backend,
             capabilities=capabilities,
             max_models=config.max_models,
-            skip_model_ids={
-                model_id
-                for model_id in capabilities.models
-                if registry.should_skip_download(model_id)
-            },
+            skip_model_ids=skip_ids,
         )
+    proposal_skips = await hass.async_add_executor_job(
+        _skipped, [item.model_id for item in proposals]
+    )
     return {
         "implemented": True,
         "proposals": [
             {
                 **item.to_dict(),
-                "skip_download": registry.should_skip_download(item.model_id),
+                "skip_download": item.model_id in proposal_skips,
             }
             for item in proposals
         ],
@@ -496,7 +528,7 @@ async def start_discover(
 ) -> dict[str, Any]:
     """Start the full discover/download/trial pipeline."""
     payload = payload or {}
-    entry = hass.config_entries.async_get_entry(entry_id)
+    entry = get_entry(hass, entry_id)
     config = get_discover_config(entry)
     require_download = payload.get("require_download_approval")
     require_trial = payload.get("require_trial_approval")
@@ -578,7 +610,7 @@ async def retry_discover_model(
         raise HomeAssistantError("No model_id specified for retry.")
     try:
         await start_discover_retry_background(hass, entry_id, model_id)
-    except RuntimeError as err:
+    except (RuntimeError, ValueError) as err:
         raise HomeAssistantError(str(err)) from err
     state = get_discover_state(hass, entry_id)
     return {
@@ -599,7 +631,10 @@ async def mark_model_for_cleanup(
     result = await delete_eval_model(hass, entry_id, model_id)
     deleted = bool(result.get("delete", {}).get("ok"))
     if not deleted and notes:
-        get_model_registry(hass, entry_id).mark_deleted(model_id, notes=notes)
+        registry = get_model_registry(hass, entry_id)
+        await hass.async_add_executor_job(
+            lambda: registry.mark_deleted(model_id, notes=notes)
+        )
     return {
         "model_id": model_id,
         "status": "deleted" if deleted else "failed",
@@ -615,7 +650,7 @@ async def list_eval_cases_api(
     tasks: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return built-in and promoted eval cases for the console."""
-    cases = list_eval_cases_for_entry(hass, entry_id, tasks=tasks)
+    cases = await async_list_eval_cases_for_entry(hass, entry_id, tasks=tasks)
     return {
         "cases": [eval_case_to_dict(case) for case in cases],
         "promoted_count": sum(1 for case in cases if case.source == "promoted"),

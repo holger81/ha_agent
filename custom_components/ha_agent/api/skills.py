@@ -191,6 +191,8 @@ async def create_skill(
         )
         return result
 
+    import re
+
     title = str(payload.get("title", "")).strip()
     description = str(payload.get("description", "")).strip()
     body = str(payload.get("body", "")).strip()
@@ -201,6 +203,12 @@ async def create_skill(
         raise HomeAssistantError("title, description, and body are required")
     if not isinstance(triggers, list) or not triggers:
         raise HomeAssistantError("At least one trigger is required")
+    raw_slug = str(payload.get("slug") or "").strip()
+    if raw_slug:
+        slugified = re.sub(r"[^a-z0-9]+", "-", raw_slug.lower()).strip("-")[:60]
+        if not slugified:
+            raise HomeAssistantError("Invalid skill slug")
+        payload = {**payload, "slug": slugified}
 
     draft = normalize_skill_draft(
         SkillDraft(
@@ -212,7 +220,8 @@ async def create_skill(
         ),
         explicit_tool_steps=explicit_tool_steps,
     )
-    skill = await save_skill_from_draft(hass, entry_id, draft)
+    slug_arg = payload.get("slug") if raw_slug else None
+    skill = await save_skill_from_draft(hass, entry_id, draft, slug=slug_arg)
     result = skill_to_dict(skill)
     result["markdown"] = skill_to_markdown(skill)
     result["file_path"] = str(
@@ -465,8 +474,13 @@ async def sync_skill_files(hass: HomeAssistant, entry_id: str) -> dict[str, Any]
 
 async def get_skills_directory(hass: HomeAssistant, entry_id: str) -> dict[str, str]:
     """Return the on-disk skills directory and starter template."""
+    get_entry(hass, entry_id)
     directory = skills_directory(hass, entry_id)
-    directory.mkdir(parents=True, exist_ok=True)
+
+    def _mkdir() -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    await hass.async_add_executor_job(_mkdir)
     return {
         "directory": str(directory),
         "template": new_skill_markdown(),
@@ -519,9 +533,7 @@ async def apply_skill_generalize(
             if skill is None:
                 raise HomeAssistantError(f"Skill not found: {skill_id}")
             if skill.is_builtin:
-                raise HomeAssistantError(
-                    f"Cannot merge built-in skill: {skill.slug}"
-                )
+                raise HomeAssistantError(f"Cannot merge built-in skill: {skill.slug}")
             members.append(skill)
         return members
 
@@ -529,13 +541,17 @@ async def apply_skill_generalize(
     by_id = {skill.id: skill for skill in members}
     if survivor_id and survivor_id not in by_id:
         raise HomeAssistantError(f"Survivor not in skill_ids: {survivor_id}")
-    survivor = by_id[survivor_id] if survivor_id else max(
-        members,
-        key=lambda skill: (
-            int(skill.use_count or 0),
-            float(skill.score or 0.0),
-            float(skill.created_at or 0.0),
-        ),
+    survivor = (
+        by_id[survivor_id]
+        if survivor_id
+        else max(
+            members,
+            key=lambda skill: (
+                int(skill.use_count or 0),
+                float(skill.score or 0.0),
+                float(skill.created_at or 0.0),
+            ),
+        )
     )
 
     draft = normalize_skill_draft(
@@ -621,9 +637,7 @@ async def propose_skill_simplify(
     except HomeAssistantError:
         raise
     except Exception as err:
-        raise HomeAssistantError(
-            f"Skill simplification propose failed: {err}"
-        ) from err
+        raise HomeAssistantError(f"Skill simplification propose failed: {err}") from err
 
 
 async def apply_skill_simplify(
@@ -718,11 +732,7 @@ async def apply_skill_simplify(
         proposal_id=proposal.proposal_id,
         summary=(
             f"{proposal.action.title()}: {updated.title}"
-            + (
-                f" (archived {len(archived_meta)})"
-                if archived_meta
-                else ""
-            )
+            + (f" (archived {len(archived_meta)})" if archived_meta else "")
         ),
         created_at=time.time(),
     )

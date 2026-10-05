@@ -171,13 +171,11 @@ def parse_observer_response(content: str) -> SkillObserverResult | None:
             draft=None,
         )
 
+    from .models import cap_triggers
+
     triggers_raw = data.get("triggers", [])
     tool_steps_raw = data.get("tool_steps", [])
-    triggers = (
-        [str(item).strip() for item in triggers_raw if str(item).strip()]
-        if isinstance(triggers_raw, list)
-        else []
-    )
+    triggers = cap_triggers(triggers_raw if isinstance(triggers_raw, list) else [])
     tool_steps = (
         [
             item

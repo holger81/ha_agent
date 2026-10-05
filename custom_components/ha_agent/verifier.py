@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +11,7 @@ from .const import LOGGER
 from .llm_client import LlmClient
 from .llm_telemetry import record_llm_call
 from .skills.models import Skill
-from .structured_output import VERIFIER_SCHEMA, json_schema_format
+from .structured_output import VERIFIER_SCHEMA, json_schema_format, strip_json_fence
 
 _VERIFY_PROMPT = (
     "You verify whether an assistant turn satisfied the user goal.\n"
@@ -25,6 +24,8 @@ _VERIFY_PROMPT = (
     "- retry_hint: one sentence for the worker if pass=false."
 )
 
+_TRACE_FIELD_MAX_CHARS = 2_000
+
 
 @dataclass(frozen=True, slots=True)
 class VerifierResult:
@@ -36,26 +37,51 @@ class VerifierResult:
     retry_hint: str = ""
 
 
-def _strip_json(content: str) -> str:
-    text = content.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    return text
+def _coerce_bool(value: Any) -> bool:
+    """Parse JSON booleans, including string forms like ``\"false\"``."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+def _cap_text(value: Any, *, max_chars: int = _TRACE_FIELD_MAX_CHARS) -> Any:
+    if isinstance(value, str) and len(value) > max_chars:
+        return value[: max_chars - 16] + "…[truncated]"
+    return value
+
+
+def _serialize_tool_call(call: dict[str, Any]) -> dict[str, Any]:
+    """Cap argument/error fields before sending tool calls to the verifier."""
+    serialized = dict(call)
+    arguments = serialized.get("arguments")
+    if isinstance(arguments, dict):
+        serialized["arguments"] = {
+            key: _cap_text(val) if isinstance(val, str) else val
+            for key, val in arguments.items()
+        }
+    elif isinstance(arguments, str):
+        serialized["arguments"] = _cap_text(arguments)
+    if "error" in serialized:
+        serialized["error"] = _cap_text(serialized.get("error"))
+    return serialized
 
 
 def parse_verifier_response(content: str) -> VerifierResult | None:
     """Parse verifier JSON."""
     try:
-        data = json.loads(_strip_json(content))
+        data = json.loads(strip_json_fence(content))
     except json.JSONDecodeError:
         return None
     if not isinstance(data, dict) or "pass" not in data:
         return None
     return VerifierResult(
-        passed=bool(data.get("pass")),
+        passed=_coerce_bool(data.get("pass")),
         reason=str(data.get("reason", "")).strip(),
-        skill_followed=bool(data.get("skill_followed", True)),
+        skill_followed=_coerce_bool(data.get("skill_followed", True)),
         retry_hint=str(data.get("retry_hint", "")).strip(),
     )
 
@@ -77,7 +103,7 @@ async def verify_turn(
     payload: dict[str, Any] = {
         "user_goal": user_text,
         "assistant_reply": assistant_text[:2000],
-        "tool_calls": tool_calls[-12:],
+        "tool_calls": [_serialize_tool_call(call) for call in tool_calls[-12:]],
         "tool_errors": tool_errors,
     }
     if skill:

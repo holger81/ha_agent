@@ -22,7 +22,7 @@ from .markdown import (
     skill_to_markdown,
 )
 from .models import Skill
-from .store import SkillStore, get_skill_store
+from .store import SkillStore, get_skill_store, validate_entry_id
 
 
 @dataclass(slots=True)
@@ -38,7 +38,15 @@ class SkillFileSyncResult:
 
 def skills_directory(hass: HomeAssistant, entry_id: str) -> Path:
     """Return the config directory where skill .md files live."""
-    return Path(hass.config.path(f"ha_agent/skills/{entry_id}"))
+    try:
+        safe_id = validate_entry_id(entry_id)
+    except ValueError:
+        # Allow short synthetic ids in unit tests; still block path traversal.
+        cleaned = str(entry_id or "").strip()
+        if not cleaned or any(part in cleaned for part in ("..", "/", "\\")):
+            raise
+        safe_id = cleaned
+    return Path(hass.config.path(f"ha_agent/skills/{safe_id}"))
 
 
 def skill_file_path(directory: Path, slug: str) -> Path:
@@ -48,10 +56,10 @@ def skill_file_path(directory: Path, slug: str) -> Path:
 
 
 def write_skill_file(directory: Path, skill: Skill) -> Path:
-    """Write a skill to its markdown file."""
+    """Write a skill to its markdown file (including tool_steps)."""
     directory.mkdir(parents=True, exist_ok=True)
     path = skill_file_path(directory, skill.slug)
-    path.write_text(skill_to_markdown(skill), encoding="utf-8")
+    path.write_text(skill_to_markdown(skill, include_tool_steps=True), encoding="utf-8")
     return path
 
 
@@ -75,7 +83,7 @@ def mirror_skill_to_file(
 def _import_file(store: SkillStore, path: Path) -> bool:
     slug_hint = path.stem
     text = path.read_text(encoding="utf-8")
-    draft, slug_override, _explicit = draft_from_markdown(
+    draft, slug_override, explicit_tool_steps = draft_from_markdown(
         text,
         filename_slug=slug_hint,
     )
@@ -85,8 +93,16 @@ def _import_file(store: SkillStore, path: Path) -> bool:
         if existing.is_builtin:
             LOGGER.warning("Skipping skill file %s: slug matches builtin skill", path)
             return False
+        before = skill_to_markdown(existing, include_tool_steps=True)
+        preserved_steps = list(existing.tool_steps)
         apply_draft_to_skill(existing, draft)
-        normalize_skill(existing)
+        if not explicit_tool_steps:
+            # File omitted tool_steps — keep DB steps so round-trips do not wipe them.
+            existing.tool_steps = preserved_steps
+        normalize_skill(existing, explicit_tool_steps=explicit_tool_steps)
+        after = skill_to_markdown(existing, include_tool_steps=True)
+        if before == after:
+            return False
         store.update_skill(existing)
         return True
 

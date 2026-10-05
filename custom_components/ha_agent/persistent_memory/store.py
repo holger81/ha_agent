@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from homeassistant.core import HomeAssistant
 
 from ..const import DATA_KEY
+from ..skills.store import validate_entry_id
 from .models import MemoryEntry, MemoryScope, MergedMemory
 
 PERSISTENT_MEMORY_STORE_KEY = "persistent_memory_stores"
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS system_memory (
@@ -41,6 +46,15 @@ CREATE INDEX IF NOT EXISTS idx_system_memory_route
 CREATE INDEX IF NOT EXISTS idx_user_memory_route
     ON user_memory(route_scope);
 """
+
+
+def _locked(method: _F) -> _F:
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def _encode_value(value: Any) -> str:
@@ -80,21 +94,37 @@ def _row_to_user(row: sqlite3.Row) -> MemoryEntry:
     )
 
 
+def _normalize_key(key: str) -> str:
+    cleaned = key.strip().lower().replace(" ", "_")
+    if not cleaned:
+        raise ValueError("memory key must be non-empty")
+    return cleaned
+
+
 class PersistentMemoryStore:
     """Per-config-entry durable memory database."""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     @staticmethod
     def db_path_for_entry(hass: HomeAssistant, entry_id: str) -> Path:
         """Return the SQLite path for one config entry."""
+        try:
+            safe_id = validate_entry_id(entry_id)
+        except ValueError:
+            cleaned = str(entry_id or "").strip()
+            if not cleaned or any(part in cleaned for part in ("..", "/", "\\")):
+                raise
+            safe_id = cleaned
         return (
             Path(hass.config.path(".storage"))
-            / f"ha_agent_persistent_memory_{entry_id}.db"
+            / f"ha_agent_persistent_memory_{safe_id}.db"
         )
 
+    @_locked
     def connect(self) -> None:
         """Open the database and ensure schema."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +133,7 @@ class PersistentMemoryStore:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
+    @_locked
     def close(self) -> None:
         """Close the database connection."""
         if self._conn is not None:
@@ -114,6 +145,7 @@ class PersistentMemoryStore:
             raise RuntimeError("Persistent memory store is not connected")
         return self._conn
 
+    @_locked
     def list_system(
         self,
         *,
@@ -128,11 +160,12 @@ class PersistentMemoryStore:
             params.append(route_scope)
         if key_prefix:
             sql += " AND key LIKE ?"
-            params.append(f"{key_prefix}%")
+            params.append(f"{_normalize_key(key_prefix)}%")
         sql += " ORDER BY key ASC"
         rows = self._db().execute(sql, params).fetchall()
         return [_row_to_system(row) for row in rows]
 
+    @_locked
     def list_user(
         self,
         agent_user_id: str,
@@ -148,32 +181,38 @@ class PersistentMemoryStore:
             params.append(route_scope)
         if key_prefix:
             sql += " AND key LIKE ?"
-            params.append(f"{key_prefix}%")
+            params.append(f"{_normalize_key(key_prefix)}%")
         sql += " ORDER BY key ASC"
         rows = self._db().execute(sql, params).fetchall()
         return [_row_to_user(row) for row in rows]
 
+    @_locked
     def get_system(self, key: str) -> MemoryEntry | None:
         """Return one system memory entry."""
         row = (
             self._db()
-            .execute("SELECT * FROM system_memory WHERE key = ?", (key,))
+            .execute(
+                "SELECT * FROM system_memory WHERE key = ?",
+                (_normalize_key(key),),
+            )
             .fetchone()
         )
         return _row_to_system(row) if row else None
 
+    @_locked
     def get_user(self, agent_user_id: str, key: str) -> MemoryEntry | None:
         """Return one user memory entry."""
         row = (
             self._db()
             .execute(
                 "SELECT * FROM user_memory WHERE agent_user_id = ? AND key = ?",
-                (agent_user_id, key),
+                (agent_user_id, _normalize_key(key)),
             )
             .fetchone()
         )
         return _row_to_user(row) if row else None
 
+    @_locked
     def set_system(
         self,
         key: str,
@@ -184,7 +223,8 @@ class PersistentMemoryStore:
     ) -> MemoryEntry:
         """Insert or update a household memory entry."""
         now = time.time()
-        existing = self.get_system(key)
+        norm = _normalize_key(key)
+        existing = self.get_system(norm)
         created = existing.created_at if existing else now
         self._db().execute(
             """
@@ -198,7 +238,7 @@ class PersistentMemoryStore:
                 updated_at = excluded.updated_at
             """,
             (
-                _normalize_key(key),
+                norm,
                 _encode_value(value),
                 route_scope,
                 notes,
@@ -207,10 +247,11 @@ class PersistentMemoryStore:
             ),
         )
         self._db().commit()
-        entry = self.get_system(key)
+        entry = self.get_system(norm)
         assert entry is not None
         return entry
 
+    @_locked
     def set_user(
         self,
         agent_user_id: str,
@@ -222,7 +263,8 @@ class PersistentMemoryStore:
     ) -> MemoryEntry:
         """Insert or update a user-bound memory entry."""
         now = time.time()
-        existing = self.get_user(agent_user_id, key)
+        norm = _normalize_key(key)
+        existing = self.get_user(agent_user_id, norm)
         created = existing.created_at if existing else now
         self._db().execute(
             """
@@ -237,7 +279,7 @@ class PersistentMemoryStore:
             """,
             (
                 agent_user_id,
-                _normalize_key(key),
+                norm,
                 _encode_value(value),
                 route_scope,
                 notes,
@@ -246,25 +288,31 @@ class PersistentMemoryStore:
             ),
         )
         self._db().commit()
-        entry = self.get_user(agent_user_id, key)
+        entry = self.get_user(agent_user_id, norm)
         assert entry is not None
         return entry
 
+    @_locked
     def delete_system(self, key: str) -> bool:
         """Delete a household memory entry. Return True if removed."""
-        cur = self._db().execute("DELETE FROM system_memory WHERE key = ?", (key,))
-        self._db().commit()
-        return cur.rowcount > 0
-
-    def delete_user(self, agent_user_id: str, key: str) -> bool:
-        """Delete a user memory entry. Return True if removed."""
         cur = self._db().execute(
-            "DELETE FROM user_memory WHERE agent_user_id = ? AND key = ?",
-            (agent_user_id, key),
+            "DELETE FROM system_memory WHERE key = ?",
+            (_normalize_key(key),),
         )
         self._db().commit()
         return cur.rowcount > 0
 
+    @_locked
+    def delete_user(self, agent_user_id: str, key: str) -> bool:
+        """Delete a user memory entry. Return True if removed."""
+        cur = self._db().execute(
+            "DELETE FROM user_memory WHERE agent_user_id = ? AND key = ?",
+            (agent_user_id, _normalize_key(key)),
+        )
+        self._db().commit()
+        return cur.rowcount > 0
+
+    @_locked
     def delete_user_all(self, agent_user_id: str) -> int:
         """Delete all memory for one user. Return count removed."""
         cur = self._db().execute(
@@ -274,6 +322,7 @@ class PersistentMemoryStore:
         self._db().commit()
         return int(cur.rowcount)
 
+    @_locked
     def merge_for_turn(
         self,
         *,
@@ -296,24 +345,20 @@ class PersistentMemoryStore:
             for entry in self.list_user(agent_user_id, route_scope=route):
                 values[entry.key] = entry.value
                 sources[entry.key] = MemoryScope.USER
-                # Replace any prior system entry with same key in ordered list
                 ordered = [e for e in ordered if e.key != entry.key]
                 ordered.append(entry)
 
         return MergedMemory(values=values, sources=sources, entries=ordered)
 
 
-def _normalize_key(key: str) -> str:
-    cleaned = key.strip().lower().replace(" ", "_")
-    if not cleaned:
-        raise ValueError("memory key must be non-empty")
-    return cleaned
-
-
 def get_persistent_memory_store(
     hass: HomeAssistant, entry_id: str
 ) -> PersistentMemoryStore:
-    """Return the persistent memory store for a config entry."""
+    """Return the persistent memory store for a config entry.
+
+    Prefer ``async_setup_persistent_memory_store`` during entry setup. Lazy
+    connect remains for unit tests and late callers.
+    """
     domain_data = hass.data.setdefault(DATA_KEY, {})
     stores: dict[str, PersistentMemoryStore] = domain_data.setdefault(
         PERSISTENT_MEMORY_STORE_KEY, {}
@@ -325,6 +370,24 @@ def get_persistent_memory_store(
         store.connect()
         stores[entry_id] = store
     return stores[entry_id]
+
+
+async def async_setup_persistent_memory_store(
+    hass: HomeAssistant, entry_id: str
+) -> PersistentMemoryStore:
+    """Open the persistent memory store in the executor and register it."""
+    domain_data = hass.data.setdefault(DATA_KEY, {})
+    stores: dict[str, PersistentMemoryStore] = domain_data.setdefault(
+        PERSISTENT_MEMORY_STORE_KEY, {}
+    )
+    if entry_id in stores:
+        return stores[entry_id]
+    store = PersistentMemoryStore(
+        PersistentMemoryStore.db_path_for_entry(hass, entry_id)
+    )
+    await hass.async_add_executor_job(store.connect)
+    stores[entry_id] = store
+    return store
 
 
 def close_persistent_memory_store(hass: HomeAssistant, entry_id: str) -> None:

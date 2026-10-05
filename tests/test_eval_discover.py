@@ -7,9 +7,9 @@ import sys
 import types
 from pathlib import Path
 
-COMPONENT = (
-    Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
-)
+import pytest
+
+COMPONENT = Path(__file__).resolve().parents[1] / "custom_components" / "ha_agent"
 
 
 def _ensure_ha_stubs() -> None:
@@ -60,10 +60,48 @@ eval_models = _load("eval.models", COMPONENT / "eval" / "models.py")
 
 
 def test_hf_download_url() -> None:
-    url = model_download.hf_download_url("unsloth/gemma", "model/Q4_K_M.gguf")
+    url = model_download.hf_download_url("unsloth/gemma", "model-Q4_K_M.gguf")
     assert "huggingface.co" in url
     assert "gemma" in url
     assert "Q4_K_M.gguf" in url
+
+
+def test_hf_download_url_rejects_path_filename() -> None:
+    with pytest.raises(ValueError):
+        model_download.hf_download_url("unsloth/gemma", "model/Q4_K_M.gguf")
+    with pytest.raises(ValueError):
+        model_download.hf_download_url("unsloth/gemma", "../../etc/passwd")
+
+
+def test_proposal_from_model_id_rejects_unsafe_filename() -> None:
+    with pytest.raises(ValueError):
+        discover_models.proposal_from_model_id(
+            "org/repo:x",
+            source={"hf_repo": "org/repo", "hf_filename": "../evil.gguf"},
+        )
+    with pytest.raises(ValueError):
+        discover_models.proposal_from_model_id("org/repo:../../x")
+
+
+def test_fallback_proposals_skip_unsafe_filenames() -> None:
+    proposals = discover_models._fallback_proposals(
+        [
+            {
+                "router_model_id": "org/repo-GGUF:bad",
+                "hf_repo": "org/repo-GGUF",
+                "hf_filename": "sub/dir/bad.gguf",
+            },
+            {
+                "router_model_id": "org/repo-GGUF:good",
+                "hf_repo": "org/repo-GGUF",
+                "hf_filename": "good-Q4_K_M.gguf",
+            },
+        ],
+        max_models=5,
+        existing_models=set(),
+        skip_ids=set(),
+    )
+    assert [item.hf_filename for item in proposals] == ["good-Q4_K_M.gguf"]
 
 
 def test_pick_quant_file_prefers_q4() -> None:
@@ -216,9 +254,7 @@ def test_model_suitable_for_voice_agent() -> None:
 
 def test_hf_repo_suitable_for_voice_agent() -> None:
     assert llm_server.hf_repo_suitable_for_voice_agent("unsloth/gemma-3-it-GGUF")
-    assert not llm_server.hf_repo_suitable_for_voice_agent(
-        "org/model-vl-vision-GGUF"
-    )
+    assert not llm_server.hf_repo_suitable_for_voice_agent("org/model-vl-vision-GGUF")
 
 
 def test_sse_model_event_outcome_load_finished() -> None:

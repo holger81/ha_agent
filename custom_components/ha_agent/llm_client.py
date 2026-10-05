@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .config_helpers import LlmBackend
 from .const import LOGGER
 from .embedded_tools import parse_embedded_tool_calls, strip_embedded_tool_markup
+from .sse import iter_sse_data_lines
 from .thinking import apply_thinking_to_payload
 
 
@@ -111,6 +112,16 @@ class StreamChatSession:
         default_factory=dict,
         repr=False,
     )
+
+    @property
+    def has_tool_call_fragments(self) -> bool:
+        """Return True once any streamed tool-call fragment has arrived.
+
+        ``tool_calls`` is only populated when the stream finishes; callers
+        that need to know mid-stream whether the model started emitting a
+        tool call should use this instead of ``not session.tool_calls``.
+        """
+        return bool(self._tool_call_builders)
 
 
 def build_assistant_message(
@@ -342,45 +353,61 @@ class LlmClient:
         response: aiohttp.ClientResponse,
         session: StreamChatSession,
     ) -> AsyncIterator[StreamChunk]:
-        """Parse OpenAI-style SSE chunks."""
-        buffer = ""
-        async for chunk in response.content.iter_any():
-            buffer += chunk.decode("utf-8", errors="replace")
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                line = line.strip()
-                if not line or not line.startswith("data:"):
+        """Parse OpenAI-style SSE chunks.
+
+        Raises ``HomeAssistantError`` when the server reports an error inside
+        the stream (``{"error": {...}}``) instead of silently ending the turn.
+        """
+        async for payload in iter_sse_data_lines(response):
+            data_str = payload.strip()
+            if not data_str:
+                continue
+            if data_str == "[DONE]":
+                return
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError:
+                LOGGER.debug("Skipping invalid SSE chunk: %s", data_str[:80])
+                continue
+            if not isinstance(data, dict):
+                continue
+            if error := data.get("error"):
+                raise HomeAssistantError(
+                    f"LLM stream error: {_stream_error_message(error)}"
+                )
+            choices = data.get("choices")
+            if not isinstance(choices, list):
+                continue
+            for choice in choices:
+                if not isinstance(choice, dict):
                     continue
-                data_str = line[5:].strip()
-                if data_str == "[DONE]":
-                    return
-                try:
-                    data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    LOGGER.debug("Skipping invalid SSE chunk: %s", data_str[:80])
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
                     continue
-                for choice in data.get("choices", []):
-                    delta = choice.get("delta", {})
-                    content = delta.get("content")
-                    reasoning = delta.get("reasoning_content")
-                    content_part = ""
-                    reasoning_part = ""
-                    if reasoning:
-                        session.reasoning_content, reasoning_part = stream_text_delta(
-                            session.reasoning_content,
-                            reasoning,
-                        )
-                    if content:
-                        session.content, content_part = stream_text_delta(
-                            session.content,
-                            content,
-                        )
-                    if content_part or reasoning_part:
-                        yield StreamChunk(
-                            content=content_part,
-                            reasoning_content=reasoning_part,
-                        )
-                    for tool_delta in delta.get("tool_calls") or []:
+                content = delta.get("content")
+                reasoning = delta.get("reasoning_content")
+                content_part = ""
+                reasoning_part = ""
+                if reasoning and isinstance(reasoning, str):
+                    session.reasoning_content, reasoning_part = stream_text_delta(
+                        session.reasoning_content,
+                        reasoning,
+                    )
+                if content and isinstance(content, str):
+                    session.content, content_part = stream_text_delta(
+                        session.content,
+                        content,
+                    )
+                if content_part or reasoning_part:
+                    yield StreamChunk(
+                        content=content_part,
+                        reasoning_content=reasoning_part,
+                    )
+                tool_deltas = delta.get("tool_calls")
+                if not isinstance(tool_deltas, list):
+                    continue
+                for tool_delta in tool_deltas:
+                    if isinstance(tool_delta, dict):
                         self._merge_stream_tool_delta(
                             session._tool_call_builders,
                             tool_delta,
@@ -391,18 +418,36 @@ class LlmClient:
         builders: dict[int, dict[str, str]],
         tool_delta: dict[str, Any],
     ) -> None:
-        """Accumulate streamed tool-call fragments."""
-        index = int(tool_delta.get("index", 0))
+        """Accumulate streamed tool-call fragments.
+
+        Providers differ: some omit ``index`` (new call signalled by a new
+        ``id``), some send ``index: null``, and some send ``arguments`` as an
+        already-parsed object instead of a JSON string fragment.
+        """
+        call_id = tool_delta.get("id")
+        if not isinstance(call_id, str):
+            call_id = ""
+        index = _coerce_tool_index(tool_delta.get("index"))
+        if index is None:
+            index = _resolve_tool_index_without_position(builders, call_id)
         entry = builders.setdefault(
             index,
             {"id": "", "name": "", "arguments": ""},
         )
-        if call_id := tool_delta.get("id"):
+        if call_id:
             entry["id"] = call_id
-        function = tool_delta.get("function") or {}
-        if name := function.get("name"):
+        function = tool_delta.get("function")
+        if not isinstance(function, dict):
+            return
+        name = function.get("name")
+        if isinstance(name, str) and name:
             entry["name"] = name
-        if arguments := function.get("arguments"):
+        arguments = function.get("arguments")
+        if isinstance(arguments, (dict, list)):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        elif arguments is not None and not isinstance(arguments, str):
+            arguments = str(arguments)
+        if arguments:
             entry["arguments"] += arguments
 
     def _finalize_stream_tool_calls(
@@ -479,3 +524,40 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_tool_index(value: Any) -> int | None:
+    """Return the streamed tool-call ``index`` as int, or None when unusable."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_tool_index_without_position(
+    builders: dict[int, dict[str, str]],
+    call_id: str,
+) -> int:
+    """Pick a builder slot for a fragment that carries no usable ``index``.
+
+    A known ``id`` continues that call; an unknown ``id`` opens a new call;
+    no ``id`` continues the most recent call (or opens the first one).
+    """
+    if call_id:
+        for existing_index, entry in builders.items():
+            if entry.get("id") == call_id:
+                return existing_index
+        return max(builders) + 1 if builders else 0
+    return max(builders) if builders else 0
+
+
+def _stream_error_message(error: Any) -> str:
+    """Extract a human-readable message from an in-stream error payload."""
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return json.dumps(error, ensure_ascii=False)[:300]
+    return str(error)[:300]

@@ -24,7 +24,7 @@ from ..mcp_client import McpProxyClient
 from ..memory import append_user_message, clear_conversation, get_history
 from ..status import get_agent_status
 from ..threads import async_save_threads, upsert_thread
-from .helpers import get_entry
+from .helpers import get_entry, track_entry_task
 
 CHAT_TASKS_KEY = "chat_tasks"
 CHAT_TURN_TIMEOUT_PADDING = 60
@@ -222,10 +222,10 @@ def start_chat(
                 done_payload={**done_payload},
             )
         if cancelled:
-            raise
+            raise asyncio.CancelledError()
 
     key = (entry_id, conversation_id)
-    task = hass.async_create_task(_run(), name=f"ha_agent_chat_{entry_id}")
+    task = track_entry_task(hass, entry_id, _run(), name=f"ha_agent_chat_{entry_id}")
     _chat_tasks(hass)[key] = task
 
     def _cleanup(_task: asyncio.Task[None]) -> None:

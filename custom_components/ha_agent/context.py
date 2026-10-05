@@ -128,8 +128,13 @@ def route_keyword_match(
 
     Only the ``action`` route uses keyword matching. Soft domains (email,
     news, …) are selected via skills, not parallel keyword routes.
+    State questions without a device-command clause are not action.
     """
     if route_name != "action":
+        return None
+    # Deferred: is_state_question / includes_device_command_clause are defined
+    # later in this module; resolve at call time.
+    if is_state_question(query) and not includes_device_command_clause(query):
         return None
     if override := _keyword_regex(keywords):
         pattern = override
@@ -763,15 +768,38 @@ def build_system_message(
     return "\n\n".join(part for part in parts if part)
 
 
+def _project_history_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep only LLM-relevant fields from a stored history message."""
+    role = message.get("role")
+    if not isinstance(role, str) or not role.strip():
+        return None
+    projected: dict[str, Any] = {
+        "role": role,
+        "content": message.get("content", ""),
+    }
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        projected["tool_calls"] = tool_calls
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        projected["reasoning_content"] = reasoning
+    tool_call_id = message.get("tool_call_id")
+    if isinstance(tool_call_id, str) and tool_call_id.strip():
+        projected["tool_call_id"] = tool_call_id
+    return projected
+
+
 def build_messages(
     *,
     system_message: str,
-    history: list[dict[str, str]],
+    history: list[dict[str, Any]],
     user_text: str,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Build OpenAI-style messages for the agent."""
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_message}]
-    messages.extend(history)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_message}]
+    for item in history:
+        if isinstance(item, dict) and (projected := _project_history_message(item)):
+            messages.append(projected)
     trimmed_user = user_text.strip()
     last = messages[-1] if messages else None
     if not (

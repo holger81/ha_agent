@@ -14,6 +14,7 @@ sync ``enrich_tool_output`` falls back to its deterministic shipped logic.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -147,11 +148,17 @@ def _row_to_hint(row: sqlite3.Row) -> RecoveryHint:
 
 
 class RecoveryHintStore:
-    """Per-config-entry editable recovery-hint database."""
+    """Per-config-entry editable recovery-hint database.
+
+    The SQLite connection is opened lazily on first use (normally inside an
+    executor job) and shared across threads, so every public method holds an
+    ``RLock`` around its connection use.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
 
     @staticmethod
     def db_path_for_entry(hass: HomeAssistant, entry_id: str) -> Path:
@@ -161,18 +168,23 @@ class RecoveryHintStore:
 
     def connect(self) -> None:
         """Open the database, ensure schema, and seed missing defaults."""
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._seed_defaults()
-        self._purge_obsolete_builtins()
-        self._conn.commit()
+        with self._lock:
+            if self._conn is not None:
+                return
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            self._conn = conn
+            conn.executescript(_SCHEMA)
+            self._seed_defaults()
+            self._purge_obsolete_builtins()
+            conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -183,9 +195,7 @@ class RecoveryHintStore:
     def _tombstoned_ids(self) -> set[str]:
         conn = self._conn
         assert conn is not None
-        rows = conn.execute(
-            "SELECT rule_id FROM recovery_hint_tombstones"
-        ).fetchall()
+        rows = conn.execute("SELECT rule_id FROM recovery_hint_tombstones").fetchall()
         return {str(row["rule_id"]) for row in rows}
 
     def _seed_defaults(self) -> None:
@@ -239,13 +249,14 @@ class RecoveryHintStore:
 
     def list_hints(self) -> list[RecoveryHint]:
         """Return built-in hints in canonical order then custom rules."""
-        rows = (
-            self._connection()
-            .execute(
-                "SELECT * FROM recovery_hints",
+        with self._lock:
+            rows = (
+                self._connection()
+                .execute(
+                    "SELECT * FROM recovery_hints",
+                )
+                .fetchall()
             )
-            .fetchall()
-        )
         hints = [_row_to_hint(row) for row in rows]
         hints.sort(key=lambda h: (0 if h.is_builtin else 1, h.priority, h.updated_at))
         return hints
@@ -256,25 +267,27 @@ class RecoveryHintStore:
 
     def custom_count(self) -> int:
         """Return the number of user-added custom hints."""
-        row = (
-            self._connection()
-            .execute(
-                "SELECT COUNT(*) AS c FROM recovery_hints WHERE is_builtin = 0",
+        with self._lock:
+            row = (
+                self._connection()
+                .execute(
+                    "SELECT COUNT(*) AS c FROM recovery_hints WHERE is_builtin = 0",
+                )
+                .fetchone()
             )
-            .fetchone()
-        )
         return int(row["c"]) if row else 0
 
     def get_hint(self, rule_id: str) -> RecoveryHint | None:
         """Return one hint by id."""
-        row = (
-            self._connection()
-            .execute(
-                "SELECT * FROM recovery_hints WHERE rule_id = ?",
-                (rule_id,),
+        with self._lock:
+            row = (
+                self._connection()
+                .execute(
+                    "SELECT * FROM recovery_hints WHERE rule_id = ?",
+                    (rule_id,),
+                )
+                .fetchone()
             )
-            .fetchone()
-        )
         return _row_to_hint(row) if row else None
 
     def create_hint(
@@ -300,24 +313,25 @@ class RecoveryHintStore:
             updated_at=now,
             is_default=False,
         )
-        conn = self._connection()
-        conn.execute(
-            "INSERT INTO recovery_hints "
-            "(rule_id, title, tool_substring, error_pattern, body, "
-            "enabled, is_builtin, priority, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-            (
-                hint.rule_id,
-                hint.title,
-                hint.tool_substring,
-                hint.error_pattern,
-                hint.body,
-                int(hint.enabled),
-                hint.priority,
-                hint.updated_at,
-            ),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._connection()
+            conn.execute(
+                "INSERT INTO recovery_hints "
+                "(rule_id, title, tool_substring, error_pattern, body, "
+                "enabled, is_builtin, priority, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (
+                    hint.rule_id,
+                    hint.title,
+                    hint.tool_substring,
+                    hint.error_pattern,
+                    hint.body,
+                    int(hint.enabled),
+                    hint.priority,
+                    hint.updated_at,
+                ),
+            )
+            conn.commit()
         return hint
 
     def delete_hint(self, rule_id: str) -> bool:
@@ -325,18 +339,19 @@ class RecoveryHintStore:
 
         Built-ins are tombstoned so seeding does not recreate them on reload.
         """
-        hint = self.get_hint(rule_id)
-        if hint is None:
-            return False
-        conn = self._connection()
-        conn.execute("DELETE FROM recovery_hints WHERE rule_id = ?", (rule_id,))
-        if hint.is_builtin or rule_id in _DEFAULT_BY_ID:
-            conn.execute(
-                "INSERT OR REPLACE INTO recovery_hint_tombstones "
-                "(rule_id, deleted_at) VALUES (?, ?)",
-                (rule_id, time.time()),
-            )
-        conn.commit()
+        with self._lock:
+            hint = self.get_hint(rule_id)
+            if hint is None:
+                return False
+            conn = self._connection()
+            conn.execute("DELETE FROM recovery_hints WHERE rule_id = ?", (rule_id,))
+            if hint.is_builtin or rule_id in _DEFAULT_BY_ID:
+                conn.execute(
+                    "INSERT OR REPLACE INTO recovery_hint_tombstones "
+                    "(rule_id, deleted_at) VALUES (?, ?)",
+                    (rule_id, time.time()),
+                )
+            conn.commit()
         return True
 
     def update_hint(
@@ -350,35 +365,36 @@ class RecoveryHintStore:
         enabled: bool | None = None,
     ) -> RecoveryHint | None:
         """Update an existing recovery-hint's editable fields."""
-        hint = self.get_hint(rule_id)
-        if hint is None:
-            return None
-        if title is not None:
-            hint.title = title.strip() or hint.title
-        if body is not None:
-            hint.body = body.strip()
-        if tool_substring is not None:
-            hint.tool_substring = tool_substring.strip()
-        if error_pattern is not None:
-            hint.error_pattern = error_pattern.strip()
-        if enabled is not None:
-            hint.enabled = enabled
-        hint.updated_at = time.time()
-        conn = self._connection()
-        conn.execute(
-            "UPDATE recovery_hints SET title = ?, body = ?, tool_substring = ?, "
-            "error_pattern = ?, enabled = ?, updated_at = ? WHERE rule_id = ?",
-            (
-                hint.title,
-                hint.body,
-                hint.tool_substring,
-                hint.error_pattern,
-                int(hint.enabled),
-                hint.updated_at,
-                hint.rule_id,
-            ),
-        )
-        conn.commit()
+        with self._lock:
+            hint = self.get_hint(rule_id)
+            if hint is None:
+                return None
+            if title is not None:
+                hint.title = title.strip() or hint.title
+            if body is not None:
+                hint.body = body.strip()
+            if tool_substring is not None:
+                hint.tool_substring = tool_substring.strip()
+            if error_pattern is not None:
+                hint.error_pattern = error_pattern.strip()
+            if enabled is not None:
+                hint.enabled = enabled
+            hint.updated_at = time.time()
+            conn = self._connection()
+            conn.execute(
+                "UPDATE recovery_hints SET title = ?, body = ?, tool_substring = ?, "
+                "error_pattern = ?, enabled = ?, updated_at = ? WHERE rule_id = ?",
+                (
+                    hint.title,
+                    hint.body,
+                    hint.tool_substring,
+                    hint.error_pattern,
+                    int(hint.enabled),
+                    hint.updated_at,
+                    hint.rule_id,
+                ),
+            )
+            conn.commit()
         hint.is_default = hint.is_builtin and _is_default(hint)
         return hint
 
@@ -418,15 +434,19 @@ def get_recovery_hint_store(
     hass: HomeAssistant,
     entry_id: str,
 ) -> RecoveryHintStore:
-    """Return the recovery-hint store for a config entry."""
+    """Return the recovery-hint store for a config entry.
+
+    Safe to call from the event loop: the SQLite connection is opened lazily
+    by the first store method, which callers run via ``async_add_executor_job``.
+    """
     domain_data = hass.data.setdefault(DATA_KEY, {})
     stores: dict[str, RecoveryHintStore] = domain_data.setdefault(
         RECOVERY_HINTS_STORE_KEY, {}
     )
     if entry_id not in stores:
-        store = RecoveryHintStore(RecoveryHintStore.db_path_for_entry(hass, entry_id))
-        store.connect()
-        stores[entry_id] = store
+        stores[entry_id] = RecoveryHintStore(
+            RecoveryHintStore.db_path_for_entry(hass, entry_id)
+        )
     return stores[entry_id]
 
 
