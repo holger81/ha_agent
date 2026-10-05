@@ -30,9 +30,9 @@ SKILLS_STORE_KEY = "skill_stores"
 _IMPROVEMENT_COOLDOWN_SECONDS = 3600
 MAX_REVISIONS_PER_SKILL = 20
 
-# Home Assistant config entry ids are ULID-style (26 chars) or legacy 32-char
-# hex; anything else must never reach a filesystem path.
-_ENTRY_ID = re.compile(r"^[0-9a-z]{26,32}$")
+# Home Assistant config entry ids are ULID-style (26 chars, often uppercase) or
+# legacy 32-char hex; anything else must never reach a filesystem path.
+_ENTRY_ID = re.compile(r"^[0-9A-Za-z]{26,32}$")
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 

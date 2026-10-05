@@ -55,6 +55,7 @@ store_mod = _load_store_module()
 SkillStore = store_mod.SkillStore
 revision_snapshot_summary = store_mod.revision_snapshot_summary
 _build_fts_query = store_mod._build_fts_query
+validate_entry_id = store_mod.validate_entry_id
 
 
 @pytest.fixture
@@ -283,3 +284,17 @@ def test_restore_saves_current_state_before_reverting(store: SkillStore) -> None
 
     revisions = store.list_revisions(skill.id)
     assert any(rev.reason.startswith("Before restore to v") for rev in revisions)
+
+
+def test_validate_entry_id_accepts_uppercase_ulid() -> None:
+    """HA config entry ids are Crockford base32 and often uppercase."""
+    entry_id = "01KTJCG5T408M8PDFNMV29EHBK"
+    assert validate_entry_id(entry_id) == entry_id
+    assert validate_entry_id(entry_id.lower()) == entry_id.lower()
+
+
+def test_validate_entry_id_rejects_path_injection() -> None:
+    with pytest.raises(ValueError, match="Invalid config entry id"):
+        validate_entry_id("../etc")
+    with pytest.raises(ValueError, match="Invalid config entry id"):
+        validate_entry_id("short")
