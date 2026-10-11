@@ -9,8 +9,6 @@ from .params import bind_slot_value, bind_tool_steps, default_slots_for_skill
 
 _CONTEXT_BODY_CHARS = min(1200, MAX_SKILL_BODY_CHARS)
 
-_ROUTE_SKILL_PRIORITY = frozenset({"email", "news", "action"})
-
 _ADAPT_GUIDANCE = (
     "ADAPT, DO NOT ABANDON: When the user goal is a variant of this workflow "
     "(different mailbox/folder, date range, entity, or limit), keep the same "
@@ -34,7 +32,10 @@ def format_skills_for_context(
     learned = [s for s in skills if not s.is_builtin]
     builtin = [s for s in skills if s.is_builtin]
     ordered = [*learned, *builtin]
-    if route in _ROUTE_SKILL_PRIORITY:
+    # Matched skills are authoritative for the turn. Prefer stronger binding
+    # whenever a route/scope is set or concrete tool steps exist (any domain).
+    use_priority = bool(route) or any(skill.tool_steps for skill in skills)
+    if use_priority:
         header = (
             "ACTIVE SKILLS (PRIORITY — selected for this turn): "
             "Follow the workflow below. "

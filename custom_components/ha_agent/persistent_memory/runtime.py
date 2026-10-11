@@ -17,14 +17,23 @@ def apply_memory_defaults_to_slots(
     slot_bindings: dict[str, str],
     memory_values: dict[str, Any],
 ) -> dict[str, str]:
-    """Fill empty slots from durable memory defaults."""
+    """Fill empty slots from durable memory defaults.
+
+    Maps namespaced keys to slot names generically:
+    ``email.default_mailbox`` → ``mailbox``, ``news.digest_scope`` → ``digest_scope``.
+    """
     updated = dict(slot_bindings)
-    mailbox = memory_values.get("email.default_mailbox")
-    if mailbox and not updated.get("mailbox"):
-        updated["mailbox"] = str(mailbox)
-    digest = memory_values.get("news.digest_scope")
-    if digest and not updated.get("digest_scope"):
-        updated["digest_scope"] = str(digest)
+    for key, value in memory_values.items():
+        if value is None or value == "":
+            continue
+        if ".default_" in key:
+            slot = key.rsplit(".default_", 1)[-1]
+        elif "." in key:
+            slot = key.rsplit(".", 1)[-1]
+        else:
+            continue
+        if slot and not updated.get(slot):
+            updated[slot] = str(value)
     return updated
 
 

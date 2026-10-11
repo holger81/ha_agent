@@ -14,6 +14,14 @@ from .models import MemoryScope, MergedMemory
 from .store import PersistentMemoryStore, get_persistent_memory_store
 
 
+def _is_route_scoped_key(key: str) -> bool:
+    """True for namespaced preference keys (``scope.field`` / HA aliases)."""
+    if key.startswith(("entity.alias.", "ha.")):
+        return True
+    head, sep, rest = key.partition(".")
+    return bool(sep and rest and head.isidentifier())
+
+
 def should_include_user_memory(identity: ResolvedIdentity | None) -> bool:
     """Guests / low-confidence voice matches get system memory only."""
     if identity is None:
@@ -57,10 +65,8 @@ def load_merged_memory(
             filtered_values[entry.key] = entry.value
             filtered_sources[entry.key] = entry.scope
             filtered_entries.append(entry)
-        elif entry.route_scope is None and not entry.key.startswith(
-            ("news.", "email.", "entity.alias.", "ha.")
-        ):
-            # Global household facts
+        elif entry.route_scope is None and not _is_route_scoped_key(entry.key):
+            # Global household facts (not namespaced under a skill/route scope)
             filtered_values[entry.key] = entry.value
             filtered_sources[entry.key] = entry.scope
             filtered_entries.append(entry)

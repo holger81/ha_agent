@@ -7,6 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+from .defaults import default_slots_for_route
 from .models import Skill, SkillDraft, SkillSlot
 from .observer import is_discovery_tool
 from .tool_names import canonicalize_tool_name
@@ -101,17 +102,30 @@ def _union_tool_steps(skills: list[Skill]) -> list[dict[str, Any]]:
                 for key, value in args.items():
                     if key == "entity_id":
                         cleaned[key] = "{{entity_id}}"
-                    elif key == "mailbox" and isinstance(value, str) and value.strip():
-                        cleaned[key] = "{{mailbox}}"
                     elif isinstance(value, str) and value.startswith("{{"):
                         cleaned[key] = value
                     elif isinstance(value, str) and _ENTITY_ID.match(value):
                         continue
+                    elif _should_slotify_arg(key, value):
+                        cleaned[key] = "{{" + key + "}}"
                     else:
                         cleaned[key] = value
                 step_copy["arguments"] = cleaned
             ordered.append(step_copy)
     return ordered
+
+
+def _should_slotify_arg(key: str, value: Any) -> bool:
+    """True for short scalar string params that should become ``{{key}}`` slots."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or not key.isidentifier():
+        return False
+    # Keep free-text / long prose as concrete defaults.
+    if len(text) > 64 or "\n" in text or " " in text:
+        return False
+    return bool(re.fullmatch(r"[\w.@+-]+", text))
 
 
 def _merge_triggers(skills: list[Skill], *, limit: int = 12) -> list[str]:
@@ -143,39 +157,54 @@ def _general_title(skills: list[Skill], scope: str, tools: list[str]) -> str:
 
 
 def _ensure_parameter_slots(draft: SkillDraft) -> SkillDraft:
-    """Add entity_id / mailbox slots when tool steps reference them."""
+    """Add slots for ``{{name}}`` placeholders / entity_id args in tool steps."""
     slots = list(draft.slots)
     names = {slot.name for slot in slots}
-    needs_entity = False
-    needs_mailbox = False
+    needed: set[str] = set()
     for step in draft.tool_steps:
         if not isinstance(step, dict):
             continue
         args = step.get("arguments")
         if not isinstance(args, dict):
             continue
-        if "entity_id" in args:
-            needs_entity = True
-        if "mailbox" in args:
-            needs_mailbox = True
-    if needs_entity and "entity_id" not in names:
-        slots.append(
-            SkillSlot(
-                name="entity_id",
-                description="Home Assistant entity to control",
-                source="user",
-                default=None,
+        for key, value in args.items():
+            if key == "entity_id":
+                needed.add("entity_id")
+            elif (
+                isinstance(value, str)
+                and value.startswith("{{")
+                and value.endswith("}}")
+            ):
+                slot_name = value[2:-2].strip()
+                if slot_name.isidentifier():
+                    needed.add(slot_name)
+    route_defaults = {
+        slot.name: slot for slot in default_slots_for_route(draft.route_scope)
+    }
+    for slot_name in sorted(needed):
+        if slot_name in names:
+            continue
+        if slot_name == "entity_id":
+            slots.append(
+                SkillSlot(
+                    name="entity_id",
+                    description="Home Assistant entity to control",
+                    source="user",
+                    default=None,
+                )
             )
-        )
-    if needs_mailbox and "mailbox" not in names:
-        slots.append(
-            SkillSlot(
-                name="mailbox",
-                description="IMAP mailbox folder",
-                source="default",
-                default="INBOX",
+        elif slot_name in route_defaults:
+            slots.append(route_defaults[slot_name])
+        else:
+            slots.append(
+                SkillSlot(
+                    name=slot_name,
+                    description=f"Value for {slot_name}",
+                    source="default",
+                    default=None,
+                )
             )
-        )
+        names.add(slot_name)
     draft.slots = slots
     return draft
 
@@ -194,8 +223,7 @@ def build_generalized_draft(skills: list[Skill]) -> SkillDraft:
         "Merged from similar learned skills:",
         *[f"- {title}" for title in titles],
         "",
-        "Use slots for values that vary per request "
-        "(entity, mailbox, etc.). Follow the tool sequence below.",
+        "Use slots for values that vary per request. Follow the tool sequence below.",
         "",
     ]
     survivor_body = (survivor.body or "").strip()

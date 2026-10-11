@@ -1,9 +1,11 @@
-"""Default skill slots per route."""
+"""Default skill slots keyed by ``route_scope`` (data, not domain branches)."""
 
 from __future__ import annotations
 
 from .models import Skill, SkillSlot
 
+# Optional built-in slot templates for known scopes. Looked up by route_scope
+# string only — new scopes work without code changes when they omit defaults.
 _ROUTE_DEFAULT_SLOTS: dict[str, list[SkillSlot]] = {
     "email": [
         SkillSlot(

@@ -23,7 +23,7 @@ def backend_for_skill(
 
     Resolution order:
     1. Skill ``llm_model`` (optional ``llm_base_url``, else chat base URL)
-    2. Legacy entry email/news backends when skill ``route_scope`` matches
+    2. Legacy entry ``{route_scope}_backend`` when skill ``route_scope`` matches
     3. Action backend when route is action
     4. Chat backend
     """
@@ -46,11 +46,11 @@ def backend_for_skill(
                 thinking_level="off",
             )
         scope = (skill.route_scope or "").strip().lower()
-        if router_config is not None:
-            if scope == "email" and router_config.email_backend is not None:
-                return router_config.email_backend
-            if scope == "news" and router_config.news_backend is not None:
-                return router_config.news_backend
+        if router_config is not None and scope:
+            # Convention: RouterConfig may expose ``{scope}_backend`` (e.g. email).
+            legacy = getattr(router_config, f"{scope}_backend", None)
+            if isinstance(legacy, LlmBackend):
+                return legacy
 
     if route_value == TaskRoute.HA_ACTION.value and action_backend is not None:
         return action_backend

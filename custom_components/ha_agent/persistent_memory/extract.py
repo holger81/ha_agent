@@ -398,18 +398,21 @@ def _extract_aliases(
     return results
 
 
-# Keys that apply only on matching routes (plus always-global keys).
-ROUTE_KEY_PREFIXES: dict[str, tuple[str, ...]] = {
-    "news": ("news.",),
-    "email": ("email.",),
-    "action": ("entity.alias.", "ha."),
-    # Empty → inject keeps all keys (sensor aliases are route_scope=None).
-    "chat": (),
-}
+# Action turns use HA entity / household prefixes rather than ``action.*``.
+_ACTION_KEY_PREFIXES: tuple[str, ...] = ("entity.alias.", "ha.")
 
 
 def keys_for_route(route: str | None) -> tuple[str, ...] | None:
-    """Return key prefixes relevant to a route, or None for all keys."""
+    """Return key prefixes relevant to a route, or None for all keys.
+
+    Soft domain scopes (any non-empty route other than chat/action) map to
+    ``{route}.`` so new skill scopes work without a domain registry.
+    """
     if not route:
         return None
-    return ROUTE_KEY_PREFIXES.get(route)
+    normalized = route.strip().lower()
+    if not normalized or normalized == "chat":
+        return ()
+    if normalized == "action":
+        return _ACTION_KEY_PREFIXES
+    return (f"{normalized}.",)

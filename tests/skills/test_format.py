@@ -4,31 +4,39 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "ha_agent"
 
 
+def _ensure_pkg(name: str, path: Path) -> None:
+    if name in sys.modules:
+        return
+    pkg = types.ModuleType(name)
+    pkg.__path__ = [str(path)]  # type: ignore[attr-defined]
+    sys.modules[name] = pkg
+
+
+def _load(name: str, path: Path):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_format_modules():
-    path = COMPONENT / "skills" / "models.py"
-    spec = importlib.util.spec_from_file_location("ha_agent.skills.models", path)
-    models = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    sys.modules["ha_agent.skills.models"] = models
-    spec.loader.exec_module(models)
-
-    path = COMPONENT / "skills" / "format.py"
-    spec = importlib.util.spec_from_file_location("ha_agent.skills.format", path)
-    fmt = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    spec.loader.exec_module(fmt)
-
-    path = COMPONENT / "context.py"
-    spec = importlib.util.spec_from_file_location("ha_agent.context", path)
-    context = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    sys.modules["ha_agent.context"] = context
-    spec.loader.exec_module(context)
+    _ensure_pkg("ha_agent", COMPONENT)
+    _ensure_pkg("ha_agent.skills", COMPONENT / "skills")
+    models = _load("ha_agent.skills.models", COMPONENT / "skills" / "models.py")
+    _load("ha_agent.skills.defaults", COMPONENT / "skills" / "defaults.py")
+    _load("ha_agent.skills.params", COMPONENT / "skills" / "params.py")
+    fmt = _load("ha_agent.skills.format", COMPONENT / "skills" / "format.py")
+    context = _load("ha_agent.context", COMPONENT / "context.py")
     return models, fmt, context
 
 
@@ -59,7 +67,7 @@ def test_format_skills_for_context() -> None:
 
 
 def test_format_skills_for_context_email_route_priority() -> None:
-    """Email and news routes use stronger skill binding text."""
+    """Any non-empty route (or tool_steps) uses stronger skill binding text."""
     skill = Skill(
         id="1",
         slug="email-unread",
@@ -74,6 +82,10 @@ def test_format_skills_for_context_email_route_priority() -> None:
     assert "ACTIVE SKILLS (PRIORITY" in block
     assert "selected for this turn" in block
     assert "run them in order" in block
+
+    # Tool steps alone also prioritize, without a domain allow-list.
+    no_route = format_skills_for_context([skill], route=None)
+    assert "ACTIVE SKILLS (PRIORITY" in no_route
 
 
 def test_build_tool_context_includes_skill_hints() -> None:
