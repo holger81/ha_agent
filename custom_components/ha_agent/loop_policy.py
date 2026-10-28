@@ -99,13 +99,15 @@ _MAX_REASONING_STALLS_AFTER_SKILL_RESULTS = 1
 _MIN_ANSWER_CHARS_TO_IGNORE_REASONING_STALL = 40
 _SKILL_RESULTS_ANSWER_NUDGE = (
     "SKILL RESULTS READY — stop expanding reasoning. Answer the user NOW "
-    "from the tool results already in this turn. If a result was truncated "
-    "(responseCacheId / hasMore / pagination), call callTool once to fetch "
-    "the next page, then answer. Do not rediscover tools or re-run completed "
+    "from the tool results already in this turn. If a summary is already in "
+    "the result, use it and do not fetch more pages. Paginate via callTool "
+    "only when the text you still need was cut off (responseCacheId / hasMore) "
+    "and is not already present. Do not rediscover tools or re-run completed "
     "plan steps."
 )
 _SKILL_RESULTS_ANSWER_NEXT = (
-    "ANSWER NOW from tool results; paginate via callTool if truncated."
+    "ANSWER NOW from tool results. Paginate via callTool only if needed text "
+    "was cut off."
 )
 _EXPLORE_RESULTS_NEXT = (
     "Explore step done — call the next tool the goal still needs, or ANSWER "
@@ -398,8 +400,8 @@ def build_skill_results_answer_nudge(loop_state: LoopState) -> str:
         ).strip()
         return (
             f"{_SKILL_RESULTS_ANSWER_NUDGE} Pagination is pending for "
-            f"`{pending_tool}` — fetch the next page first (or via callTool if "
-            "the prior result was truncated), then answer."
+            f"`{pending_tool}` — fetch the next page via callTool only if the "
+            "needed text was cut off, then answer."
         )
     return _SKILL_RESULTS_ANSWER_NUDGE
 

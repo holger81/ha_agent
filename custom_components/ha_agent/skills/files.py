@@ -13,6 +13,7 @@ from .bundled import (
     apply_bundled_skill,
     apply_legacy_route_models_to_bundled,
     bundled_skill_needs_refresh,
+    refresh_packaged_builtin,
     seed_missing_bundled_skills,
 )
 from .markdown import (
@@ -180,6 +181,9 @@ def sync_skill_files(hass: HomeAssistant, entry_id: str) -> SkillFileSyncResult:
     total = store.count_skills()
     for skill in store.list_recent(limit=max(total, 1)):
         if skill.is_builtin:
+            if refresh_packaged_builtin(skill):
+                store.update_skill(skill)
+                result.repaired += 1
             continue
         before = skill_to_markdown(skill)
         if bundled_skill_needs_refresh(skill):

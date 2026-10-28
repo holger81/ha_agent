@@ -350,6 +350,33 @@ def test_build_settings_recommendation_merges_benchmarks() -> None:
     assert recommendation.recommendations[0]["setting"] == "parallel"
 
 
+def test_promote_ready_models_counts_openai_catalog() -> None:
+    """Proxy /v1/models entries have no load lifecycle and are already callable."""
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:4000",
+        models=["local-small", "local-vision"],
+        model_details=[
+            llm_server.ModelInfo(model_id="local-small", status="unknown"),
+            llm_server.ModelInfo(model_id="local-vision", status="unknown"),
+        ],
+    )
+    llm_server.promote_ready_models(caps)
+    assert caps.loaded_models == ["local-small", "local-vision"]
+
+
+def test_promote_ready_models_leaves_router_unloaded() -> None:
+    caps = llm_server.ServerCapabilities(
+        server_root="http://example:9292",
+        router_role="router",
+        models=["local-small"],
+        model_details=[
+            llm_server.ModelInfo(model_id="local-small", status="unloaded"),
+        ],
+    )
+    llm_server.promote_ready_models(caps)
+    assert caps.loaded_models == []
+
+
 def test_eval_candidate_models_prefers_loaded() -> None:
     caps = llm_server.ServerCapabilities(
         server_root="http://example:9292",

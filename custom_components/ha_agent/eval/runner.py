@@ -229,6 +229,25 @@ async def run_eval_suite(
                     len(capabilities.models),
                 )
 
+            preload_failure = ""
+            # Only a llama.cpp router can load a model by id. OpenAI proxies
+            # answer /v1/models but reject /models/load; preloading there drops
+            # every candidate and fails the run before any case executes.
+            if (
+                preload_models_flag
+                and candidate_models
+                and capabilities.router_role != "router"
+            ):
+                _eval_progress(
+                    run,
+                    phase="probe",
+                    message=(
+                        "Server has no llama.cpp model load API; "
+                        "benchmarking the selected models directly."
+                    ),
+                )
+                preload_models_flag = False
+
             if preload_models_flag and candidate_models:
                 state.cancellable_phase = "preload"
                 _eval_progress(
@@ -285,10 +304,18 @@ async def run_eval_suite(
                         for item in failed_preload
                         if item.get("model")
                     ]
+                    failed_detail = "; ".join(
+                        (
+                            f"{item.get('model')}: "
+                            f"{item.get('error') or item.get('status')}"
+                        )
+                        for item in failed_preload
+                    )
+                    preload_failure = failed_detail
                     LOGGER.warning(
                         "Eval preload failed for %d model(s): %s",
                         len(failed_preload),
-                        failed_ids,
+                        failed_detail or failed_ids,
                     )
                     # Skip unloadable models instead of failing the whole suite.
                     candidate_models = [
@@ -314,9 +341,10 @@ async def run_eval_suite(
                     )
 
             if not candidate_models:
+                detail = f" {preload_failure}" if preload_failure else ""
                 raise RuntimeError(
                     "No models available to benchmark "
-                    "(all preload attempts failed or none were selected)."
+                    "(all preload attempts failed or none were selected)." + detail
                 )
 
             selected_tasks = list(tasks or EVAL_TASKS)

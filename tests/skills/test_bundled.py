@@ -65,9 +65,10 @@ def test_bundled_email_markdown_loads() -> None:
 def test_bundled_news_markdown_uses_digest_scope() -> None:
     text = load_bundled_skill_text("news-briefing")
     assert text is not None
-    assert 'digest_scope: "{{digest_scope}}"' in text
+    assert 'scope: "{{digest_scope}}"' in text
     assert 'query: "{{digest_scope}}"' not in text
-    assert "mcp_news__news_curate" in text
+    assert "mcp_news__news_briefing" in text
+    assert "reply with the `briefing` field" in text.lower()
 
 
 def test_stale_email_skill_detected() -> None:
@@ -137,8 +138,8 @@ def test_apply_bundled_skill_rewrites_broken_news_skill() -> None:
     assert apply_bundled_skill(skill) is True
     assert news_skill_needs_refresh(skill) is False
     step = skill.tool_steps[0]
-    assert step["toolName"] == "mcp_news__news_curate"
-    assert "digest_scope" in step["arguments"]
+    assert step["toolName"] == "mcp_news__news_briefing"
+    assert step["arguments"].get("scope") == "{{digest_scope}}"
     assert "query" not in step["arguments"]
 
 

@@ -134,9 +134,9 @@ _BUILTIN_CASES: tuple[EvalCase, ...] = (
         id="news_headlines",
         task="news",
         user_text="What's the news?",
-        expected_tool="mcp_news__news_curate",
+        expected_tool="mcp_news__news_briefing",
         expected_text_contains=["headline"],
-        mock_mcp_responses=['{"headlines":["Example headline"]}'],
+        mock_mcp_responses=['{"briefing":"Example headline briefing","items":[]}'],
     ),
     EvalCase(
         id="email_unread",

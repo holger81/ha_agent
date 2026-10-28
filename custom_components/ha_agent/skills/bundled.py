@@ -163,17 +163,20 @@ def news_skill_needs_refresh(skill: Skill) -> bool:
         return True
     for step in skill.tool_steps:
         name = canonicalize_tool_name(str(step.get("toolName") or ""))
-        if "news_curate" not in name:
+        # Curate returns the raw item list. The packaged workflow reads the
+        # prewritten ``briefing`` field from news_briefing instead.
+        if "news_curate" in name:
+            return True
+        if "news_briefing" not in name:
             continue
         args = step.get("arguments")
         if not isinstance(args, dict):
             return True
         if "query" in args:
             return True
-        # Empty args or missing digest_scope placeholder loses local/germany focus.
-        if "digest_scope" not in args:
+        if "scope" not in args and "digest_scope" not in args:
             return True
-    return False
+    return "news_curate" in blob and "news_briefing" not in blob
 
 
 def _is_status_lookup_skill(skill: Skill) -> bool:
@@ -220,6 +223,30 @@ def bundled_skill_needs_refresh(skill: Skill) -> bool:
         or news_skill_needs_refresh(skill)
         or status_skill_needs_refresh(skill)
     )
+
+
+def refresh_packaged_builtin(skill: Skill) -> bool:
+    """Re-apply packaged markdown when a builtin workflow has drifted.
+
+    Preserves an entry-specific ``llm_model`` when the package does not set one.
+    """
+    if not skill.is_builtin or skill.slug not in builtin_bundled_slugs():
+        return False
+    text = load_bundled_skill_text(skill.slug)
+    if not text:
+        return False
+    draft, _, _explicit = draft_from_markdown(text, filename_slug=skill.slug)
+    same_steps = list(skill.tool_steps) == list(draft.tool_steps)
+    same_body = (skill.body or "").strip() == (draft.body or "").strip()
+    if same_steps and same_body:
+        return False
+    preserved_model = skill.llm_model
+    preserved_url = skill.llm_base_url
+    apply_draft_to_skill(skill, draft)
+    if not (draft.llm_model or "").strip():
+        skill.llm_model = preserved_model
+        skill.llm_base_url = preserved_url
+    return True
 
 
 def apply_bundled_skill(skill: Skill) -> bool:

@@ -5196,7 +5196,13 @@ class HaAgentPanel extends HTMLElement {
       .map((item) => {
         const source = item.is_preset ? "preset" : item.source || "—";
         const progressText = this._formatCatalogProgress(item.progress);
-        const loaded = loadedModels.includes(item.model_id);
+        const router = caps.router_role === "router" || summary.router_role === "router";
+        const resident = item.status === "loaded" || item.status === "sleeping";
+        const callable =
+          resident ||
+          loadedModels.includes(item.model_id) ||
+          (!router && (item.status === "unknown" || !item.status));
+        const statusText = !router && (item.status === "unknown" || !item.status) ? "ready" : (item.status || "—");
         const prior = scoreByModelId[item.model_id];
         const scoreText =
           prior?.mean_score != null ? Number(prior.mean_score).toFixed(2) : "—";
@@ -5210,8 +5216,8 @@ class HaAgentPanel extends HTMLElement {
         const downloading = item.status === "downloading";
         const evalBtn = downloading
           ? `<button disabled title="Wait for download to finish">Eval</button> `
-          : `<button data-action="eval-model" data-model-id="${this._escape(item.model_id)}" data-needs-preload="${loaded ? "false" : "true"}">Eval</button> `;
-        const manageBtns = loaded
+          : `<button data-action="eval-model" data-model-id="${this._escape(item.model_id)}" data-needs-preload="${callable ? "false" : "true"}">Eval</button> `;
+        const manageBtns = resident
           ? `<button data-action="eval-unload-model" data-model-id="${this._escape(item.model_id)}">Unload</button> <button data-action="eval-delete-model" data-model-id="${this._escape(item.model_id)}">Delete</button>`
           : item.is_preset
             ? ""
@@ -5219,7 +5225,7 @@ class HaAgentPanel extends HTMLElement {
         const actions = `${evalBtn}${retryBtn}${manageBtns}`;
         return `<tr>
           <td class="model-id-short">${this._escape(this._shortModelId(item.model_id))}</td>
-          <td>${this._escape(item.status || "—")}</td>
+          <td>${this._escape(statusText)}</td>
           <td>${this._escape(scoreText)}</td>
           <td>${this._escape(source)}</td>
           <td>${this._escape(this._formatModalities(item.input_modalities))}</td>

@@ -304,6 +304,7 @@ class LlmServerProbe:
         await self._enrich_router_model_details(root, headers, timeout, caps)
         await self._probe_props_writable(root, headers, timeout, caps)
         await self._probe_models_download_api(root, headers, timeout, caps)
+        promote_ready_models(caps)
         return caps
 
     async def _fetch_models(
@@ -538,6 +539,22 @@ class LlmServerProbe:
     @staticmethod
     def _parse_metrics(caps: ServerCapabilities, body: str) -> None:
         caps.metrics = ServerMetrics(raw_text=body, parsed=_parse_prometheus(body))
+
+
+def promote_ready_models(caps: ServerCapabilities) -> None:
+    """Count OpenAI catalog entries as servable when there is no router load API.
+
+    llama.cpp router models carry status loaded/unloaded/loading/failed.
+    A proxy that only implements ``/v1/models`` leaves status as ``unknown``.
+    Those ids are already callable, so eval must not POST ``/models/load``.
+    """
+    if caps.router_role == "router":
+        return
+    ready = set(caps.loaded_models)
+    for detail in caps.model_details:
+        if detail.status in {"unknown", ""}:
+            ready.add(detail.model_id)
+    caps.loaded_models = sorted(ready)
 
 
 def _model_status(item: dict[str, Any]) -> str:
